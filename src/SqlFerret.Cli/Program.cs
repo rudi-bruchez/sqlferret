@@ -17,7 +17,7 @@ string Arg(string name, string? fallback = null)
 
 if (args.Length == 0)
 {
-    Console.WriteLine("usage: import <path> --project f.duckdb | top-slow --project f.duckdb");
+    Console.Error.WriteLine("usage: import <path> --project f.duckdb | top-slow --project f.duckdb");
     return 1;
 }
 
@@ -33,9 +33,15 @@ switch (args[0])
         var path = args[1];
         var project = Arg("--project", "workload.duckdb");
         var redactionStr = Arg("--redaction", config.RedactionPolicy);
-        var redaction = Enum.Parse<RedactionMode>(redactionStr, ignoreCase: true);
+        if (!Enum.TryParse<RedactionMode>(redactionStr, ignoreCase: true, out var redaction))
+        {
+            Console.Error.WriteLine($"import: invalid --redaction value '{redactionStr}'. Valid: off, hash, masked, full");
+            return 1;
+        }
 
-        var (files, _) = XelSource.Resolve(path);
+        IReadOnlyList<string> files;
+        try { (files, _) = XelSource.Resolve(path); }
+        catch (FileNotFoundException) { Console.Error.WriteLine($"import: path not found: {path}"); return 1; }
         using var db = DuckDbProject.Open(project);
         var svc = new IngestionService(db, new IngestionOptions(redaction, Array.Empty<FilterRule>()));
         var result = svc.Ingest(path, new XelReader().Read(files));
@@ -57,7 +63,7 @@ switch (args[0])
         return 0;
     }
     default:
-        Console.WriteLine($"unknown command: {args[0]}");
+        Console.Error.WriteLine($"unknown command: {args[0]}");
         return 1;
 }
 
