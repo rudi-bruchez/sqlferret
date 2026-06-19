@@ -46,6 +46,6 @@ public class FilterCompilerTests
         var r = new FilterRule("x", "login_name", "eq", null, "a'); DROP TABLE executions;--", "view", "exclude", true);
         var where = FilterCompiler.ToWhereClause(new[] { r });
         Assert.Contains("''", where);            // quote doubled
-        Assert.DoesNotContain("a'); DROP TABLE", where.Replace("''", "")); // not closed early
+        Assert.Contains("'a''); DROP TABLE executions;--'", where); // value escaped: single quote doubled, string literal not closed early
     }
 }
