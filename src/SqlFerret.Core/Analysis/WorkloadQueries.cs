@@ -12,10 +12,10 @@ public class WorkloadQueries(DuckDBConnection conn)
     private static readonly HashSet<string> DimFields =
         ["database_name", "login_name", "client_hostname", "client_app_name"];
 
-    public IReadOnlyList<QueryStat> TopSlow(int limit, string sortColumn, IEnumerable<FilterRule> viewFilters)
+    public IReadOnlyList<QueryStat> TopSlow(int limit, string sortColumn, IEnumerable<FilterRule> viewFilters, string? textFilter = null)
     {
         if (!SortCols.Contains(sortColumn)) sortColumn = "total_duration_us";
-        return QueryStats(limit, sortColumn, viewFilters);
+        return QueryStats(limit, sortColumn, viewFilters, textFilter);
     }
 
     // TopFrequent orders by count (cnt) — cumulative_cost = count*avg which equals total_duration_us / N * N = total,
@@ -26,10 +26,12 @@ public class WorkloadQueries(DuckDBConnection conn)
     public IReadOnlyList<QueryStat> TopFrequent(int limit, IEnumerable<FilterRule> viewFilters)
         => QueryStats(limit, "cnt", viewFilters);
 
-    private IReadOnlyList<QueryStat> QueryStats(int limit, string orderBy, IEnumerable<FilterRule> viewFilters)
+    private IReadOnlyList<QueryStat> QueryStats(int limit, string orderBy, IEnumerable<FilterRule> viewFilters, string? textFilter = null)
     {
         // orderBy is always from the allow-list (SortCols) or "cnt" — never from user input directly
         string where = FilterCompiler.ToWhereClause(viewFilters);
+        bool hasTextFilter = !string.IsNullOrWhiteSpace(textFilter);
+        string textFilterClause = hasTextFilter ? " AND n.normalized_sql ILIKE $pat" : "";
         using var cmd = conn.CreateCommand();
         cmd.CommandText = $"""
           SELECT e.normalized_hash, n.statement_kind, n.primary_table, n.normalized_sql,
@@ -39,11 +41,13 @@ public class WorkloadQueries(DuckDBConnection conn)
                  max(e.duration_us) AS max_duration_us,
                  sum(e.duration_us) AS total_duration_us
           FROM executions e JOIN normalized_queries n USING (normalized_hash)
-          WHERE {where}
+          WHERE {where}{textFilterClause}
           GROUP BY e.normalized_hash, n.statement_kind, n.primary_table, n.normalized_sql
           ORDER BY {orderBy} DESC
           LIMIT {limit}
           """;
+        if (hasTextFilter)
+            Add(cmd, "$pat", "%" + textFilter + "%");
         using var r = cmd.ExecuteReader();
         var list = new List<QueryStat>();
         while (r.Read())
@@ -180,7 +184,8 @@ public class WorkloadQueries(DuckDBConnection conn)
         using (var pcmd = conn.CreateCommand())
         {
             pcmd.CommandText = """
-              SELECT ordinal, name, source_kind, sql_type_guess, value_text, parse_confidence
+              SELECT ordinal, name, source_kind, sql_type_guess, value_text, parse_confidence,
+                     value_redacted
               FROM execution_parameters WHERE execution_id = $id ORDER BY ordinal
               """;
             Add(pcmd, "$id", executionId);
@@ -192,7 +197,8 @@ public class WorkloadQueries(DuckDBConnection conn)
                     Enum.Parse<ParameterSourceKind>(pr.GetString(2), ignoreCase: true),
                     pr.IsDBNull(3) ? null : pr.GetString(3),
                     pr.GetString(4),
-                    pr.GetDouble(5)));
+                    pr.GetDouble(5),
+                    Redacted: pr.GetBoolean(6)));
         }
 
         return new ExecutionEvent

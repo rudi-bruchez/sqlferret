@@ -1,5 +1,6 @@
 using SqlFerret.Core.Analysis;
 using SqlFerret.Core.Model;
+using SqlFerret.Core.Parameters;
 using SqlFerret.Core.Replay;
 using SqlFerret.Tui.Presenters;
 
@@ -20,9 +21,27 @@ public class DrillDownPresenterTests
         var occ = p.Occurrences();
         Assert.Equal(2, occ.Count);
 
-        var replay = p.BuildReplay(occ[0].ExecutionId);
-        Assert.Equal(ReplayKind.ExecProc, replay.Kind);
-        Assert.StartsWith("EXEC dbo.GetOrder @OrderId = ", replay.Sql);
+        var (script, anyRedacted) = p.BuildReplay(occ[0].ExecutionId);
+        Assert.Equal(ReplayKind.ExecProc, script.Kind);
+        Assert.StartsWith("EXEC dbo.GetOrder @OrderId = ", script.Sql);
+        Assert.False(anyRedacted); // RedactionMode.Full stores verbatim values
+    }
+
+    [Fact]
+    public void BuildReplay_sets_AnyRedacted_when_parameters_are_hashed()
+    {
+        using var db = TestProject.SeedFrom(
+        [
+            ("rpc_completed", "exec dbo.GetOrder @OrderId = 123", "dbo.GetOrder", 4000),
+        ], RedactionMode.Hash);
+        var q = new WorkloadQueries(db.Connection);
+        var sig = q.TopSlow(10, "total_duration_us", [])[0];
+        var p = new DrillDownPresenter(q, sig);
+
+        var occ = p.Occurrences();
+        var (_, anyRedacted) = p.BuildReplay(occ[0].ExecutionId);
+
+        Assert.True(anyRedacted);
     }
 
     [Fact]

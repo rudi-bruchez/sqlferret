@@ -7,15 +7,15 @@ public class TopSlowPresenterTests : IDisposable
 
     public TopSlowPresenterTests()
     {
-        _db = TestProject.SeedFrom(new[]
-        {
+        _db = TestProject.SeedFrom(
+        [
             // sql_batch_completed: sql in batch_text
             ("sql_batch_completed", "SELECT * FROM dbo.Orders WHERE Id = 1",   (string?)null, 5_000L),
             ("sql_batch_completed", "SELECT * FROM dbo.Orders WHERE Id = 2",   (string?)null, 3_000L),
             ("sql_batch_completed", "SELECT * FROM dbo.Products WHERE Id = 9", (string?)null, 1_000L),
             // rpc_completed: sql in statement + explicit object_name
             ("rpc_completed", "EXEC dbo.GetOrder @id = 1", "dbo.GetOrder", 9_000L),
-        });
+        ]);
     }
 
     public void Dispose() => _db.Dispose();
@@ -41,6 +41,38 @@ public class TopSlowPresenterTests : IDisposable
         var rows = presenter.Load();
 
         Assert.All(rows, r => Assert.Contains("Products", r.NormalizedSql, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void TextFilter_narrows_by_normalized_sql()
+    {
+        var presenter = new TopSlowPresenter(_db.Project);
+        presenter.SetTextFilter("Orders");
+        var rows = presenter.Load();
+
+        Assert.NotEmpty(rows);
+        Assert.All(rows, r => Assert.Contains("Orders", r.NormalizedSql, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void TextFilter_returns_match_beyond_limit()
+    {
+        // Seed 2 distinct signatures: slow one ranked first, fast one ranked second.
+        // With Limit=1 and old C#-post-filter, the fast row would never be seen.
+        // With new SQL-ILIKE-pre-LIMIT, the filter fires before LIMIT and returns the fast row.
+        using var db = TestProject.SeedFrom(
+        [
+            ("sql_batch_completed", "WAITFOR DELAY '00:00:05'",       (string?)null, 5_000_000L),
+            ("sql_batch_completed", "SELECT TOP 1 * FROM fast_tbl WHERE id = 1", (string?)null, 100L),
+        ]);
+
+        var presenter = new TopSlowPresenter(db.Project) { Limit = 1 };
+        presenter.SetTextFilter("fast_tbl");
+
+        var rows = presenter.Load();
+
+        Assert.Single(rows);
+        Assert.Contains("fast_tbl", rows[0].NormalizedSql, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

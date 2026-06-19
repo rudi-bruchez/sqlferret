@@ -29,7 +29,8 @@ public static class TestProject
     /// otherwise (rpc/statement) → sql in statement field; objectName sets object_name.
     /// </param>
     public static SeededProject SeedFrom(
-        IEnumerable<(string name, string sql, string? objectName, long durationUs)> rows)
+        IEnumerable<(string name, string sql, string? objectName, long durationUs)> rows,
+        RedactionMode redaction = RedactionMode.Full)
     {
         var path = Path.Combine(Path.GetTempPath(), $"sf_tui_{Guid.NewGuid():N}.duckdb");
         var project = DuckDbProject.Open(path);
@@ -37,7 +38,7 @@ public static class TestProject
         var events = rows.Select((r, i) => BuildEvent(r.name, r.sql, r.objectName, r.durationUs, i)).ToList();
 
         var svc = new IngestionService(project,
-            new IngestionOptions(RedactionMode.Full, Array.Empty<FilterRule>()));
+            new IngestionOptions(redaction, Array.Empty<FilterRule>()));
 
         svc.Ingest("test/", events);
 

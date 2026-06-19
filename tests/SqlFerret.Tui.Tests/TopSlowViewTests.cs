@@ -13,10 +13,10 @@ public class TopSlowViewTests
     {
         using IApplication app = Application.Create(new VirtualTimeProvider());
 
-        using var seeded = TestProject.SeedFrom(new[]
-        {
+        using var seeded = TestProject.SeedFrom(
+        [
             ("sql_batch_completed", "SELECT * FROM dbo.Users WHERE Id = 1", (string?)null, 5_000L),
-        });
+        ]);
 
         var presenter = new TopSlowPresenter(seeded.Project);
         var view = new TopSlowView(presenter, "ms", app);

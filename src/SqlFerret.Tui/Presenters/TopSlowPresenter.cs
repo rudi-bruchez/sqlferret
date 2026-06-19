@@ -17,15 +17,8 @@ public class TopSlowPresenter(DuckDbProject project)
 
     public IReadOnlyList<QueryStat> Load()
     {
-        var rows = new WorkloadQueries(project.Connection)
-            .TopSlow(Limit, SortColumn, Filters);
-
-        if (string.IsNullOrEmpty(TextFilter))
-            return rows;
-
-        return rows
-            .Where(r => r.NormalizedSql.Contains(TextFilter, StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        return new WorkloadQueries(project.Connection)
+            .TopSlow(Limit, SortColumn, Filters, string.IsNullOrEmpty(TextFilter) ? null : TextFilter);
     }
 
     public void CycleSort()

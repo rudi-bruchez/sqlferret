@@ -18,10 +18,10 @@ public class ShellSmokeTests
         var ui = new UiState();
         var uiPath = Path.GetTempFileName();
 
-        using var seeded = TestProject.SeedFrom(new[]
-        {
+        using var seeded = TestProject.SeedFrom(
+        [
             ("rpc_completed", "EXEC dbo.GetOrder @id = 1", (string?)"dbo.GetOrder", 9_000L),
-        });
+        ]);
 
         var clipboard = new NativeClipboard(new FileFallbackClipboard(Path.GetTempPath()), null);
         var ctx = new TuiContext(app, seeded.Project, config, ui, clipboard, uiPath);
