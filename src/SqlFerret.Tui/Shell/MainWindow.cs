@@ -112,6 +112,25 @@ public sealed class MainWindow : Window
             return;
         }
 
+        if (railIndex == 1)
+        {
+            // Import view — real ingestion form with async progress
+            var defaultRedaction = Enum.TryParse<SqlFerret.Core.Parameters.RedactionMode>(
+                _ctx.Config.RedactionPolicy, ignoreCase: true, out var m)
+                ? m
+                : SqlFerret.Core.Parameters.RedactionMode.Masked;
+
+            var view = new ImportView(
+                new ImportPresenter(_ctx.Project),
+                defaultRedaction,
+                _ctx.App);
+            view.Completed += _ => Show(0);   // on success, switch back to Top Slow
+            _contentHost.Title = "Import";
+            _contentHost.Add(view);
+            view.SetFocus();
+            return;
+        }
+
         _contentHost.Title = "Content";
         _contentHost.Add(new Label { Text = $"(view {railIndex})" });
     }
