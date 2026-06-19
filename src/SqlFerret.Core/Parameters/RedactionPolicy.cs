@@ -21,7 +21,7 @@ public class RedactionPolicy(RedactionMode mode, IReadOnlyList<string>? sensitiv
             RedactionMode.Full   => (valueText, false),
             RedactionMode.Hash   => (Fingerprint.Hash(valueText), true),
             RedactionMode.Masked => (new string('*', Math.Clamp(valueText.Length, 1, 8)), true),
-            _ => (valueText, false)
+            _ => throw new ArgumentOutOfRangeException(nameof(effective), effective, "Unhandled RedactionMode")
         };
     }
 }

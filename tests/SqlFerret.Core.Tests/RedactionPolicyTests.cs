@@ -36,4 +36,12 @@ public class RedactionPolicyTests
         Assert.DoesNotContain("Alice", v);
         Assert.True(redacted);
     }
+
+    [Fact]
+    public void Off_suppresses_stored_value_so_caller_skips_writing()
+    {
+        var (v, redacted) = new RedactionPolicy(RedactionMode.Off).Apply("@id", "42");
+        Assert.Equal("", v);
+        Assert.True(redacted);
+    }
 }
