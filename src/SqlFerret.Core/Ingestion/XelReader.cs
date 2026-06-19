@@ -43,18 +43,23 @@ public class XelReader
     private sealed class XeEventDataAdapter : IXeEventData
     {
         private readonly IXEvent _e;
+        private readonly IReadOnlyDictionary<string, object?> _fields;
+        private readonly IReadOnlyDictionary<string, object?> _actions;
 
-        public XeEventDataAdapter(IXEvent e) => _e = e;
+        public XeEventDataAdapter(IXEvent e)
+        {
+            _e = e;
+            _fields = e.Fields.ToDictionary(kvp => kvp.Key, kvp => (object?)kvp.Value);
+            _actions = e.Actions.ToDictionary(kvp => kvp.Key, kvp => (object?)kvp.Value);
+        }
 
         public string Name => _e.Name;
 
         // IXEvent.Timestamp is a DateTimeOffset; expose as UTC DateTime per IXeEventData.
         public DateTime Timestamp => _e.Timestamp.UtcDateTime;
 
-        public IReadOnlyDictionary<string, object?> Fields =>
-            _e.Fields.ToDictionary(kvp => kvp.Key, kvp => (object?)kvp.Value);
+        public IReadOnlyDictionary<string, object?> Fields => _fields;
 
-        public IReadOnlyDictionary<string, object?> Actions =>
-            _e.Actions.ToDictionary(kvp => kvp.Key, kvp => (object?)kvp.Value);
+        public IReadOnlyDictionary<string, object?> Actions => _actions;
     }
 }
