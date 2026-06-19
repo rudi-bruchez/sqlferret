@@ -4,7 +4,6 @@ using SqlFerret.Core.Ingestion;
 using SqlFerret.Core.Model;
 using SqlFerret.Core.Parameters;
 using SqlFerret.Core.Storage;
-using Xunit;
 
 public class IngestionProgressTests
 {
@@ -25,8 +24,6 @@ public class IngestionProgressTests
         {
             using var db = DuckDbProject.Open(path);
             var svc = new IngestionService(db, new IngestionOptions(RedactionMode.Full, [], BatchSize: 2));
-            var seen = new List<IngestionProgress>();
-            var progress = new Progress<IngestionProgress>(seen.Add);
 
             // Progress<T> posts asynchronously; collect synchronously instead for a deterministic test:
             var captured = new List<IngestionProgress>();
