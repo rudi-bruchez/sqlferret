@@ -6,6 +6,13 @@
 //   - Button.Accepting is the click event (EventHandler<CommandEventArgs>)
 //   - app.Invoke (instance) for UI-thread marshaling; wrapped in try/catch so
 //     a missing message loop during headless tests doesn't break the import
+//
+// Concurrency contract:
+//   - _running is only ever read/written on the UI thread (StartAsync is awaited
+//     on the UI thread; the guard check + set happen before the Task.Run).
+//   - ImportStarted is raised BEFORE the await; ImportFinished is raised AFTER
+//     the await (success or failure) and BEFORE Completed, so that MainWindow
+//     clears _importing before Completed triggers Show(0).
 using SqlFerret.Core.Ingestion;
 using SqlFerret.Core.Parameters;
 using SqlFerret.Tui.Presenters;
@@ -22,6 +29,18 @@ public sealed class ImportView : View
     private readonly TextField _path;
     private readonly OptionSelector<RedactionMode> _redaction;
     private readonly Label _progress;
+    private readonly Button _start;
+
+    private bool _running;
+
+    /// <summary>True while an import is in progress.</summary>
+    public bool IsRunning => _running;
+
+    /// <summary>Raised on the UI thread just before the import awaits (i.e. when the worker starts).</summary>
+    public event Action? ImportStarted;
+
+    /// <summary>Raised on the UI thread after the import finishes (success or failure), before Completed.</summary>
+    public event Action? ImportFinished;
 
     public event Action<IngestionResult>? Completed;
 
@@ -62,13 +81,13 @@ public sealed class ImportView : View
         };
 
         // ── Start button ─────────────────────────────────────────────────────
-        var start = new Button
+        _start = new Button
         {
             X = Pos.Absolute(12),
             Y = Pos.Absolute(7),
             Text = "Start",
         };
-        start.Accepting += (_, _) => { _ = StartAsync(_path.Text?.ToString() ?? ""); };
+        _start.Accepting += (_, _) => { _ = StartAsync(_path.Text?.ToString() ?? ""); };
 
         // ── Progress label ───────────────────────────────────────────────────
         _progress = new Label
@@ -79,19 +98,29 @@ public sealed class ImportView : View
             Text = "",
         };
 
-        Add(pathLabel, _path, redactionLabel, _redaction, start, _progress);
+        Add(pathLabel, _path, redactionLabel, _redaction, _start, _progress);
     }
 
     /// <summary>
     /// Runs the import asynchronously. Safe to call from tests without a running message loop.
+    /// Re-entrant calls (while _running) are silently ignored.
     /// </summary>
     public async Task StartAsync(string path)
     {
+        // Re-entrancy guard — checked and set on the UI thread before any await.
+        if (_running) return;
+
         if (string.IsNullOrWhiteSpace(path))
         {
             _progress.Text = "Path is required.";
             return;
         }
+
+        _running = true;
+        _start.Enabled = false;
+
+        // Notify MainWindow so it can block rail navigation while we run.
+        ImportStarted?.Invoke();
 
         var redaction = _redaction.Value ?? RedactionMode.Masked;
 
@@ -106,23 +135,34 @@ public sealed class ImportView : View
             }
             catch
             {
-                // No message loop running (e.g. headless tests) — update directly
-                _progress.Text =
-                    $"read={p.Read} mapped={p.Mapped} unmapped={p.Unmapped} " +
-                    $"cleaned={p.Cleaned} failures={p.TokenizeFailures}  [{p.CurrentFile}]";
+                // Message loop unavailable (teardown / headless) — drop this tick.
             }
         });
 
+        IngestionResult? result = null;
+        Exception? error = null;
         try
         {
-            var result = await _presenter.RunAsync(path, redaction, progress, CancellationToken.None);
-
+            result = await _presenter.RunAsync(path, redaction, progress, CancellationToken.None);
             _progress.Text = $"Done. read={result.Read} mapped={result.Mapped}";
-            Completed?.Invoke(result);
         }
         catch (Exception ex)
         {
+            error = ex;
             _progress.Text = $"Import failed: {ex.Message}";
+        }
+        finally
+        {
+            // Always clear running state and re-enable button …
+            _running = false;
+            _start.Enabled = true;
+
+            // … then unblock navigation (MainWindow clears _importing) …
+            ImportFinished?.Invoke();
+
+            // … then raise Completed so Show(0) in MainWindow is NOT blocked.
+            if (error is null && result is not null)
+                Completed?.Invoke(result);
         }
     }
 }

@@ -44,6 +44,9 @@ public sealed class MainWindow : Window
     private readonly TuiContext _ctx;
     private readonly FrameView _contentHost;
 
+    /// <summary>True while an import is running; blocks rail navigation.</summary>
+    private bool _importing;
+
     public MainWindow(TuiContext ctx)
     {
         _ctx = ctx;
@@ -91,10 +94,13 @@ public sealed class MainWindow : Window
 
     /// <summary>
     /// Swaps the content host to display the view at <paramref name="railIndex"/>.
-    /// Task 11 will replace the Import placeholder with a real view.
+    /// Silently ignored while an import is running (_importing == true).
     /// </summary>
     public void Show(int railIndex)
     {
+        // Block navigation while an import is in progress.
+        if (_importing) return;
+
         _contentHost.RemoveAll();
 
         if (railIndex == 0)
@@ -126,7 +132,14 @@ public sealed class MainWindow : Window
                 new ImportPresenter(_ctx.Project),
                 defaultRedaction,
                 _ctx.App);
+
+            // Block / unblock rail navigation around the import lifetime.
+            // ImportFinished is always raised BEFORE Completed, so when
+            // Completed triggers Show(0) below, _importing is already false.
+            view.ImportStarted += () => _importing = true;
+            view.ImportFinished += () => _importing = false;
             view.Completed += _ => Show(0);   // on success, switch back to Top Slow
+
             _contentHost.Title = "Import";
             _contentHost.Add(view);
             view.SetFocus();

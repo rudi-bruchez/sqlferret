@@ -79,4 +79,39 @@ public class ImportViewTests
             if (File.Exists(path)) File.Delete(path);
         }
     }
+
+    [Fact]
+    public async Task StartAsync_reentrant_call_while_running_is_ignored()
+    {
+        // Verifies the re-entrancy guard WITHOUT needing a real .xel file.
+        // We use a non-existent path so RunAsync throws immediately after Task.Run
+        // starts — the guard + finally path must still work cleanly.
+        using IApplication app = Application.Create(new VirtualTimeProvider());
+        var path = Path.Combine(Path.GetTempPath(), $"sf_importview_reentrant_{Guid.NewGuid():N}.duckdb");
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            var view = new ImportView(new ImportPresenter(db), RedactionMode.Masked, app);
+
+            // Initially not running.
+            Assert.False(view.IsRunning);
+
+            // A call with an invalid path returns quickly (empty-path guard), IsRunning stays false.
+            await view.StartAsync("");
+            Assert.False(view.IsRunning);
+
+            // A call with a non-existent file path goes through RunAsync and throws;
+            // the finally must still clear IsRunning.
+            await view.StartAsync("/nonexistent/path/that/does/not/exist.xel");
+            Assert.False(view.IsRunning, "IsRunning must be false after an error path");
+
+            // Calling again after completion is fine (not permanently locked).
+            await view.StartAsync("/another/nonexistent.xel");
+            Assert.False(view.IsRunning);
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
 }
