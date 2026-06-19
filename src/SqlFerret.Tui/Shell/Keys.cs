@@ -8,9 +8,9 @@ namespace SqlFerret.Tui.Shell;
 static class Keys
 {
     public static readonly Key Filter = (Key)'/';
-    public static readonly Key Sort   = Key.S;
-    public static readonly Key Cols   = Key.C.WithShift;
-    public static readonly Key Copy   = Key.C;
-    public static readonly Key Back   = Key.Esc;
-    public static readonly Key Quit   = Key.Q;
+    public static readonly Key Sort = Key.S;
+    public static readonly Key Cols = Key.C.WithShift;
+    public static readonly Key Copy = Key.C;
+    public static readonly Key Back = Key.Esc;
+    public static readonly Key Quit = Key.Q;
 }

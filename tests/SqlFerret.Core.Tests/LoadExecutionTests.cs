@@ -22,9 +22,12 @@ public class LoadExecutionTests
             using var db = DuckDbProject.Open(path);
             // an rpc_completed event with object_name + a statement carrying params
             var ev = new FakeEvent("rpc_completed", new DateTime(2026, 1, 1),
-                new Dictionary<string, object?> {
+                new Dictionary<string, object?>
+                {
                     ["statement"] = "exec dbo.GetOrder @OrderId = 123",
-                    ["object_name"] = "dbo.GetOrder", ["duration"] = 10L },
+                    ["object_name"] = "dbo.GetOrder",
+                    ["duration"] = 10L
+                },
                 new Dictionary<string, object?>());
             new IngestionService(db, new IngestionOptions(RedactionMode.Full, []))
                 .Ingest("logs/", new[] { ((IXeEventData)ev, "s_0.xel", 0L) });

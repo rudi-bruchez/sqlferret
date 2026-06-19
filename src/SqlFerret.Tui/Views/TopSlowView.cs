@@ -76,13 +76,13 @@ public sealed class TopSlowView : View
 
         var selectors = new Dictionary<string, Func<QueryStat, object>>
         {
-            ["kind"]      = s => s.StatementKind,
+            ["kind"] = s => s.StatementKind,
             ["signature"] = s => Truncate(s.NormalizedSql),
-            ["count"]     = s => s.Count,
-            ["avg"]       = s => DisplayFormat.Duration((long)s.AvgDurationUs, _unit),
-            ["p95"]       = s => DisplayFormat.Duration(s.P95DurationUs, _unit),
-            ["max"]       = s => DisplayFormat.Duration(s.MaxDurationUs, _unit),
-            ["total"]     = s => DisplayFormat.Duration(s.TotalDurationUs, _unit),
+            ["count"] = s => s.Count,
+            ["avg"] = s => DisplayFormat.Duration((long)s.AvgDurationUs, _unit),
+            ["p95"] = s => DisplayFormat.Duration(s.P95DurationUs, _unit),
+            ["max"] = s => DisplayFormat.Duration(s.MaxDurationUs, _unit),
+            ["total"] = s => DisplayFormat.Duration(s.TotalDurationUs, _unit),
         };
 
         var dt = new DataTable();
