@@ -7,10 +7,6 @@ using SqlFerret.Core.Storage;
 
 public class IngestionProgressTests
 {
-    private sealed record FakeEvent(string Name, DateTime Timestamp,
-        IReadOnlyDictionary<string, object?> Fields,
-        IReadOnlyDictionary<string, object?> Actions) : IXeEventData;
-
     private static (IXeEventData, string, long) Batch(int i) =>
         (new FakeEvent("sql_batch_completed", new DateTime(2026, 1, 1),
             new Dictionary<string, object?> { ["batch_text"] = $"SELECT {i}", ["duration"] = (long)i },

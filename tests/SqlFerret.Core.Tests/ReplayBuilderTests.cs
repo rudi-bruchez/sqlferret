@@ -30,9 +30,9 @@ public class ReplayBuilderTests
             ObjectName = "dbo.GetOrder",
             SqlTextRaw = "",
             XeFileName = "a",
-            Parameters = new[] {
+            Parameters = [
                 new RawParameter(0,"@OrderId",ParameterSourceKind.RpcParameter,"int","123",0.9),
-                new RawParameter(1,"@Culture",ParameterSourceKind.RpcParameter,"nvarchar","N'fr-FR'",0.9) }
+                new RawParameter(1,"@Culture",ParameterSourceKind.RpcParameter,"nvarchar","N'fr-FR'",0.9) ]
         };
         var r = ReplayBuilder.Build(ev);
         Assert.Equal(ReplayKind.ExecProc, r.Kind);

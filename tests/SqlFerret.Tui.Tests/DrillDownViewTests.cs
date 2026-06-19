@@ -24,20 +24,24 @@ public class DrillDownViewTests
         var q = new WorkloadQueries(db.Connection);
         var sig = q.TopSlow(10, "total_duration_us", [])[0];
         var dir = Directory.CreateTempSubdirectory().FullName;
-        var view = new DrillDownView(
-            new DrillDownPresenter(q, sig),
-            new FileFallbackClipboard(dir),
-            "ms");
+        try
+        {
+            var view = new DrillDownView(
+                new DrillDownPresenter(q, sig),
+                new FileFallbackClipboard(dir),
+                "ms");
 
-        view.Reload();
-        Assert.Equal(1, view.OccurrenceCount);
+            view.Reload();
+            Assert.Equal(1, view.OccurrenceCount);
 
-        view.SelectRow(0);
-        var res = view.CopySelectedReplay();
-        Assert.True(File.Exists(res.FilePath));
-        Assert.Contains("EXEC dbo.GetOrder", File.ReadAllText(res.FilePath!));
+            view.SelectRow(0);
+            var res = view.CopySelectedReplay();
+            Assert.True(File.Exists(res.FilePath));
+            Assert.Contains("EXEC dbo.GetOrder", File.ReadAllText(res.FilePath!));
 
-        view.Dispose();
+            view.Dispose();
+        }
+        finally { Directory.Delete(dir, true); }
     }
 
     [Fact]
@@ -53,17 +57,21 @@ public class DrillDownViewTests
         var q = new WorkloadQueries(db.Connection);
         var sig = q.TopSlow(10, "total_duration_us", [])[0];
         var dir = Directory.CreateTempSubdirectory().FullName;
-        var view = new DrillDownView(
-            new DrillDownPresenter(q, sig),
-            new FileFallbackClipboard(dir),
-            "ms");
+        try
+        {
+            var view = new DrillDownView(
+                new DrillDownPresenter(q, sig),
+                new FileFallbackClipboard(dir),
+                "ms");
 
-        view.Reload();
-        view.SelectRow(0);
-        var res = view.CopySelectedReplay();
+            view.Reload();
+            view.SelectRow(0);
+            var res = view.CopySelectedReplay();
 
-        Assert.Contains("WARNING: parameter values are redacted", res.Description);
+            Assert.Contains("WARNING: parameter values are redacted", res.Description);
 
-        view.Dispose();
+            view.Dispose();
+        }
+        finally { Directory.Delete(dir, true); }
     }
 }

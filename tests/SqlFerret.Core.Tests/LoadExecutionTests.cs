@@ -9,10 +9,6 @@ using SqlFerret.Core.Storage;
 
 public class LoadExecutionTests
 {
-    private sealed record FakeEvent(string Name, DateTime Timestamp,
-        IReadOnlyDictionary<string, object?> Fields,
-        IReadOnlyDictionary<string, object?> Actions) : IXeEventData;
-
     [Fact]
     public void LoadExecution_rebuilds_event_for_replay()
     {
@@ -30,7 +26,7 @@ public class LoadExecutionTests
                 },
                 new Dictionary<string, object?>());
             new IngestionService(db, new IngestionOptions(RedactionMode.Full, []))
-                .Ingest("logs/", new[] { ((IXeEventData)ev, "s_0.xel", 0L) });
+                .Ingest("logs/", [((IXeEventData)ev, "s_0.xel", 0L)]);
 
             long id;
             using (var cmd = db.Connection.CreateCommand())

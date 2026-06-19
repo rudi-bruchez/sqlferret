@@ -7,10 +7,6 @@ using SqlFerret.Core.Storage;
 
 public class CliSmokeTests
 {
-    private sealed record FakeEvent(string Name, DateTime Timestamp,
-        IReadOnlyDictionary<string, object?> Fields,
-        IReadOnlyDictionary<string, object?> Actions) : IXeEventData;
-
     [Fact]
     public void End_to_end_ingest_then_query()
     {
@@ -18,13 +14,13 @@ public class CliSmokeTests
         try
         {
             using var db = DuckDbProject.Open(path);
-            var svc = new IngestionService(db, new IngestionOptions(RedactionMode.Full, Array.Empty<FilterRule>()));
+            var svc = new IngestionService(db, new IngestionOptions(RedactionMode.Full, []));
             var ev = new FakeEvent("sql_batch_completed", new DateTime(2026, 1, 1),
                 new Dictionary<string, object?> { ["batch_text"] = "SELECT 1", ["duration"] = 10L },
                 new Dictionary<string, object?>());
-            svc.Ingest("logs/", new[] { ((IXeEventData)ev, "s_0.xel", 0L) });
+            svc.Ingest("logs/", [((IXeEventData)ev, "s_0.xel", 0L)]);
 
-            var top = new WorkloadQueries(db.Connection).TopSlow(10, "total_duration_us", Array.Empty<FilterRule>());
+            var top = new WorkloadQueries(db.Connection).TopSlow(10, "total_duration_us", []);
             Assert.Single(top);
         }
         finally

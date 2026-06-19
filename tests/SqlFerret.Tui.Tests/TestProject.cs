@@ -13,12 +13,6 @@ public sealed class SeededProject(DuckDbProject project, string path) : IDisposa
 
 public static class TestProject
 {
-    private sealed record FakeEvent(
-        string Name,
-        DateTime Timestamp,
-        IReadOnlyDictionary<string, object?> Fields,
-        IReadOnlyDictionary<string, object?> Actions) : IXeEventData;
-
     /// <summary>
     /// Opens a temp DuckDB, ingests the supplied rows via IngestionService with
     /// RedactionMode.Full, and returns a <see cref="SeededProject"/> (caller disposes).
@@ -38,7 +32,7 @@ public static class TestProject
         var events = rows.Select((r, i) => BuildEvent(r.name, r.sql, r.objectName, r.durationUs, i)).ToList();
 
         var svc = new IngestionService(project,
-            new IngestionOptions(redaction, Array.Empty<FilterRule>()));
+            new IngestionOptions(redaction, []));
 
         svc.Ingest("test/", events);
 

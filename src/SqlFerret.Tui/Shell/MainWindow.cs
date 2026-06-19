@@ -55,10 +55,9 @@ public sealed class MainWindow : Window
         Title = $"SqlFerret — {ctx.Project.Connection.Database}";
 
         // ── Status bar ───────────────────────────────────────────────────────
-        var statusBar = new StatusBar(new[]
-        {
+        var statusBar = new StatusBar([
             new Shortcut(Keys.Quit, "Quit", () => ctx.App.RequestStop()),
-        });
+        ]);
         statusBar.X = Pos.Absolute(0);
         statusBar.Y = Pos.AnchorEnd(1);
         statusBar.Width = Dim.Fill();

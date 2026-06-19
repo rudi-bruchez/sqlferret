@@ -8,10 +8,6 @@ using Xunit;
 
 public class WorkloadQueriesTests
 {
-    private sealed record FakeEvent(string Name, DateTime Timestamp,
-        IReadOnlyDictionary<string, object?> Fields,
-        IReadOnlyDictionary<string, object?> Actions) : IXeEventData;
-
     private static (IXeEventData, string, long) Batch(string sql, long dur, long offset, string db = "Sales", int sessionId = 1) =>
         (new FakeEvent("sql_batch_completed", new DateTime(2026, 1, 1, 0, 0, (int)(offset % 60)),
             new Dictionary<string, object?> { ["batch_text"] = sql, ["duration"] = dur },
@@ -23,7 +19,7 @@ public class WorkloadQueriesTests
         var path = Path.Combine(Path.GetTempPath(), $"sf_{Guid.NewGuid():N}.duckdb");
         duckdbPath = path;
         var project = DuckDbProject.Open(path);
-        var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, Array.Empty<FilterRule>()));
+        var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, []));
         result = svc.Ingest("logs/", events);
         return project;
     }
@@ -35,15 +31,15 @@ public class WorkloadQueriesTests
         try
         {
             using var project = DuckDbProject.Open(path);
-            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, Array.Empty<FilterRule>()));
-            svc.Ingest("logs/", new[] {
+            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, []));
+            svc.Ingest("logs/", [
                 Batch("SELECT * FROM dbo.A WHERE id = 1", 1000, 0),
                 Batch("SELECT * FROM dbo.A WHERE id = 2", 3000, 1),  // same sig as above → total 4000
                 Batch("SELECT * FROM dbo.B WHERE id = 9", 500, 2),
-            });
+            ]);
 
             var q = new WorkloadQueries(project.Connection);
-            var top = q.TopSlow(10, "total_duration_us", Array.Empty<FilterRule>());
+            var top = q.TopSlow(10, "total_duration_us", []);
 
             Assert.Equal(2, top.Count);
             Assert.Equal("dbo.A", top[0].PrimaryTable);   // highest total first
@@ -60,15 +56,15 @@ public class WorkloadQueriesTests
         try
         {
             using var project = DuckDbProject.Open(path);
-            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, Array.Empty<FilterRule>()));
-            svc.Ingest("logs/", new[] {
+            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, []));
+            svc.Ingest("logs/", [
                 Batch("SELECT * FROM dbo.A WHERE id = 1", 1000, 0),
                 Batch("SELECT * FROM dbo.B WHERE id = 9", 500, 1),
-            });
+            ]);
 
             var q = new WorkloadQueries(project.Connection);
             // Invalid sort column should fall back to total_duration_us
-            var top = q.TopSlow(10, "INJECTED; DROP TABLE--", Array.Empty<FilterRule>());
+            var top = q.TopSlow(10, "INJECTED; DROP TABLE--", []);
 
             Assert.Equal(2, top.Count);
             Assert.Equal("dbo.A", top[0].PrimaryTable);
@@ -83,16 +79,16 @@ public class WorkloadQueriesTests
         try
         {
             using var project = DuckDbProject.Open(path);
-            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, Array.Empty<FilterRule>()));
-            svc.Ingest("logs/", new[] {
+            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, []));
+            svc.Ingest("logs/", [
                 Batch("SELECT * FROM dbo.A WHERE id = 1", 100, 0),
                 Batch("SELECT * FROM dbo.A WHERE id = 2", 100, 1),
                 Batch("SELECT * FROM dbo.A WHERE id = 3", 100, 2),
                 Batch("SELECT * FROM dbo.B WHERE id = 9", 500, 3),
-            });
+            ]);
 
             var q = new WorkloadQueries(project.Connection);
-            var top = q.TopFrequent(10, Array.Empty<FilterRule>());
+            var top = q.TopFrequent(10, []);
 
             Assert.Equal(2, top.Count);
             Assert.Equal("dbo.A", top[0].PrimaryTable);  // 3 occurrences vs 1
@@ -108,15 +104,15 @@ public class WorkloadQueriesTests
         try
         {
             using var project = DuckDbProject.Open(path);
-            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, Array.Empty<FilterRule>()));
-            svc.Ingest("logs/", new[] {
+            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, []));
+            svc.Ingest("logs/", [
                 Batch("SELECT * FROM dbo.A WHERE id = 1", 1000, 0),
                 Batch("SELECT * FROM dbo.A WHERE id = 2", 3000, 1),
                 Batch("SELECT * FROM dbo.B WHERE id = 9", 500, 2),
-            });
+            ]);
 
             var q = new WorkloadQueries(project.Connection);
-            var top = q.TopSlow(1, "total_duration_us", Array.Empty<FilterRule>());
+            var top = q.TopSlow(1, "total_duration_us", []);
             Assert.Single(top);
 
             var hash = top[0].NormalizedHash;
@@ -136,12 +132,12 @@ public class WorkloadQueriesTests
         try
         {
             using var project = DuckDbProject.Open(path);
-            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, Array.Empty<FilterRule>()));
-            svc.Ingest("logs/", new[] {
+            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, []));
+            svc.Ingest("logs/", [
                 Batch("SELECT * FROM dbo.A WHERE id = 1", 1000, 10, sessionId: 42),
                 Batch("SELECT * FROM dbo.A WHERE id = 2", 2000, 20, sessionId: 42),
                 Batch("SELECT * FROM dbo.C WHERE id = 5", 500,  5,  sessionId: 99), // different session
-            });
+            ]);
 
             var q = new WorkloadQueries(project.Connection);
             var flow = q.SessionFlow(42, new DateTime(2026, 1, 1), new DateTime(2026, 1, 2));
@@ -161,16 +157,16 @@ public class WorkloadQueriesTests
         {
             using var project = DuckDbProject.Open(path);
             // RedactionMode.Full stores parameters
-            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, Array.Empty<FilterRule>()));
+            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, []));
             // Use a stored proc call so parameters get extracted
-            svc.Ingest("logs/", new[] {
+            svc.Ingest("logs/", [
                 Batch("EXEC dbo.GetOrder @id = 1", 5000, 0),
                 Batch("EXEC dbo.GetOrder @id = 1", 8000, 1),
                 Batch("EXEC dbo.GetOrder @id = 2", 1000, 2),
-            });
+            ]);
 
             var q = new WorkloadQueries(project.Connection);
-            var top = q.TopSlow(1, "total_duration_us", Array.Empty<FilterRule>());
+            var top = q.TopSlow(1, "total_duration_us", []);
             Assert.Single(top);
 
             var hash = top[0].NormalizedHash;
@@ -195,12 +191,12 @@ public class WorkloadQueriesTests
         try
         {
             using var project = DuckDbProject.Open(path);
-            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, Array.Empty<FilterRule>()));
-            svc.Ingest("logs/", new[] {
+            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, []));
+            svc.Ingest("logs/", [
                 Batch("SELECT * FROM dbo.A WHERE id = 1", 1000, 0, db: "Sales"),
                 Batch("SELECT * FROM dbo.A WHERE id = 2", 2000, 1, db: "Sales"),
                 Batch("SELECT * FROM dbo.B WHERE id = 5", 500,  2, db: "Reports"),
-            });
+            ]);
 
             var q = new WorkloadQueries(project.Connection);
             var dims = q.Dimension("database_name");
@@ -232,12 +228,12 @@ public class WorkloadQueriesTests
         try
         {
             using var project = DuckDbProject.Open(path);
-            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, Array.Empty<FilterRule>()));
-            var result = svc.Ingest("logs/", new[] {
+            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, []));
+            var result = svc.Ingest("logs/", [
                 Batch("SELECT * FROM dbo.A WHERE id = 1", 1000, 0),
                 (new FakeEvent("login", new DateTime(2026,1,1),
                     new Dictionary<string,object?>(), new Dictionary<string,object?>()), "s_0.xel", 99L),
-            });
+            ]);
 
             var q = new WorkloadQueries(project.Connection);
             var qs = q.Quality(result.RunId);

@@ -7,10 +7,6 @@ using Xunit;
 
 public class IngestionServiceTests
 {
-    private sealed record FakeEvent(string Name, DateTime Timestamp,
-        IReadOnlyDictionary<string, object?> Fields,
-        IReadOnlyDictionary<string, object?> Actions) : IXeEventData;
-
     private static (IXeEventData, string, long) Batch(string sql, long offset, string db = "Sales") =>
         (new FakeEvent("sql_batch_completed", new DateTime(2026, 1, 1),
             new Dictionary<string, object?> { ["batch_text"] = sql, ["duration"] = 1000L },
@@ -23,15 +19,15 @@ public class IngestionServiceTests
         try
         {
             using var project = DuckDbProject.Open(path);
-            var opts = new IngestionOptions(RedactionMode.Full, Array.Empty<FilterRule>(), BatchSize: 2);
+            var opts = new IngestionOptions(RedactionMode.Full, [], BatchSize: 2);
             var svc = new IngestionService(project, opts);
 
-            var events = new[] {
+            (IXeEventData, string, long)[] events = [
                 Batch("SELECT * FROM dbo.Users WHERE Id = 1", 0),
                 Batch("SELECT * FROM dbo.Users WHERE Id = 2", 1),     // same signature
                 (new FakeEvent("login", new DateTime(2026,1,1), new Dictionary<string,object?>(),
                     new Dictionary<string,object?>()), "s_0.xel", 2L), // unmapped
-            };
+            ];
 
             var result = svc.Ingest("logs/", events);
 
@@ -54,8 +50,8 @@ public class IngestionServiceTests
         {
             using var project = DuckDbProject.Open(path);
             var rule = new FilterRule("noise", "database_name", "eq", null, "tempdb", "ingest", "exclude", true);
-            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, new[] { rule }));
-            var result = svc.Ingest("logs/", new[] { Batch("SELECT 1", 0, db: "tempdb") });
+            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, [rule]));
+            var result = svc.Ingest("logs/", [Batch("SELECT 1", 0, db: "tempdb")]);
             Assert.Equal(1, result.Cleaned);
             Assert.Equal(0, result.Mapped);
         }

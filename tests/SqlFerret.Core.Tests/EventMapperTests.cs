@@ -4,10 +4,6 @@ using Xunit;
 
 public class EventMapperTests
 {
-    private sealed record FakeEvent(string Name, DateTime Timestamp,
-        IReadOnlyDictionary<string, object?> Fields,
-        IReadOnlyDictionary<string, object?> Actions) : IXeEventData;
-
     [Fact]
     public void Maps_rpc_completed_with_params_and_metrics()
     {

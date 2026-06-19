@@ -29,7 +29,7 @@ public class DuckDbProjectInsertTests
             var nq = new NormalizedQuery("exec dbo.p @a = ?", "hash1", "EXEC", "dbo.P", false);
             var row = new PreparedRow(ev, nq, [new PreparedParameter(0, "@a", "rpc_parameter", "int", "1", false, false, 0.9)]);
 
-            p.InsertBatch(run, new[] { row });
+            p.InsertBatch(run, [row]);
             p.FinishRun(run, read: 1, mapped: 1, unmapped: 0, cleaned: 0, tokenizeFailures: 0);
 
             using var c = p.Connection.CreateCommand();
