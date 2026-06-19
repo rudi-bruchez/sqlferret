@@ -28,6 +28,13 @@ public class DuckDbProjectInsertTests
             c.CommandText = "SELECT count(*) FROM execution_parameters"; Assert.Equal(1L, Convert.ToInt64(c.ExecuteScalar()));
             c.CommandText = "SELECT count(*) FROM normalized_queries"; Assert.Equal(1L, Convert.ToInt64(c.ExecuteScalar()));
             c.CommandText = "SELECT finished_at IS NOT NULL FROM ingestion_runs"; Assert.True(Convert.ToBoolean(c.ExecuteScalar()));
+
+            // Value assertions: verify column bindings by reading back actual values
+            c.CommandText = "SELECT duration_us FROM executions"; Assert.Equal(4000L, Convert.ToInt64(c.ExecuteScalar()));
+            c.CommandText = "SELECT cpu_time_us FROM executions"; var cpu = c.ExecuteScalar(); Assert.True(cpu is null or DBNull, $"Expected null for cpu_time_us, got: {cpu}");
+            c.CommandText = "SELECT normalized_hash FROM executions"; Assert.Equal("hash1", c.ExecuteScalar());
+            c.CommandText = "SELECT value_text FROM execution_parameters"; Assert.Equal("1", c.ExecuteScalar());
+            c.CommandText = "SELECT value_redacted FROM execution_parameters"; Assert.False(Convert.ToBoolean(c.ExecuteScalar()));
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
