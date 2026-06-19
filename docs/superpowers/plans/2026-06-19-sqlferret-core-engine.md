@@ -12,6 +12,7 @@
 
 - **Target framework:** `net10.0` for every project.
 - **KISS (spec §2):** no repository/unit-of-work/onion layering; no `IXxxService` interface unless a real second implementation exists; plain `record`/POCO DTOs; no AutoMapper/MediatR/CQRS. Aggregation lives in DuckDB SQL, not hand-built C#. The only abstraction introduced for testability is `IXeEventData` (Task 11), because the real XELite event and test fakes are two genuine implementations.
+- **Modern C# 14 / .NET 10 baseline (the `modern-csharp` skill):** primary constructors for stateful services; collection expressions (`[]`, spread) over `Array.Empty<T>()` / `new[]{…}` / `new List<T>()`; `record` (never tuples) for multi-field domain values; raw string literals (`"""`) for SQL; `required`/`init` on DTOs; switch/`is` pattern matching where it reads cleanly. Resist cleverness: no deeply nested patterns, explicit types when `var` would obscure. (The `field` keyword's main payoff — `INotifyPropertyChanged` view-models — lands in Plan 2's TUI, not here.)
 - **Durations/CPU stored in microseconds** everywhere in Core; formatting happens in hosts only.
 - **Secrets in `.env`** (DB credentials now, LLM keys later), referenced from config via `${ENV_VAR}`; never written into committed files. `.env` is gitignored; `.env.example` is committed.
 - **Normalizer version constant:** `QueryNormalizer.Version = 1`. Stored on both `ingestion_runs` and `normalized_queries`.
@@ -262,7 +263,7 @@ public record ExecutionEvent
     public string? QueryHash { get; init; }
     public string? QueryPlanHash { get; init; }
     public required string SqlTextRaw { get; init; }
-    public IReadOnlyList<RawParameter> Parameters { get; init; } = Array.Empty<RawParameter>();
+    public IReadOnlyList<RawParameter> Parameters { get; init; } = [];
     public required string XeFileName { get; init; }
     public long FileOffset { get; init; }
 }
@@ -739,25 +740,18 @@ namespace SqlFerret.Core.Parameters;
 
 public enum RedactionMode { Off, Hash, Masked, Full }
 
-public class RedactionPolicy
+public class RedactionPolicy(RedactionMode mode, IReadOnlyList<string>? sensitiveNameSubstrings = null)
 {
-    private static readonly string[] DefaultSensitive = { "password", "token", "secret", "email" };
-    private readonly RedactionMode _mode;
-    private readonly IReadOnlyList<string> _sensitive;
-
-    public RedactionPolicy(RedactionMode mode, IReadOnlyList<string>? sensitiveNameSubstrings = null)
-    {
-        _mode = mode;
-        _sensitive = sensitiveNameSubstrings ?? DefaultSensitive;
-    }
+    private static readonly string[] DefaultSensitive = ["password", "token", "secret", "email"];
+    private readonly IReadOnlyList<string> _sensitive = sensitiveNameSubstrings ?? DefaultSensitive;
 
     public (string storedValue, bool redacted) Apply(string? paramName, string valueText)
     {
         bool forced = paramName is not null &&
             _sensitive.Any(s => paramName.Contains(s, StringComparison.OrdinalIgnoreCase));
 
-        var mode = forced ? RedactionMode.Hash : _mode;
-        return mode switch
+        var effective = forced ? RedactionMode.Hash : mode;
+        return effective switch
         {
             RedactionMode.Off    => ("", true),
             RedactionMode.Full   => (valueText, false),
@@ -844,7 +838,7 @@ public static class ParameterExtractor
 
     public static IReadOnlyList<RawParameter> Extract(EventClass eventClass, string sqlText)
     {
-        if (string.IsNullOrWhiteSpace(sqlText)) return Array.Empty<RawParameter>();
+        if (string.IsNullOrWhiteSpace(sqlText)) return [];
 
         double confidence = sqlText.Contains("sp_executesql", StringComparison.OrdinalIgnoreCase) ? 0.7
                           : eventClass == EventClass.RpcCall ? 0.9 : 0.6;
@@ -1012,7 +1006,7 @@ public static class FilterCompiler
 
         string predicate = r.Op switch
         {
-            "in"  => $"{r.Field} IN ({string.Join(", ", (r.Values ?? Array.Empty<string>()).Select(Val))})",
+            "in"  => $"{r.Field} IN ({string.Join(", ", (r.Values ?? []).Select(Val))})",
             "eq"  => $"{r.Field} = {Val(r.Value!)}",
             "neq" => $"{r.Field} <> {Val(r.Value!)}",
             "gt"  => $"{r.Field} > {Val(r.Value!)}",
@@ -1374,8 +1368,7 @@ public static class EventMapper
         var sql = ExtractSql(ev, cls);
         if (sql is null) cls = EventClass.Unknown;
 
-        var parameters = sql is null ? Array.Empty<RawParameter>()
-            : (IReadOnlyList<RawParameter>)ParameterExtractor.Extract(cls, sql);
+        IReadOnlyList<RawParameter> parameters = sql is null ? [] : ParameterExtractor.Extract(cls, sql);
 
         return new ExecutionEvent
         {
@@ -1449,7 +1442,8 @@ rtk git add -A && rtk git commit -m "feat(core): event mapper + IXeEventData sea
 
 **Interfaces:**
 - Produces:
-  - `record PreparedRow(ExecutionEvent Event, SqlFerret.Core.Model.NormalizedQuery Normalized, IReadOnlyList<(int Ordinal, string? Name, string SourceKind, string? TypeGuess, string Value, bool Redacted, bool Truncated, double Confidence)> Parameters)`
+  - `record PreparedParameter(int Ordinal, string? Name, string SourceKind, string? TypeGuess, string Value, bool Redacted, bool Truncated, double Confidence)`
+  - `record PreparedRow(ExecutionEvent Event, SqlFerret.Core.Model.NormalizedQuery Normalized, IReadOnlyList<PreparedParameter> Parameters)`
   - `class DuckDbProject : IDisposable` with `static DuckDbProject Open(string path)` (creates file + schema if absent; opens otherwise) and `DuckDB.NET.Data.DuckDBConnection Connection { get; }`. Schema exactly the four tables from spec §4.
 
 - [ ] **Step 1: Write the failing test**
@@ -1494,11 +1488,14 @@ using SqlFerret.Core.Model;
 
 namespace SqlFerret.Core.Storage;
 
+public record PreparedParameter(
+    int Ordinal, string? Name, string SourceKind, string? TypeGuess,
+    string Value, bool Redacted, bool Truncated, double Confidence);
+
 public record PreparedRow(
     ExecutionEvent Event,
     NormalizedQuery Normalized,
-    IReadOnlyList<(int Ordinal, string? Name, string SourceKind, string? TypeGuess,
-                   string Value, bool Redacted, bool Truncated, double Confidence)> Parameters);
+    IReadOnlyList<PreparedParameter> Parameters);
 ```
 
 ```csharp
@@ -1603,7 +1600,7 @@ public class DuckDbProjectInsertTests
                 ObjectName="dbo.P", SqlTextRaw="exec dbo.P @a = 1", DatabaseName="Sales",
                 SessionId=5, DurationUs=4000, CapturedAt=new DateTime(2026,1,1), XeFileName="s_0.xel" };
             var nq = new NormalizedQuery("exec dbo.p @a = ?", "hash1", "EXEC", "dbo.P", false);
-            var row = new PreparedRow(ev, nq, new[] { (0,(string?)"@a","rpc_parameter",(string?)"int","1",false,false,0.9) });
+            var row = new PreparedRow(ev, nq, [new PreparedParameter(0, "@a", "rpc_parameter", "int", "1", false, false, 0.9)]);
 
             p.InsertBatch(run, new[] { row });
             p.FinishRun(run, read:1, mapped:1, unmapped:0, cleaned:0, tokenizeFailures:0);
@@ -1709,8 +1706,7 @@ private void UpsertSignature(DuckDB.NET.Data.DuckDBTransaction tx, PreparedRow r
     c.ExecuteNonQuery();
 }
 
-private void InsertParameter(DuckDB.NET.Data.DuckDBTransaction tx, long execId,
-    (int Ordinal, string? Name, string SourceKind, string? TypeGuess, string Value, bool Redacted, bool Truncated, double Confidence) p)
+private void InsertParameter(DuckDB.NET.Data.DuckDBTransaction tx, long execId, PreparedParameter p)
 {
     using var c = Connection.CreateCommand(); c.Transaction = tx;
     c.CommandText = "INSERT INTO execution_parameters VALUES ($id,$ord,$name,$sk,$tg,$val,$red,$trunc,$conf)";
@@ -1870,28 +1866,18 @@ using SqlFerret.Core.Storage;
 
 namespace SqlFerret.Core.Ingestion;
 
-public class IngestionService
+public class IngestionService(DuckDbProject project, IngestionOptions options)
 {
-    private readonly DuckDbProject _project;
-    private readonly IngestionOptions _options;
-    private readonly RedactionPolicy _redaction;
-    private readonly Func<ExecutionEvent, bool> _ingestKeep;
-
-    public IngestionService(DuckDbProject project, IngestionOptions options)
-    {
-        _project = project;
-        _options = options;
-        _redaction = new RedactionPolicy(options.Redaction);
-        _ingestKeep = FilterCompiler.ToIngestPredicate(options.Filters);
-    }
+    private readonly RedactionPolicy _redaction = new(options.Redaction);
+    private readonly Func<ExecutionEvent, bool> _ingestKeep = FilterCompiler.ToIngestPredicate(options.Filters);
 
     public IngestionResult Ingest(string sourcePath, IEnumerable<(IXeEventData ev, string fileName, long offset)> events)
     {
-        long runId = _project.BeginRun(sourcePath, filesCount: 1, bytesTotal: 0,
-            redactionPolicy: _options.Redaction.ToString().ToLowerInvariant());
+        long runId = project.BeginRun(sourcePath, filesCount: 1, bytesTotal: 0,
+            redactionPolicy: options.Redaction.ToString().ToLowerInvariant());
 
         long read = 0, mapped = 0, unmapped = 0, cleaned = 0, tokenizeFailures = 0;
-        var buffer = new List<PreparedRow>(_options.BatchSize);
+        var buffer = new List<PreparedRow>(options.BatchSize);
 
         foreach (var (ev, fileName, offset) in events)
         {
@@ -1906,22 +1892,22 @@ public class IngestionService
             buffer.Add(new PreparedRow(e, nq, RedactParams(e)));
             mapped++;
 
-            if (buffer.Count >= _options.BatchSize) { _project.InsertBatch(runId, buffer); buffer.Clear(); }
+            if (buffer.Count >= options.BatchSize) { project.InsertBatch(runId, buffer); buffer.Clear(); }
         }
-        if (buffer.Count > 0) _project.InsertBatch(runId, buffer);
+        if (buffer.Count > 0) project.InsertBatch(runId, buffer);
 
-        _project.FinishRun(runId, read, mapped, unmapped, cleaned, tokenizeFailures);
+        project.FinishRun(runId, read, mapped, unmapped, cleaned, tokenizeFailures);
         return new IngestionResult(runId, read, mapped, unmapped, cleaned, tokenizeFailures);
     }
 
-    private List<(int, string?, string, string?, string, bool, bool, double)> RedactParams(ExecutionEvent e)
+    private List<PreparedParameter> RedactParams(ExecutionEvent e)
     {
-        var list = new List<(int, string?, string, string?, string, bool, bool, double)>();
+        var list = new List<PreparedParameter>();
         foreach (var p in e.Parameters)
         {
+            if (options.Redaction == RedactionMode.Off) continue; // off → no parameter rows
             var (stored, redacted) = _redaction.Apply(p.Name, p.ValueText);
-            if (_options.Redaction == RedactionMode.Off) continue; // off → no parameter rows
-            list.Add((p.Ordinal, p.Name, p.SourceKind.ToString().ToLowerInvariant(),
+            list.Add(new PreparedParameter(p.Ordinal, p.Name, p.SourceKind.ToString().ToLowerInvariant(),
                       p.SqlTypeGuess, stored, redacted, false, p.ParseConfidence));
         }
         return list;
@@ -2193,15 +2179,12 @@ using SqlFerret.Core.Filtering;
 
 namespace SqlFerret.Core.Analysis;
 
-public class WorkloadQueries
+public class WorkloadQueries(DuckDBConnection conn)
 {
-    private static readonly HashSet<string> SortCols = new()
-    { "total_duration_us", "p95_duration_us", "max_duration_us", "avg_duration_us" };
-    private static readonly HashSet<string> DimFields = new()
-    { "database_name", "login_name", "client_hostname", "client_app_name" };
-
-    private readonly DuckDBConnection _conn;
-    public WorkloadQueries(DuckDBConnection conn) => _conn = conn;
+    private static readonly HashSet<string> SortCols =
+        ["total_duration_us", "p95_duration_us", "max_duration_us", "avg_duration_us"];
+    private static readonly HashSet<string> DimFields =
+        ["database_name", "login_name", "client_hostname", "client_app_name"];
 
     public IReadOnlyList<QueryStat> TopSlow(int limit, string sortColumn, IEnumerable<FilterRule> viewFilters)
     {
@@ -2215,7 +2198,7 @@ public class WorkloadQueries
     private IReadOnlyList<QueryStat> QueryStats(int limit, string orderBy, IEnumerable<FilterRule> viewFilters)
     {
         string where = FilterCompiler.ToWhereClause(viewFilters);
-        using var cmd = _conn.CreateCommand();
+        using var cmd = conn.CreateCommand();
         cmd.CommandText = $"""
           SELECT e.normalized_hash, n.statement_kind, n.primary_table, n.normalized_sql,
                  count(*) AS cnt,
@@ -2241,7 +2224,7 @@ public class WorkloadQueries
 
     public IReadOnlyList<Occurrence> Occurrences(string normalizedHash, int limit)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = conn.CreateCommand();
         cmd.CommandText = """
           SELECT execution_id, captured_at, database_name, login_name, duration_us, sql_text_raw
           FROM executions WHERE normalized_hash = $h ORDER BY captured_at LIMIT $l
@@ -2252,7 +2235,7 @@ public class WorkloadQueries
 
     public IReadOnlyList<Occurrence> SessionFlow(int sessionId, DateTime from, DateTime to)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = conn.CreateCommand();
         cmd.CommandText = """
           SELECT execution_id, captured_at, database_name, login_name, duration_us, sql_text_raw
           FROM executions WHERE session_id = $s AND captured_at BETWEEN $f AND $t ORDER BY captured_at
@@ -2263,7 +2246,7 @@ public class WorkloadQueries
 
     public IReadOnlyList<ParamImpact> ParameterImpact(string normalizedHash, string paramName)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = conn.CreateCommand();
         cmd.CommandText = """
           SELECT p.value_text, count(*) AS cnt, avg(e.duration_us),
                  quantile_cont(e.duration_us, 0.95), max(e.duration_us)
@@ -2283,7 +2266,7 @@ public class WorkloadQueries
     public IReadOnlyList<DimensionStat> Dimension(string field)
     {
         if (!DimFields.Contains(field)) throw new ArgumentException($"field not allowed: {field}");
-        using var cmd = _conn.CreateCommand();
+        using var cmd = conn.CreateCommand();
         cmd.CommandText = $"""
           SELECT COALESCE({field}, '(none)') AS v, count(*) AS cnt, sum(duration_us) AS total
           FROM executions GROUP BY v ORDER BY total DESC
@@ -2296,7 +2279,7 @@ public class WorkloadQueries
 
     public QualityStat Quality(long runId)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = conn.CreateCommand();
         cmd.CommandText = """
           SELECT events_read, events_mapped, events_unmapped, events_cleaned, tokenize_failures
           FROM ingestion_runs WHERE run_id = $r
@@ -2660,21 +2643,12 @@ using SqlFerret.Core.Replay;
 
 namespace SqlFerret.Core.Server;
 
-public class EstimatedPlanService
+public class EstimatedPlanService(string connectionString, string plansFolder)
 {
-    private readonly string _connectionString;
-    private readonly string _plansFolder;
-
-    public EstimatedPlanService(string connectionString, string plansFolder)
-    {
-        _connectionString = connectionString;
-        _plansFolder = plansFolder;
-    }
-
     public string Save(string planId, string showplanXml)
     {
-        Directory.CreateDirectory(_plansFolder);
-        var path = Path.Combine(_plansFolder, $"{planId}.sqlplan");
+        Directory.CreateDirectory(plansFolder);
+        var path = Path.Combine(plansFolder, $"{planId}.sqlplan");
         File.WriteAllText(path, showplanXml);
         return path;
     }
@@ -2683,7 +2657,7 @@ public class EstimatedPlanService
     {
         ReplayScript script = ReplayBuilder.Build(ev);
 
-        await using var conn = new SqlConnection(_connectionString);
+        await using var conn = new SqlConnection(connectionString);
         await conn.OpenAsync(ct);
 
         if (!string.IsNullOrWhiteSpace(ev.DatabaseName))
