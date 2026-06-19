@@ -60,4 +60,5 @@ sample/
 
 # SQLFerret-specific
 *.duckdb
-plans/
+# Root-anchored: the estimated-plan output folder only — must NOT match docs/superpowers/plans/
+/plans/
