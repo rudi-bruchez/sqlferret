@@ -12,16 +12,20 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
     private readonly RedactionPolicy _redaction = new(options.Redaction);
     private readonly Func<ExecutionEvent, bool> _ingestKeep = FilterCompiler.ToIngestPredicate(options.Filters);
 
-    public IngestionResult Ingest(string sourcePath, IEnumerable<(IXeEventData ev, string fileName, long offset)> events)
+    public IngestionResult Ingest(string sourcePath,
+        IEnumerable<(IXeEventData ev, string fileName, long offset)> events,
+        IProgress<IngestionProgress>? progress = null)
     {
         long runId = project.BeginRun(sourcePath, filesCount: 1, bytesTotal: 0,
             redactionPolicy: options.Redaction.ToString().ToLowerInvariant());
 
         long read = 0, mapped = 0, unmapped = 0, cleaned = 0, tokenizeFailures = 0;
+        string currentFile = "";
         var buffer = new List<PreparedRow>(options.BatchSize);
 
         foreach (var (ev, fileName, offset) in events)
         {
+            currentFile = fileName;
             read++;
             var e = EventMapper.Map(ev, fileName, offset);
             if (e.EventClass == EventClass.Unknown || string.IsNullOrEmpty(e.SqlTextRaw)) { unmapped++; continue; }
@@ -33,10 +37,15 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
             buffer.Add(new PreparedRow(e, nq, RedactParams(e)));
             mapped++;
 
-            if (buffer.Count >= options.BatchSize) { project.InsertBatch(runId, buffer); buffer.Clear(); }
+            if (buffer.Count >= options.BatchSize)
+            {
+                project.InsertBatch(runId, buffer); buffer.Clear();
+                progress?.Report(new IngestionProgress(read, mapped, unmapped, cleaned, tokenizeFailures, currentFile));
+            }
         }
         if (buffer.Count > 0) project.InsertBatch(runId, buffer);
 
+        progress?.Report(new IngestionProgress(read, mapped, unmapped, cleaned, tokenizeFailures, currentFile));
         project.FinishRun(runId, read, mapped, unmapped, cleaned, tokenizeFailures);
         return new IngestionResult(runId, read, mapped, unmapped, cleaned, tokenizeFailures);
     }
