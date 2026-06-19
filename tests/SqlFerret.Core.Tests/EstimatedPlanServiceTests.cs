@@ -14,6 +14,18 @@ public class EstimatedPlanServiceTests
         Assert.Equal("<ShowPlanXML/>", File.ReadAllText(path));
     }
 
+    [Theory]
+    [InlineData("../evil")]
+    [InlineData("..\\evil")]
+    [InlineData("/etc/passwd")]
+    [InlineData("sub/dir")]
+    public void Save_rejects_path_traversal_planId(string badId)
+    {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        var svc = new EstimatedPlanService(connectionString: "unused", plansFolder: dir);
+        Assert.Throws<ArgumentException>(() => svc.Save(badId, "<xml/>"));
+    }
+
     [SkippableFact]
     public async Task CaptureAsync_returns_sqlplan_path()
     {

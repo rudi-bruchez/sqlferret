@@ -19,6 +19,13 @@ public class EstimatedPlanService(string connectionString, string plansFolder)
     /// <returns>Absolute path to the written file.</returns>
     public string Save(string planId, string showplanXml)
     {
+        if (string.IsNullOrEmpty(planId)
+            || planId.Contains('/')
+            || planId.Contains('\\')
+            || planId.Contains("..")
+            || Path.GetFileName(planId) != planId)
+            throw new ArgumentException("Invalid planId: must be a bare file name component", nameof(planId));
+
         Directory.CreateDirectory(plansFolder);
         var path = Path.Combine(plansFolder, $"{planId}.sqlplan");
         File.WriteAllText(path, showplanXml);
@@ -63,6 +70,10 @@ public class EstimatedPlanService(string connectionString, string plansFolder)
                 xml.Append(reader.GetString(0));
         }
 
-        return Save(planId, xml.ToString());
+        var xmlString = xml.ToString();
+        if (string.IsNullOrWhiteSpace(xmlString))
+            throw new InvalidOperationException("No estimated plan returned (empty SHOWPLAN_XML result)");
+
+        return Save(planId, xmlString);
     }
 }
