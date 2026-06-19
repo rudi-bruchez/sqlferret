@@ -116,6 +116,17 @@ public sealed class MainWindow : Window
         _contentHost.Add(new Label { Text = $"(view {railIndex})" });
     }
 
-    // Stub — Task 10 replaces with the real drill-down view.
-    private void OpenDrillDown(QueryStat s) { }
+    private void OpenDrillDown(QueryStat signature)
+    {
+        var view = new DrillDownView(
+            new DrillDownPresenter(new WorkloadQueries(_ctx.Project.Connection), signature),
+            _ctx.Clipboard,
+            _ctx.Config.DurationUnit);
+        view.BackRequested += () => Show(0);   // back to Top Slow
+        view.Reload();
+        _contentHost.RemoveAll();
+        _contentHost.Title = "Drill-down";
+        _contentHost.Add(view);
+        view.SetFocus();
+    }
 }
