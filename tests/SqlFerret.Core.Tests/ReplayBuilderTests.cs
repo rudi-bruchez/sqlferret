@@ -27,4 +27,16 @@ public class ReplayBuilderTests
         Assert.Equal(ReplayKind.ExecProc, r.Kind);
         Assert.Equal("EXEC dbo.GetOrder @OrderId = 123, @Culture = N'fr-FR';", r.Sql);
     }
+
+    [Fact]
+    public void Rpc_with_sp_executesql_returns_raw_text_with_SpExecuteSql_kind()
+    {
+        var ev = new ExecutionEvent {
+            EventName="rpc_completed", EventClass=EventClass.RpcCall,
+            SqlTextRaw="exec sp_executesql N'SELECT 1'", XeFileName="a" };
+        var r = ReplayBuilder.Build(ev);
+        Assert.Equal(ReplayKind.SpExecuteSql, r.Kind);
+        Assert.Equal("exec sp_executesql N'SELECT 1'", r.Sql);
+        Assert.Equal(0.7, r.Confidence);
+    }
 }
