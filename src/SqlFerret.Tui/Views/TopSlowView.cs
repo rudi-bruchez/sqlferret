@@ -25,17 +25,26 @@ public sealed class TopSlowView : View
     private readonly IApplication _app;
     private readonly TableView _table;
     private IReadOnlyList<QueryStat> _rows = [];
+    private readonly UiState _ui;
+    private readonly string? _uiPath;
+    private static readonly string[] Catalog = ["kind", "signature", "count", "avg", "p95", "max", "total"];
+    private string[] _visible;
 
     public event Action<QueryStat>? DrillRequested;
 
     /// <summary>Number of data rows currently displayed (for tests and status bar).</summary>
     public int RowCount => _rows.Count;
 
-    public TopSlowView(TopSlowPresenter presenter, string durationUnit, IApplication app)
+    public TopSlowView(TopSlowPresenter presenter, string durationUnit, IApplication app, UiState? ui = null, string? uiPath = null)
     {
         _presenter = presenter;
         _unit = durationUnit;
         _app = app;
+        _ui = ui ?? new UiState();
+        _uiPath = uiPath;
+        _visible = _ui.Views.TryGetValue("topSlow", out var vl) && vl.Columns.Length > 0
+            ? vl.Columns
+            : Catalog;
 
         Width = Dim.Fill();
         Height = Dim.Fill();
@@ -53,7 +62,7 @@ public sealed class TopSlowView : View
         {
             X = Pos.Absolute(0),
             Y = Pos.AnchorEnd(1),
-            Text = "Enter=drill  s=sort  /=filter",
+            Text = "Enter=drill  s=sort  /=filter  C=columns",
         };
 
         Add(_table, hint);
@@ -65,25 +74,27 @@ public sealed class TopSlowView : View
     {
         _rows = _presenter.Load();
 
+        var selectors = new Dictionary<string, Func<QueryStat, object>>
+        {
+            ["kind"]      = s => s.StatementKind,
+            ["signature"] = s => Truncate(s.NormalizedSql),
+            ["count"]     = s => s.Count,
+            ["avg"]       = s => DisplayFormat.Duration((long)s.AvgDurationUs, _unit),
+            ["p95"]       = s => DisplayFormat.Duration(s.P95DurationUs, _unit),
+            ["max"]       = s => DisplayFormat.Duration(s.MaxDurationUs, _unit),
+            ["total"]     = s => DisplayFormat.Duration(s.TotalDurationUs, _unit),
+        };
+
         var dt = new DataTable();
-        dt.Columns.Add("kind");
-        dt.Columns.Add("signature");
-        dt.Columns.Add("count");
-        dt.Columns.Add("avg");
-        dt.Columns.Add("p95");
-        dt.Columns.Add("max");
-        dt.Columns.Add("total");
+        foreach (var col in _visible)
+            dt.Columns.Add(col);
 
         foreach (var s in _rows)
         {
-            dt.Rows.Add(
-                s.StatementKind,
-                Truncate(s.NormalizedSql),
-                s.Count,
-                DisplayFormat.Duration((long)s.AvgDurationUs, _unit),
-                DisplayFormat.Duration(s.P95DurationUs, _unit),
-                DisplayFormat.Duration(s.MaxDurationUs, _unit),
-                DisplayFormat.Duration(s.TotalDurationUs, _unit));
+            var row = dt.NewRow();
+            foreach (var col in _visible)
+                row[col] = selectors[col](s);
+            dt.Rows.Add(row);
         }
 
         _table.Table = new DataTableSource(dt);
@@ -102,6 +113,11 @@ public sealed class TopSlowView : View
             PromptFilter();
             key.Handled = true;
         }
+        else if (key == Keys.Cols)
+        {
+            ChooseColumns();
+            key.Handled = true;
+        }
         else if (key == Key.Enter)
         {
             int row = SelectedRow();
@@ -111,6 +127,16 @@ public sealed class TopSlowView : View
                 key.Handled = true;
             }
         }
+    }
+
+    private void ChooseColumns()
+    {
+        var chosen = ColumnChooser.Show(_app, Catalog, _visible);
+        if (chosen is null) return;
+        _visible = chosen.ToArray();
+        _ui.Views["topSlow"] = new UiState.ViewLayout(_visible, _presenter.SortColumn);
+        if (_uiPath is not null) _ui.Save(_uiPath);
+        Reload();
     }
 
     private int SelectedRow()

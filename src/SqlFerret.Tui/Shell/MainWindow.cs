@@ -103,7 +103,9 @@ public sealed class MainWindow : Window
             var view = new TopSlowView(
                 new TopSlowPresenter(_ctx.Project),
                 _ctx.Config.DurationUnit,
-                _ctx.App);
+                _ctx.App,
+                _ctx.Ui,
+                _ctx.UiStatePath);
             view.DrillRequested += OpenDrillDown;
             view.Reload();
             _contentHost.Title = "Top Slow";
