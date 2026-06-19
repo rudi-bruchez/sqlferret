@@ -57,3 +57,7 @@ TestResult.xml
 nunit-*.xml
 
 sample/
+
+# SQLFerret-specific
+*.duckdb
+plans/
