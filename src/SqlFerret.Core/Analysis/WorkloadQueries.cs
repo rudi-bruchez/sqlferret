@@ -1,6 +1,7 @@
 // src/SqlFerret.Core/Analysis/WorkloadQueries.cs
 using DuckDB.NET.Data;
 using SqlFerret.Core.Filtering;
+using SqlFerret.Core.Model;
 
 namespace SqlFerret.Core.Analysis;
 
@@ -141,6 +142,76 @@ public class WorkloadQueries(DuckDBConnection conn)
                 r.IsDBNull(4) ? null : r.GetInt64(4),
                 r.GetString(5)));
         return list;
+    }
+
+    public ExecutionEvent LoadExecution(long executionId)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+          SELECT event_name, event_class, object_name, database_name, login_name,
+                 client_hostname, client_app_name, session_id, captured_at, duration_us,
+                 sql_text_raw, xe_file_name, file_offset
+          FROM executions WHERE execution_id = $id
+          """;
+        Add(cmd, "$id", executionId);
+
+        string eventName, eventClassText, sqlRaw, xeFile;
+        string? objectName, db, login, host, app;
+        int? sessionId; long? durationUs; long fileOffset; DateTime capturedAt;
+        using (var r = cmd.ExecuteReader())
+        {
+            if (!r.Read()) throw new InvalidOperationException($"execution {executionId} not found");
+            eventName = r.GetString(0);
+            eventClassText = r.GetString(1);
+            objectName = r.IsDBNull(2) ? null : r.GetString(2);
+            db = r.IsDBNull(3) ? null : r.GetString(3);
+            login = r.IsDBNull(4) ? null : r.GetString(4);
+            host = r.IsDBNull(5) ? null : r.GetString(5);
+            app = r.IsDBNull(6) ? null : r.GetString(6);
+            sessionId = r.IsDBNull(7) ? null : r.GetInt32(7);
+            capturedAt = r.GetDateTime(8);
+            durationUs = r.IsDBNull(9) ? null : r.GetInt64(9);
+            sqlRaw = r.GetString(10);
+            xeFile = r.GetString(11);
+            fileOffset = r.GetInt64(12);
+        }
+
+        var parameters = new List<RawParameter>();
+        using (var pcmd = conn.CreateCommand())
+        {
+            pcmd.CommandText = """
+              SELECT ordinal, name, source_kind, sql_type_guess, value_text, parse_confidence
+              FROM execution_parameters WHERE execution_id = $id ORDER BY ordinal
+              """;
+            Add(pcmd, "$id", executionId);
+            using var pr = pcmd.ExecuteReader();
+            while (pr.Read())
+                parameters.Add(new RawParameter(
+                    pr.GetInt32(0),
+                    pr.IsDBNull(1) ? null : pr.GetString(1),
+                    Enum.Parse<ParameterSourceKind>(pr.GetString(2), ignoreCase: true),
+                    pr.IsDBNull(3) ? null : pr.GetString(3),
+                    pr.GetString(4),
+                    pr.GetDouble(5)));
+        }
+
+        return new ExecutionEvent
+        {
+            CapturedAt = capturedAt,
+            EventName = eventName,
+            EventClass = Enum.Parse<EventClass>(eventClassText, ignoreCase: true),
+            ObjectName = objectName,
+            DatabaseName = db,
+            LoginName = login,
+            ClientHostname = host,
+            ClientAppName = app,
+            SessionId = sessionId,
+            DurationUs = durationUs,
+            SqlTextRaw = sqlRaw,
+            Parameters = parameters,
+            XeFileName = xeFile,
+            FileOffset = fileOffset,
+        };
     }
 
     // DuckDB.NET 1.5.3: ParameterName must NOT include the leading '$';
