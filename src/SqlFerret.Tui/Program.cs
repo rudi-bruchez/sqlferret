@@ -1,26 +1,43 @@
 // src/SqlFerret.Tui/Program.cs
-// Adaptation note: Terminal.Gui v2 moved classes to sub-namespaces (App, ViewBase, Views, Input)
-// and prefers the instance-based IApplication model over the legacy static Application methods.
-// Key comparison and key.Handled work as-is; Key.WithCtrl exists.  Window is Terminal.Gui.Views.Window.
+// Terminal.Gui v2.4.6 instance-model entry-point.
+// Usage: SqlFerret.Tui <project.duckdb>
+using SqlFerret.Core.Config;
+using SqlFerret.Core.Storage;
+using SqlFerret.Tui.Clipboard;
+using SqlFerret.Tui.Shell;
 using Terminal.Gui.App;
-using Terminal.Gui.Input;
-using Terminal.Gui.Views;
 
-// Usage: SqlFerret.Tui <project.duckdb>   (project path required; mirrors the CLI's --project)
+DotEnv.Load(Path.Combine(Directory.GetCurrentDirectory(), ".env"));
+var config = SqlFerretConfig.Load(
+    Path.Combine(Directory.GetCurrentDirectory(), "sqlferret.config.json"));
+
 if (args.Length < 1)
 {
-    Console.Error.WriteLine("usage: SqlFerret.Tui <project.duckdb>");
+    Console.Error.WriteLine("Usage: sqlferret <path.duckdb>");
     return 1;
 }
+
+var uiStatePath = Path.Combine(AppContext.BaseDirectory, "uistate.json");
+var ui = UiState.Load(uiStatePath);
+
+using var project = DuckDbProject.Open(args[0]);
 
 using IApplication app = Application.Create();
 app.Init();
 
-var win = new Window { Title = "SQLFerret" };
-win.KeyDown += (_, key) =>
-{
-    if (key == Key.Q || key == Key.Q.WithCtrl) { app.RequestStop(); key.Handled = true; }
-};
+// Wire the native clipboard via TG 2.4.6 IApplication.Clipboard.TrySetClipboardData.
+// If the TG clipboard is unavailable, fall through to the file fallback (null delegate).
+Func<string, bool>? trySet = app.Clipboard is not null
+    ? app.Clipboard.TrySetClipboardData
+    : null;
+
+var clipboard = new NativeClipboard(new FileFallbackClipboard(Path.GetTempPath()), trySet);
+
+var ctx = new TuiContext(app, project, config, ui, clipboard, uiStatePath);
+var win = new MainWindow(ctx);
+
 app.Run(win);
 win.Dispose();
+
+ui.Save(uiStatePath);
 return 0;
