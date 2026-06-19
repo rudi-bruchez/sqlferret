@@ -33,6 +33,9 @@ public sealed class DrillDownView : View
     public event Action? BackRequested;
     public int OccurrenceCount => _rows.Count;
 
+    /// <summary>Programmatically selects a row by index. Intended for tests.</summary>
+    public void SelectRow(int row) => _occ.Value = new TableSelection(new Point(0, row));
+
     public DrillDownView(DrillDownPresenter presenter, IClipboard clipboard, string durationUnit)
     {
         _p = presenter;
@@ -132,7 +135,7 @@ public sealed class DrillDownView : View
     private int SelectedRow()
     {
         Point? cell = _occ.Value?.SelectedCell;
-        return cell.HasValue ? cell.Value.Y : 0;
+        return cell.HasValue ? cell.Value.Y : -1;
     }
 
     private string BuildHeaderText()

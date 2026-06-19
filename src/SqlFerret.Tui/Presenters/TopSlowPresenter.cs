@@ -27,5 +27,12 @@ public class TopSlowPresenter(DuckDbProject project)
         SortColumn = SortCycle[(idx + 1) % SortCycle.Length];
     }
 
+    /// <summary>Restores a saved sort column. No-op when <paramref name="sortColumn"/> is not in the valid cycle.</summary>
+    public void SetSortColumn(string? sortColumn)
+    {
+        if (sortColumn is not null && Array.IndexOf(SortCycle, sortColumn) >= 0)
+            SortColumn = sortColumn;
+    }
+
     public void SetTextFilter(string text) => TextFilter = text ?? "";
 }

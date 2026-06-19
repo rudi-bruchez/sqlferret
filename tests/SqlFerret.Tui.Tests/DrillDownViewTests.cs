@@ -32,6 +32,7 @@ public class DrillDownViewTests
         view.Reload();
         Assert.Equal(1, view.OccurrenceCount);
 
+        view.SelectRow(0);
         var res = view.CopySelectedReplay();
         Assert.True(File.Exists(res.FilePath));
         Assert.Contains("EXEC dbo.GetOrder", File.ReadAllText(res.FilePath!));
@@ -58,6 +59,7 @@ public class DrillDownViewTests
             "ms");
 
         view.Reload();
+        view.SelectRow(0);
         var res = view.CopySelectedReplay();
 
         Assert.Contains("WARNING: parameter values are redacted", res.Description);

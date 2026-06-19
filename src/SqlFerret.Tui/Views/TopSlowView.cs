@@ -42,9 +42,15 @@ public sealed class TopSlowView : View
         _app = app;
         _ui = ui ?? new UiState();
         _uiPath = uiPath;
-        _visible = _ui.Views.TryGetValue("topSlow", out var vl) && vl.Columns.Length > 0
-            ? vl.Columns
-            : Catalog;
+        if (_ui.Views.TryGetValue("topSlow", out var vl) && vl.Columns.Length > 0)
+        {
+            _visible = vl.Columns;
+            _presenter.SetSortColumn(vl.Sort);
+        }
+        else
+        {
+            _visible = Catalog;
+        }
 
         Width = Dim.Fill();
         Height = Dim.Fill();
@@ -105,6 +111,7 @@ public sealed class TopSlowView : View
         if (key == Keys.Sort)
         {
             _presenter.CycleSort();
+            SaveLayout();
             Reload();
             key.Handled = true;
         }
@@ -134,9 +141,14 @@ public sealed class TopSlowView : View
         var chosen = ColumnChooser.Show(_app, Catalog, _visible);
         if (chosen is null) return;
         _visible = chosen.ToArray();
+        SaveLayout();
+        Reload();
+    }
+
+    private void SaveLayout()
+    {
         _ui.Views["topSlow"] = new UiState.ViewLayout(_visible, _presenter.SortColumn);
         if (_uiPath is not null) _ui.Save(_uiPath);
-        Reload();
     }
 
     private int SelectedRow()

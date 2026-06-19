@@ -93,4 +93,28 @@ public class TopSlowPresenterTests : IDisposable
         presenter.CycleSort();
         Assert.Equal("total_duration_us", presenter.SortColumn);
     }
+
+    [Fact]
+    public void SetSortColumn_valid_value_updates_SortColumn()
+    {
+        var presenter = new TopSlowPresenter(_db.Project);
+        presenter.SetSortColumn("p95_duration_us");
+        Assert.Equal("p95_duration_us", presenter.SortColumn);
+    }
+
+    [Fact]
+    public void SetSortColumn_invalid_value_leaves_default()
+    {
+        var presenter = new TopSlowPresenter(_db.Project);
+        presenter.SetSortColumn("not_a_column");
+        Assert.Equal("total_duration_us", presenter.SortColumn);
+    }
+
+    [Fact]
+    public void SetSortColumn_null_leaves_default()
+    {
+        var presenter = new TopSlowPresenter(_db.Project);
+        presenter.SetSortColumn(null);
+        Assert.Equal("total_duration_us", presenter.SortColumn);
+    }
 }
