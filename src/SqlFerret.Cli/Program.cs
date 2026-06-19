@@ -24,44 +24,44 @@ if (args.Length == 0)
 switch (args[0])
 {
     case "import":
-    {
-        if (args.Length < 2)
         {
-            Console.Error.WriteLine("import: missing <path> argument");
-            return 1;
-        }
-        var path = args[1];
-        var project = Arg("--project", "workload.duckdb");
-        var redactionStr = Arg("--redaction", config.RedactionPolicy);
-        if (!Enum.TryParse<RedactionMode>(redactionStr, ignoreCase: true, out var redaction))
-        {
-            Console.Error.WriteLine($"import: invalid --redaction value '{redactionStr}'. Valid: off, hash, masked, full");
-            return 1;
-        }
+            if (args.Length < 2)
+            {
+                Console.Error.WriteLine("import: missing <path> argument");
+                return 1;
+            }
+            var path = args[1];
+            var project = Arg("--project", "workload.duckdb");
+            var redactionStr = Arg("--redaction", config.RedactionPolicy);
+            if (!Enum.TryParse<RedactionMode>(redactionStr, ignoreCase: true, out var redaction))
+            {
+                Console.Error.WriteLine($"import: invalid --redaction value '{redactionStr}'. Valid: off, hash, masked, full");
+                return 1;
+            }
 
-        IReadOnlyList<string> files;
-        try { (files, _) = XelSource.Resolve(path); }
-        catch (FileNotFoundException) { Console.Error.WriteLine($"import: path not found: {path}"); return 1; }
-        using var db = DuckDbProject.Open(project);
-        var svc = new IngestionService(db, new IngestionOptions(redaction, Array.Empty<FilterRule>()));
-        var result = svc.Ingest(path, new XelReader().Read(files));
-        Console.WriteLine(
-            $"run {result.RunId}: read={result.Read} mapped={result.Mapped} " +
-            $"unmapped={result.Unmapped} cleaned={result.Cleaned} tokenizeFailures={result.TokenizeFailures}");
-        return 0;
-    }
-    case "top-slow":
-    {
-        var project = Arg("--project", "workload.duckdb");
-        var limit = int.TryParse(Arg("--limit", "20"), out var l) ? l : 20;
-        using var db = DuckDbProject.Open(project);
-        var q = new WorkloadQueries(db.Connection);
-        var rows = q.TopSlow(limit, "total_duration_us", Array.Empty<FilterRule>());
-        foreach (var s in rows)
+            IReadOnlyList<string> files;
+            try { (files, _) = XelSource.Resolve(path); }
+            catch (FileNotFoundException) { Console.Error.WriteLine($"import: path not found: {path}"); return 1; }
+            using var db = DuckDbProject.Open(project);
+            var svc = new IngestionService(db, new IngestionOptions(redaction, Array.Empty<FilterRule>()));
+            var result = svc.Ingest(path, new XelReader().Read(files));
             Console.WriteLine(
-                $"{s.StatementKind,-7} {s.Count,8}  total={DisplayFormat.Duration(s.TotalDurationUs, config.DurationUnit),-12}  {Trim(s.NormalizedSql)}");
-        return 0;
-    }
+                $"run {result.RunId}: read={result.Read} mapped={result.Mapped} " +
+                $"unmapped={result.Unmapped} cleaned={result.Cleaned} tokenizeFailures={result.TokenizeFailures}");
+            return 0;
+        }
+    case "top-slow":
+        {
+            var project = Arg("--project", "workload.duckdb");
+            var limit = int.TryParse(Arg("--limit", "20"), out var l) ? l : 20;
+            using var db = DuckDbProject.Open(project);
+            var q = new WorkloadQueries(db.Connection);
+            var rows = q.TopSlow(limit, "total_duration_us", Array.Empty<FilterRule>());
+            foreach (var s in rows)
+                Console.WriteLine(
+                    $"{s.StatementKind,-7} {s.Count,8}  total={DisplayFormat.Duration(s.TotalDurationUs, config.DurationUnit),-12}  {Trim(s.NormalizedSql)}");
+            return 0;
+        }
     default:
         Console.Error.WriteLine($"unknown command: {args[0]}");
         return 1;

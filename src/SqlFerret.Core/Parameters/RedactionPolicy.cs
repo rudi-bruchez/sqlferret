@@ -17,9 +17,9 @@ public class RedactionPolicy(RedactionMode mode, IReadOnlyList<string>? sensitiv
         var effective = forced ? RedactionMode.Hash : mode;
         return effective switch
         {
-            RedactionMode.Off    => ("", true),
-            RedactionMode.Full   => (valueText, false),
-            RedactionMode.Hash   => (Fingerprint.Hash(valueText), true),
+            RedactionMode.Off => ("", true),
+            RedactionMode.Full => (valueText, false),
+            RedactionMode.Hash => (Fingerprint.Hash(valueText), true),
             RedactionMode.Masked => (new string('*', Math.Clamp(valueText.Length, 1, 8)), true),
             _ => throw new ArgumentOutOfRangeException(nameof(effective), effective, "Unhandled RedactionMode")
         };

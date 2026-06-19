@@ -1,5 +1,5 @@
-using SqlFerret.Core.Server;
 using SqlFerret.Core.Model;
+using SqlFerret.Core.Server;
 
 public class EstimatedPlanServiceTests
 {

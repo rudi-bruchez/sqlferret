@@ -33,14 +33,14 @@ public static class FilterCompiler
 
         string predicate = r.Op switch
         {
-            "in"  => $"{r.Field} IN ({string.Join(", ", (r.Values ?? []).Select(Val))})",
-            "eq"  => $"{r.Field} = {Val(r.Value!)}",
+            "in" => $"{r.Field} IN ({string.Join(", ", (r.Values ?? []).Select(Val))})",
+            "eq" => $"{r.Field} = {Val(r.Value!)}",
             "neq" => $"{r.Field} <> {Val(r.Value!)}",
-            "gt"  => $"{r.Field} > {Val(r.Value!)}",
-            "lt"  => $"{r.Field} < {Val(r.Value!)}",
+            "gt" => $"{r.Field} > {Val(r.Value!)}",
+            "lt" => $"{r.Field} < {Val(r.Value!)}",
             "gte" => $"{r.Field} >= {Val(r.Value!)}",
             "lte" => $"{r.Field} <= {Val(r.Value!)}",
-            "like"=> $"{r.Field} LIKE {Val(r.Value!)}",
+            "like" => $"{r.Field} LIKE {Val(r.Value!)}",
             _ => ""
         };
         if (predicate == "") return null;
@@ -51,10 +51,10 @@ public static class FilterCompiler
 
     private static string NegateInPlace(FilterRule r, string predicate) => r.Op switch
     {
-        "in"  => predicate.Replace(" IN (", " NOT IN ("),
-        "eq"  => predicate.Replace(" = ", " <> "),
-        "like"=> $"({predicate.Replace(" LIKE ", " NOT LIKE ")})",
-        _     => $"(NOT ({predicate}))"
+        "in" => predicate.Replace(" IN (", " NOT IN ("),
+        "eq" => predicate.Replace(" = ", " <> "),
+        "like" => $"({predicate.Replace(" LIKE ", " NOT LIKE ")})",
+        _ => $"(NOT ({predicate}))"
     };
 
     public static Func<ExecutionEvent, bool> ToIngestPredicate(IEnumerable<FilterRule> rules)
@@ -89,8 +89,8 @@ public static class FilterCompiler
         if (field is null) return false;
         return r.Op switch
         {
-            "in"  => r.Values?.Contains(field, StringComparer.OrdinalIgnoreCase) ?? false,
-            "eq"  => string.Equals(field, r.Value, StringComparison.OrdinalIgnoreCase),
+            "in" => r.Values?.Contains(field, StringComparer.OrdinalIgnoreCase) ?? false,
+            "eq" => string.Equals(field, r.Value, StringComparison.OrdinalIgnoreCase),
             "neq" => !string.Equals(field, r.Value, StringComparison.OrdinalIgnoreCase),
             _ => false
         };

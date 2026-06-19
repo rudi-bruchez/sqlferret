@@ -25,7 +25,7 @@ public class FilterCompilerTests
     public void Disabled_and_ingest_rules_ignored_in_where()
     {
         var disabled = new FilterRule("d", "database_name", "eq", null, "tempdb", "view", "exclude", false);
-        var ingest   = new FilterRule("i", "is_system", "eq", null, "true", "ingest", "exclude", true);
+        var ingest = new FilterRule("i", "is_system", "eq", null, "true", "ingest", "exclude", true);
         Assert.Equal("1=1", FilterCompiler.ToWhereClause(new[] { disabled, ingest }));
     }
 
@@ -34,8 +34,8 @@ public class FilterCompilerTests
     {
         var r = new FilterRule("noise", "object_name", "eq", null, "sp_reset_connection", "ingest", "exclude", true);
         var keep = FilterCompiler.ToIngestPredicate(new[] { r });
-        var dropped = new ExecutionEvent { EventName="rpc_completed", SqlTextRaw="x", XeFileName="a", ObjectName="sp_reset_connection" };
-        var kept    = new ExecutionEvent { EventName="rpc_completed", SqlTextRaw="x", XeFileName="a", ObjectName="dbo.Real" };
+        var dropped = new ExecutionEvent { EventName = "rpc_completed", SqlTextRaw = "x", XeFileName = "a", ObjectName = "sp_reset_connection" };
+        var kept = new ExecutionEvent { EventName = "rpc_completed", SqlTextRaw = "x", XeFileName = "a", ObjectName = "dbo.Real" };
         Assert.False(keep(dropped));
         Assert.True(keep(kept));
     }

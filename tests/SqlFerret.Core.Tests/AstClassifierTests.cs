@@ -6,10 +6,10 @@ public class AstClassifierTests
 {
     [Theory]
     [InlineData("SELECT * FROM dbo.Users WHERE Id = 1", "SELECT", "dbo.Users")]
-    [InlineData("INSERT INTO Orders (Id) VALUES (1)",    "INSERT", "Orders")]
-    [InlineData("UPDATE dbo.T SET x = 1 WHERE id = 2",   "UPDATE", "dbo.T")]
+    [InlineData("INSERT INTO Orders (Id) VALUES (1)", "INSERT", "Orders")]
+    [InlineData("UPDATE dbo.T SET x = 1 WHERE id = 2", "UPDATE", "dbo.T")]
     [InlineData("DELETE FROM Logs WHERE d < '2020-01-01'", "DELETE", "Logs")]
-    [InlineData("EXEC dbo.GetOrder @id = 1",             "EXEC",   "dbo.GetOrder")]
+    [InlineData("EXEC dbo.GetOrder @id = 1", "EXEC", "dbo.GetOrder")]
     public void Classifies_kind_and_table(string raw, string kind, string? table)
     {
         var (k, t) = AstClassifier.Classify(raw);

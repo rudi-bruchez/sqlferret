@@ -35,7 +35,7 @@ public static class ParameterExtractor
     private static string GuessType(string value)
     {
         if (value.StartsWith("N'")) return "nvarchar";
-        if (value.StartsWith("'"))  return "varchar";
+        if (value.StartsWith("'")) return "varchar";
         if (long.TryParse(value, out _)) return "int";
         if (decimal.TryParse(value, out _)) return "decimal";
         return "unknown";

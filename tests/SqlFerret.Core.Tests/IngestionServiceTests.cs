@@ -12,9 +12,9 @@ public class IngestionServiceTests
         IReadOnlyDictionary<string, object?> Actions) : IXeEventData;
 
     private static (IXeEventData, string, long) Batch(string sql, long offset, string db = "Sales") =>
-        (new FakeEvent("sql_batch_completed", new DateTime(2026,1,1),
-            new Dictionary<string, object?> { ["batch_text"]=sql, ["duration"]=1000L },
-            new Dictionary<string, object?> { ["database_name"]=db, ["session_id"]=1 }), "s_0.xel", offset);
+        (new FakeEvent("sql_batch_completed", new DateTime(2026, 1, 1),
+            new Dictionary<string, object?> { ["batch_text"] = sql, ["duration"] = 1000L },
+            new Dictionary<string, object?> { ["database_name"] = db, ["session_id"] = 1 }), "s_0.xel", offset);
 
     [Fact]
     public void Ingests_maps_normalizes_and_counts()
@@ -53,9 +53,9 @@ public class IngestionServiceTests
         try
         {
             using var project = DuckDbProject.Open(path);
-            var rule = new FilterRule("noise","database_name","eq",null,"tempdb","ingest","exclude",true);
-            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, new[]{rule}));
-            var result = svc.Ingest("logs/", new[] { Batch("SELECT 1", 0, db:"tempdb") });
+            var rule = new FilterRule("noise", "database_name", "eq", null, "tempdb", "ingest", "exclude", true);
+            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, new[] { rule }));
+            var result = svc.Ingest("logs/", new[] { Batch("SELECT 1", 0, db: "tempdb") });
             Assert.Equal(1, result.Cleaned);
             Assert.Equal(0, result.Mapped);
         }

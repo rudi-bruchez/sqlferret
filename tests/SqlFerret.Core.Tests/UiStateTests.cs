@@ -12,8 +12,8 @@ public class UiStateTests
         {
             var state = UiState.Load(path); // missing → empty
             Assert.Empty(state.Filters);
-            state.Filters.Add(new FilterRule("noise","object_name","eq",null,"sp_reset_connection","ingest","exclude",true));
-            state.Views["topSlow"] = new UiState.ViewLayout(new[]{"kind","signature","total"}, "total_desc");
+            state.Filters.Add(new FilterRule("noise", "object_name", "eq", null, "sp_reset_connection", "ingest", "exclude", true));
+            state.Views["topSlow"] = new UiState.ViewLayout(new[] { "kind", "signature", "total" }, "total_desc");
             state.Save(path);
 
             var reloaded = UiState.Load(path);

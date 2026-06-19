@@ -13,9 +13,9 @@ public class WorkloadQueriesTests
         IReadOnlyDictionary<string, object?> Actions) : IXeEventData;
 
     private static (IXeEventData, string, long) Batch(string sql, long dur, long offset, string db = "Sales", int sessionId = 1) =>
-        (new FakeEvent("sql_batch_completed", new DateTime(2026,1,1,0,0,(int)(offset%60)),
-            new Dictionary<string, object?> { ["batch_text"]=sql, ["duration"]=dur },
-            new Dictionary<string, object?> { ["database_name"]=db, ["session_id"]=sessionId }), "s_0.xel", offset);
+        (new FakeEvent("sql_batch_completed", new DateTime(2026, 1, 1, 0, 0, (int)(offset % 60)),
+            new Dictionary<string, object?> { ["batch_text"] = sql, ["duration"] = dur },
+            new Dictionary<string, object?> { ["database_name"] = db, ["session_id"] = sessionId }), "s_0.xel", offset);
 
     private static DuckDbProject CreateAndIngest(out IngestionResult result, out string duckdbPath,
         params (IXeEventData, string, long)[] events)
@@ -144,7 +144,7 @@ public class WorkloadQueriesTests
             });
 
             var q = new WorkloadQueries(project.Connection);
-            var flow = q.SessionFlow(42, new DateTime(2026,1,1), new DateTime(2026,1,2));
+            var flow = q.SessionFlow(42, new DateTime(2026, 1, 1), new DateTime(2026, 1, 2));
 
             Assert.Equal(2, flow.Count);
             // Should be ordered by captured_at
@@ -182,7 +182,7 @@ public class WorkloadQueriesTests
             if (impact.Count > 1)
             {
                 for (int i = 0; i < impact.Count - 1; i++)
-                    Assert.True(impact[i].AvgDurationUs >= impact[i+1].AvgDurationUs);
+                    Assert.True(impact[i].AvgDurationUs >= impact[i + 1].AvgDurationUs);
             }
         }
         finally { if (File.Exists(path)) File.Delete(path); }

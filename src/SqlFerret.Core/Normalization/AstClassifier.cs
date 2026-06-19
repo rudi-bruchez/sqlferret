@@ -27,11 +27,11 @@ public static class AstClassifier
         public string? Kind { get; private set; }
         public string? PrimaryTable { get; private set; }
 
-        public override void Visit(SelectStatement node)  => Set("SELECT", FirstTable(node));
-        public override void Visit(InsertStatement node)   => Set("INSERT", NamedTarget(node.InsertSpecification?.Target));
-        public override void Visit(UpdateStatement node)   => Set("UPDATE", NamedTarget(node.UpdateSpecification?.Target));
-        public override void Visit(DeleteStatement node)   => Set("DELETE", NamedTarget(node.DeleteSpecification?.Target));
-        public override void Visit(ExecuteStatement node)  => Set("EXEC", ProcName(node));
+        public override void Visit(SelectStatement node) => Set("SELECT", FirstTable(node));
+        public override void Visit(InsertStatement node) => Set("INSERT", NamedTarget(node.InsertSpecification?.Target));
+        public override void Visit(UpdateStatement node) => Set("UPDATE", NamedTarget(node.UpdateSpecification?.Target));
+        public override void Visit(DeleteStatement node) => Set("DELETE", NamedTarget(node.DeleteSpecification?.Target));
+        public override void Visit(ExecuteStatement node) => Set("EXEC", ProcName(node));
 
         private void Set(string kind, string? table)
         {
