@@ -9,9 +9,12 @@
 //   - Pos.AnchorEnd(n) for bottom anchor
 //   - lv.ValueChanged: EventHandler<ValueChangedEventArgs<int?>>
 using System.Collections.ObjectModel;
+using SqlFerret.Core.Analysis;
 using SqlFerret.Core.Config;
 using SqlFerret.Core.Storage;
 using SqlFerret.Tui.Clipboard;
+using SqlFerret.Tui.Presenters;
+using SqlFerret.Tui.Views;
 using Terminal.Gui.App;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
@@ -88,11 +91,31 @@ public sealed class MainWindow : Window
 
     /// <summary>
     /// Swaps the content host to display the view at <paramref name="railIndex"/>.
-    /// Tasks 9 &amp; 11 will replace the placeholder Label with real views.
+    /// Task 11 will replace the Import placeholder with a real view.
     /// </summary>
     public void Show(int railIndex)
     {
         _contentHost.RemoveAll();
+
+        if (railIndex == 0)
+        {
+            // Top Slow view — bound to TopSlowPresenter
+            var view = new TopSlowView(
+                new TopSlowPresenter(_ctx.Project),
+                _ctx.Config.DurationUnit,
+                _ctx.App);
+            view.DrillRequested += OpenDrillDown;
+            view.Reload();
+            _contentHost.Title = "Top Slow";
+            _contentHost.Add(view);
+            view.SetFocus();
+            return;
+        }
+
+        _contentHost.Title = "Content";
         _contentHost.Add(new Label { Text = $"(view {railIndex})" });
     }
+
+    // Stub — Task 10 replaces with the real drill-down view.
+    private void OpenDrillDown(QueryStat s) { }
 }
