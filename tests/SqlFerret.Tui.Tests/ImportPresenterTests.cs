@@ -2,11 +2,11 @@ using SqlFerret.Core.Ingestion;
 using SqlFerret.Core.Parameters;
 using SqlFerret.Core.Storage;
 using SqlFerret.Tui.Presenters;
-using Xunit;
 
 public class ImportPresenterTests
 {
-    // Walk up from the test bin dir to find the gitignored sample/ folder of real .xel traces.
+    // Walk up from the test bin dir to find the gitignored sample/ folder of .xel traces.
+    // Uses the smallest .xel overall — the presenter just needs Read > 0 + progress; a workload trace is not required.
     private static string? FindSampleFile()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
@@ -15,8 +15,8 @@ public class ImportPresenterTests
             var sample = Path.Combine(dir.FullName, "sample");
             if (Directory.Exists(sample))
             {
-                var perf = Directory.GetFiles(sample, "performances_*.xel");
-                if (perf.Length > 0) return perf.OrderBy(f => new FileInfo(f).Length).First();
+                var allXel = Directory.GetFiles(sample, "*.xel");
+                if (allXel.Length > 0) return allXel.OrderBy(f => new FileInfo(f).Length).FirstOrDefault();
             }
             dir = dir.Parent;
         }
@@ -27,7 +27,7 @@ public class ImportPresenterTests
     public async Task RunAsync_imports_real_sample_and_reports_progress()
     {
         var file = FindSampleFile();
-        Skip.If(file is null, "sample/ folder with a performances_*.xel trace not present");
+        Skip.If(file is null, "sample/ folder with a .xel trace not present");
 
         var path = Path.Combine(Path.GetTempPath(), $"sf_{Guid.NewGuid():N}.duckdb");
         try
