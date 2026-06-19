@@ -4,6 +4,13 @@ using SqlFerret.Core.Ingestion;
 using SqlFerret.Core.Parameters;
 using SqlFerret.Core.Storage;
 
+public sealed class SeededProject(DuckDbProject project, string path) : IDisposable
+{
+    public DuckDbProject Project => project;
+    public DuckDB.NET.Data.DuckDBConnection Connection => project.Connection;
+    public void Dispose() { project.Dispose(); try { File.Delete(path); } catch { /* best-effort */ } }
+}
+
 public static class TestProject
 {
     private sealed record FakeEvent(
@@ -14,41 +21,42 @@ public static class TestProject
 
     /// <summary>
     /// Opens a temp DuckDB, ingests the supplied rows via IngestionService with
-    /// RedactionMode.Full, and returns the open DuckDbProject (caller disposes).
+    /// RedactionMode.Full, and returns a <see cref="SeededProject"/> (caller disposes).
     /// </summary>
     /// <param name="rows">
-    /// Each tuple: (eventName, sql, durationUs, isRpc).
-    /// eventName "sql_batch_completed" → sql in batch_text field.
-    /// eventName "rpc_completed"        → sql in statement field + object_name populated.
+    /// Each tuple: (name, sql, objectName, durationUs).
+    /// name containing "batch" → sql in batch_text field.
+    /// otherwise (rpc/statement) → sql in statement field; objectName sets object_name.
     /// </param>
-    public static DuckDbProject SeedFrom(
-        IEnumerable<(string eventName, string sql, long durationUs, bool isRpc)> rows)
+    public static SeededProject SeedFrom(
+        IEnumerable<(string name, string sql, string? objectName, long durationUs)> rows)
     {
         var path = Path.Combine(Path.GetTempPath(), $"sf_tui_{Guid.NewGuid():N}.duckdb");
         var project = DuckDbProject.Open(path);
 
-        var events = rows.Select((r, i) => BuildEvent(r.eventName, r.sql, r.durationUs, r.isRpc, i)).ToList();
+        var events = rows.Select((r, i) => BuildEvent(r.name, r.sql, r.objectName, r.durationUs, i)).ToList();
 
         var svc = new IngestionService(project,
             new IngestionOptions(RedactionMode.Full, Array.Empty<FilterRule>()));
 
         svc.Ingest("test/", events);
 
-        return project;
+        return new SeededProject(project, path);
     }
 
     private static (IXeEventData, string, long) BuildEvent(
-        string eventName, string sql, long durationUs, bool isRpc, int index)
+        string eventName, string sql, string? objectName, long durationUs, int index)
     {
         var fields = new Dictionary<string, object?>();
-        if (isRpc || eventName.Contains("rpc", StringComparison.OrdinalIgnoreCase))
+        if (eventName.Contains("batch", StringComparison.OrdinalIgnoreCase))
         {
-            fields["statement"] = sql;
-            fields["object_name"] = sql.Split(' ').Skip(1).FirstOrDefault() ?? "dbo.Proc";
+            fields["batch_text"] = sql;
         }
         else
         {
-            fields["batch_text"] = sql;
+            fields["statement"] = sql;
+            if (objectName is not null)
+                fields["object_name"] = objectName;
         }
         fields["duration"] = durationUs;
 
