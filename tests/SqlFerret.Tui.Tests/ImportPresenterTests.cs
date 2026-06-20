@@ -16,18 +16,18 @@ public class ImportPresenterTests
         {
             using var db = DuckDbProject.Open(path);
             var presenter = new ImportPresenter(db);
-            var ticks = new List<IngestionProgress>();
-            IProgress<IngestionProgress> sync = new ListProgress(ticks.Add);
+            var ticks = new List<ImportProgress>();
+            IProgress<ImportProgress> sync = new ListProgress(ticks.Add);
 
             var result = await presenter.RunAsync(file!, RedactionMode.Masked, sync, CancellationToken.None);
 
             Assert.True(result.Read > 0);
             Assert.NotEmpty(ticks);
-            Assert.Equal(result.Read, ticks[^1].Read);
+            Assert.Equal(1.0, ticks[^1].OverallFraction, 3);   // reaches 100% at the end
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 
-    private sealed class ListProgress(Action<IngestionProgress> a) : IProgress<IngestionProgress>
-    { public void Report(IngestionProgress value) => a(value); }
+    private sealed class ListProgress(Action<ImportProgress> a) : IProgress<ImportProgress>
+    { public void Report(ImportProgress value) => a(value); }
 }
