@@ -39,12 +39,24 @@ switch (args[0])
                 return 1;
             }
 
-            IReadOnlyList<string> files;
-            try { (files, _) = XelSource.Resolve(path); }
-            catch (FileNotFoundException) { Console.Error.WriteLine($"import: path not found: {path}"); return 1; }
             using var db = DuckDbProject.Open(project);
-            var svc = new IngestionService(db, new IngestionOptions(redaction, Array.Empty<FilterRule>()));
-            var result = svc.Ingest(path, new XelReader().Read(files));
+            var options = new IngestionOptions(redaction, Array.Empty<FilterRule>());
+
+            // Live in-place gauge on stderr (kept off stdout so the summary stays clean and
+            // pipe-friendly). Synchronous IProgress so carriage-return updates stay ordered.
+            var showGauge = !Console.IsErrorRedirected;
+            var progress = new SyncProgress<ImportProgress>(p =>
+            {
+                if (showGauge)
+                    Console.Error.Write("\r" + ImportProgressText.Render(p).PadRight(100));
+            });
+
+            IngestionResult result;
+            try { result = ImportRunner.Run(db, options, path, progress); }
+            catch (FileNotFoundException) { Console.Error.WriteLine($"import: path not found: {path}"); return 1; }
+
+            if (showGauge) Console.Error.WriteLine();   // terminate the in-place line
+
             Console.WriteLine(
                 $"run {result.RunId}: read={result.Read} mapped={result.Mapped} " +
                 $"unmapped={result.Unmapped} cleaned={result.Cleaned} tokenizeFailures={result.TokenizeFailures}");
@@ -68,3 +80,8 @@ switch (args[0])
 }
 
 static string Trim(string s) => s.Length <= 80 ? s : s[..77] + "...";
+
+file sealed class SyncProgress<T>(Action<T> onReport) : IProgress<T>
+{
+    public void Report(T value) => onReport(value);
+}
