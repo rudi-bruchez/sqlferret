@@ -33,4 +33,13 @@ public class ImportProgressTextTests
         var p = new ImportProgress(0, 0, "", 0, 0, 0, 0, 0, 0, 0);
         Assert.StartsWith("  file 0%  overall 0%", ImportProgressText.Render(p));
     }
+
+    [Fact]
+    public void Render_with_zero_filecount_omits_header_even_when_currentfile_set()
+    {
+        var p = new ImportProgress(0, 0, "startup.xel", 0, 0, 0, 0, 0, 0, 0);
+        var line = ImportProgressText.Render(p);
+        Assert.StartsWith("  file 0%  overall 0%", line);
+        Assert.DoesNotContain("startup.xel", line);
+    }
 }

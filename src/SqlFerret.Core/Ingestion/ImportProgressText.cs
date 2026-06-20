@@ -10,7 +10,7 @@ public static class ImportProgressText
 {
     public static string Render(ImportProgress p)
     {
-        string head = p.FileCount > 0 ? $"[{p.FileIndex}/{p.FileCount}] {p.CurrentFile}" : p.CurrentFile;
+        string head = p.FileCount > 0 ? $"[{p.FileIndex}/{p.FileCount}] {p.CurrentFile}" : "";
         return $"{head}  file {Pct(p.FileFraction)}%  overall {Pct(p.OverallFraction)}%  " +
                $"read={Abbrev(p.Read)} mapped={Abbrev(p.Mapped)} unmapped={Abbrev(p.Unmapped)} " +
                $"cleaned={Abbrev(p.Cleaned)} failures={Abbrev(p.TokenizeFailures)}";
