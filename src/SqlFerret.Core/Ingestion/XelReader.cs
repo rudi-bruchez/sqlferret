@@ -12,7 +12,9 @@ public class XelReader
     /// this is a documented surrogate for resume/dedup).
     /// </summary>
     public IEnumerable<(IXeEventData ev, string fileName, long offset)> Read(
-        IReadOnlyList<string> files)
+        IReadOnlyList<string> files,
+        Action<string, long>? onRead = null,
+        Action<string, long>? onFileComplete = null)
     {
         foreach (var file in files)
         {
@@ -31,9 +33,12 @@ public class XelReader
                 xevent =>
                 {
                     collected.Add(new XeEventDataAdapter(xevent));
+                    onRead?.Invoke(name, collected.Count);   // live read-phase progress
                     return Task.CompletedTask;
                 },
                 CancellationToken.None).GetAwaiter().GetResult();
+
+            onFileComplete?.Invoke(name, collected.Count);   // exact count for calibration
 
             foreach (var ev in collected)
                 yield return (ev, name, ordinal++);
