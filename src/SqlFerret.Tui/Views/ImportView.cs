@@ -124,14 +124,11 @@ public sealed class ImportView : View
 
         var redaction = _redaction.Value ?? RedactionMode.Masked;
 
-        var progress = new Progress<IngestionProgress>(p =>
+        var progress = new Progress<ImportProgress>(p =>
         {
             try
             {
-                _app.Invoke(() =>
-                    _progress.Text =
-                        $"read={p.Read} mapped={p.Mapped} unmapped={p.Unmapped} " +
-                        $"cleaned={p.Cleaned} failures={p.TokenizeFailures}  [{p.CurrentFile}]");
+                _app.Invoke(() => _progress.Text = ImportProgressText.Render(p));
             }
             catch
             {

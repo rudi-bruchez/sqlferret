@@ -7,14 +7,12 @@ namespace SqlFerret.Tui.Presenters;
 public sealed class ImportPresenter(DuckDbProject project)
 {
     public Task<IngestionResult> RunAsync(
-        string path, RedactionMode redaction, IProgress<IngestionProgress> progress, CancellationToken ct)
+        string path, RedactionMode redaction, IProgress<ImportProgress> progress, CancellationToken ct)
     {
         return Task.Run(() =>
         {
-            var (files, _) = XelSource.Resolve(path);           // throws FileNotFoundException for a bad path
-            var events = new XelReader().Read(files);
-            var svc = new IngestionService(project, new IngestionOptions(redaction, []));
-            return svc.Ingest(path, events, progress);
+            var options = new IngestionOptions(redaction, []);
+            return ImportRunner.Run(project, options, path, progress);   // throws FileNotFoundException for a bad path
         }, ct);
     }
 }

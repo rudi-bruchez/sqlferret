@@ -55,4 +55,28 @@ public class XelReaderTests
                 e.ev.Name.Contains("rpc", StringComparison.OrdinalIgnoreCase));
         }
     }
+
+    [SkippableFact]
+    public void Read_invokes_progress_callbacks_per_event_and_on_file_complete()
+    {
+        var sampleDir = FindSampleDir();
+        Skip.If(sampleDir is null, "sample/ folder not present (real .xel traces are gitignored / not on CI)");
+
+        var chosen = Directory.GetFiles(sampleDir!, "*.xel")
+            .Select(f => new FileInfo(f)).OrderBy(f => f.Length).First();
+
+        long lastRead = 0; int readCalls = 0;
+        long completeCount = -1; int completeCalls = 0;
+
+        var events = new XelReader().Read(
+            [chosen.FullName],
+            onRead: (_, n) => { lastRead = n; readCalls++; },
+            onFileComplete: (_, n) => { completeCount = n; completeCalls++; }).ToList();
+
+        Assert.NotEmpty(events);
+        Assert.True(readCalls > 0, "onRead must fire at least once");
+        Assert.Equal(1, completeCalls);                  // exactly one file completed
+        Assert.Equal(events.Count, completeCount);       // exact count matches yielded events
+        Assert.Equal(events.Count, lastRead);            // last running count == total
+    }
 }
