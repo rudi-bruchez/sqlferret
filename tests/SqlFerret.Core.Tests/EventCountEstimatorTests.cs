@@ -33,4 +33,16 @@ public class EventCountEstimatorTests
         est.Observe(exactEvents: 0, fileBytes: 0);          // no-op, must not throw
         Assert.Equal(15, est.EstimateEvents(15_000));       // ratio unchanged
     }
+
+    [Fact]
+    public void Observe_blends_across_files_using_cumulative_totals_not_replacement()
+    {
+        var est = new EventCountEstimator(seedBytesPerEvent: 1000);
+        est.Observe(exactEvents: 10, fileBytes: 30_000);    // 3000 B/event
+        est.Observe(exactEvents: 30, fileBytes: 30_000);    // this file alone: 1000 B/event
+
+        // Cumulative: 40 events over 60_000 bytes => 1500 B/event => 15_000 / 1500 = 10.
+        // A replacement model would use only the last file (1000 B/event) and give 15.
+        Assert.Equal(10, est.EstimateEvents(15_000));
+    }
 }
