@@ -75,6 +75,9 @@ public sealed class ImportProgressTracker : IProgress<IngestionProgress>
             _dispFileFrac = 1.0;
             _dispOverallFrac = Overall(_completedBytes);
         }
+        _lastFilePct = Pct(_dispFileFrac);
+        _lastOverallPct = Pct(_dispOverallFrac);
+        _lastIndex = _dispIndex;
         Emit();
     }
 

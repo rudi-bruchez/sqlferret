@@ -75,6 +75,22 @@ public class ImportProgressTrackerTests
         Assert.Equal(1, ticks[^1].TokenizeFailures);
     }
 
+    [Fact]
+    public void File_complete_updates_throttle_state_for_subsequent_reads()
+    {
+        var (t, ticks) = Make(("a.xel", 100_000));   // est = 100 events
+        t.OnRead("a.xel", 50);                       // 50%, 50% overall
+        t.OnFileComplete("a.xel", 100);              // 100%, 100% overall
+        Assert.Equal(1.0, ticks[^1].FileFraction, 3);
+        Assert.Equal(1.0, ticks[^1].OverallFraction, 3);
+
+        int afterComplete = ticks.Count;
+        // A different read percent must emit a new tick (proving throttle state is live).
+        t.OnRead("a.xel", 50);                       // Again 50% on same file
+        Assert.True(ticks.Count > afterComplete, "Expected new tick after OnFileComplete throttle update");
+        Assert.Equal(0.5, ticks[^1].FileFraction, 3);
+    }
+
     private sealed class ListProgress(Action<ImportProgress> a) : IProgress<ImportProgress>
     { public void Report(ImportProgress value) => a(value); }
 }
