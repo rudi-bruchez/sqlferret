@@ -41,6 +41,49 @@ public class BlockingIngestionTests
     }
 
     [Fact]
+    public void InsertDeadlockBatch_reopen_and_append_no_pk_collision()
+    {
+        var path = TempDb();
+        try
+        {
+            // Session 1: insert one blocking report and one deadlock report
+            using (var db = DuckDbProject.Open(path))
+            {
+                long runId = db.BeginRun("logs/", 1, 0, "masked");
+                var report = new BlockingReport(new DateTime(2026, 2, 24), 1, 5,
+                    Proc(201, WaitResourceType.Key, 1_000_000L, "exec dbo.A"),
+                    Proc(118, WaitResourceType.Other, null, "update dbo.B"));
+                var prepared = new PreparedBlockingReport(report,
+                    new PreparedBlockingProcess(report.Blocked, null, "exec dbo.A"),
+                    new PreparedBlockingProcess(report.Blocking, null, "update dbo.B"));
+                db.InsertBlockingBatch(runId, [prepared]);
+
+                var deadlock1 = new DeadlockReport(new DateTime(2026, 2, 24), [201], [201, 118], "<deadlock/>");
+                db.InsertDeadlockBatch(runId, [deadlock1]);
+            }
+
+            // Session 2: reopen the SAME project file and insert another deadlock
+            using (var db = DuckDbProject.Open(path))
+            {
+                long runId = db.BeginRun("logs/", 1, 0, "masked");
+                var deadlock2 = new DeadlockReport(new DateTime(2026, 2, 25), [301], [301, 400], "<deadlock2/>");
+                db.InsertDeadlockBatch(runId, [deadlock2]); // must NOT throw PK collision
+            }
+
+            // Verify: 2 distinct deadlock_reports
+            using (var db = DuckDbProject.Open(path))
+            {
+                using var c = db.Connection.CreateCommand();
+                c.CommandText = "SELECT count(*) FROM deadlock_reports";
+                Assert.Equal(2L, Convert.ToInt64(c.ExecuteScalar()));
+                c.CommandText = "SELECT count(DISTINCT report_id) FROM deadlock_reports";
+                Assert.Equal(2L, Convert.ToInt64(c.ExecuteScalar()));
+            }
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
     public void Ingest_routes_blocking_report_and_counts_it()
     {
         var path = TempDb();

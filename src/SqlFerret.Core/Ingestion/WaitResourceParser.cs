@@ -1,5 +1,4 @@
 // src/SqlFerret.Core/Ingestion/WaitResourceParser.cs
-using System.Globalization;
 using SqlFerret.Core.Model;
 
 namespace SqlFerret.Core.Ingestion;
@@ -27,7 +26,6 @@ public static class WaitResourceParser
             "DATABASE" => WaitResourceType.Database,
             "APPLICATION" => WaitResourceType.AppLock,
             _ => head.StartsWith("PAGELATCH") || head.StartsWith("PAGEIOLATCH") ? WaitResourceType.PageLatch
-               : head.StartsWith("APPLICATION") ? WaitResourceType.AppLock
                : WaitResourceType.Other
         };
 

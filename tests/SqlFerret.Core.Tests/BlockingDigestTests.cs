@@ -51,4 +51,34 @@ public class BlockingDigestTests
         Assert.Contains("UPDATE dbo.Y", md);
         Assert.Contains("100", md);
     }
+
+    [Fact]
+    public void Markdown_render_includes_samples_section()
+    {
+        var blocker = new SqlFerret.Core.Model.BlockingProcess(
+            118, 0, "running", null, SqlFerret.Core.Model.WaitResourceType.Other,
+            null, null, null, "X", "rc", 1, "app", "h", "l",
+            "update dbo.Orders set status=1 where id=42", "fp_blocker");
+        var blocked = new SqlFerret.Core.Model.BlockingProcess(
+            201, 0, "suspended", "OBJECT: 5:99:0", SqlFerret.Core.Model.WaitResourceType.Object,
+            99, null, 3_750_000L, "S", "rc", 1, "app", "h", "l",
+            "select * from dbo.Orders where id=42", "fp_blocked");
+        var report = new SqlFerret.Core.Model.BlockingReport(
+            new DateTime(2026, 2, 24), 1, 5, blocked, blocker);
+        var sample = new BlockingSample("fp_blocker", [report]);
+
+        var digest = new BlockingDigestResult(
+            new BlockingOverview(1, 0, new DateTime(2026, 2, 24), new DateTime(2026, 2, 24)),
+            [new LocalityStat("Object", 1, 100.0)],
+            [], [new BlockingStat("fp_blocker", "update dbo.Orders ...", 1)], [],
+            [new ContentionStat("X", 1)], [new ContentionStat("rc", 1)],
+            new WaitTimeDist(3_750_000, 3_750_000, 3_750_000),
+            [], [sample]);
+
+        var md = BlockingDigestMarkdown.Render(digest);
+        Assert.Contains("## Sample", md);
+        Assert.Contains("fp_blocker", md);
+        Assert.Contains("dbo.Orders", md);
+        Assert.Contains("3750000", md);
+    }
 }

@@ -188,6 +188,15 @@ public sealed class DuckDbProject : IDisposable
         return ++_nextBlockingReportId;
     }
 
+    private long _nextDeadlockReportId = -1;
+
+    public long NextDeadlockReportId()
+    {
+        if (_nextDeadlockReportId < 0)
+            _nextDeadlockReportId = Scalar("SELECT COALESCE(MAX(report_id),0) FROM deadlock_reports");
+        return ++_nextDeadlockReportId;
+    }
+
     public void InsertBlockingBatch(long runId, IReadOnlyList<PreparedBlockingReport> reports)
     {
         using var tx = Connection.BeginTransaction();
@@ -244,7 +253,7 @@ public sealed class DuckDbProject : IDisposable
         using var tx = Connection.BeginTransaction();
         foreach (var d in reports)
         {
-            long id = NextBlockingReportId();
+            long id = NextDeadlockReportId();
             using var c = Connection.CreateCommand(); c.Transaction = tx;
             c.CommandText = "INSERT INTO deadlock_reports VALUES ($id,$run,$ts,$v,$p,$g)";
             Add(c, "$id", id); Add(c, "$run", runId); Add(c, "$ts", d.CapturedAt);

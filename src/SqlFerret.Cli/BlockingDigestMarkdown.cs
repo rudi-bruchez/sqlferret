@@ -27,6 +27,19 @@ public static class BlockingDigestMarkdown
         foreach (var il in d.IsolationLevels) sb.AppendLine($"- {il.Key}: {il.Count}");
         sb.AppendLine().AppendLine("## Chains");
         foreach (var ch in d.Chains) sb.AppendLine($"- loop {ch.MonitorLoop}: depth={ch.Depth} head_spid={ch.HeadSpid} edges={ch.EdgeCount}");
+        if (d.Samples.Count > 0)
+        {
+            sb.AppendLine().AppendLine("## Sample contention");
+            foreach (var s in d.Samples)
+            {
+                sb.AppendLine().AppendLine($"### Pattern {s.Fingerprint}");
+                foreach (var r in s.Reports)
+                {
+                    sb.AppendLine($"- blocker spid={r.Blocking.Spid} `{Trim(r.Blocking.InputBufRaw ?? "")}`");
+                    sb.AppendLine($"  blocked spid={r.Blocked.Spid} wait_resource={r.Blocked.WaitResourceType} wait_us={r.Blocked.WaitTimeUs} `{Trim(r.Blocked.InputBufRaw ?? "")}`");
+                }
+            }
+        }
         return sb.ToString();
     }
 
