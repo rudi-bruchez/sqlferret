@@ -4,10 +4,7 @@ using SqlFerret.Core.Config;
 using SqlFerret.Core.Filtering;
 using SqlFerret.Core.Ingestion;
 using SqlFerret.Core.Parameters;
-using SqlFerret.Core.Storage;
-
-DotEnv.Load(Path.Combine(Directory.GetCurrentDirectory(), ".env"));
-var config = SqlFerretConfig.Load(Path.Combine(Directory.GetCurrentDirectory(), "sqlferret.config.json"));
+using SqlFerret.Core.Project;
 
 string Arg(string name, string? fallback = null)
 {
@@ -15,9 +12,20 @@ string Arg(string name, string? fallback = null)
     return i >= 0 && i + 1 < args.Length ? args[i + 1] : fallback ?? "";
 }
 
+AuditProject? OpenProject()
+{
+    var dir = Arg("--project");
+    if (string.IsNullOrWhiteSpace(dir))
+    {
+        Console.Error.WriteLine("--project <dir> is required");
+        return null;
+    }
+    return AuditProject.OpenOrCreate(dir, Directory.GetCurrentDirectory());
+}
+
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: import <path> --project f.duckdb | top-slow --project f.duckdb | export-blocking --project f.duckdb [--format json|md|both] [--samples N] [--full] [--out file]");
+    Console.Error.WriteLine("usage: import <path> --project <dir> | top-slow --project <dir> | export-blocking --project <dir> [--format json|md|both] [--samples N] [--full] [--out file]");
     return 1;
 }
 
@@ -31,15 +39,17 @@ switch (args[0])
                 return 1;
             }
             var path = args[1];
-            var project = Arg("--project", "workload.duckdb");
-            var redactionStr = Arg("--redaction", config.RedactionPolicy);
+            var project = OpenProject();
+            if (project is null) return 1;
+
+            var redactionStr = Arg("--redaction", project.Config.RedactionPolicy);
             if (!Enum.TryParse<RedactionMode>(redactionStr, ignoreCase: true, out var redaction))
             {
                 Console.Error.WriteLine($"import: invalid --redaction value '{redactionStr}'. Valid: off, hash, masked, full");
                 return 1;
             }
 
-            using var db = DuckDbProject.Open(project);
+            using var db = project.OpenDb();
             var options = new IngestionOptions(redaction, Array.Empty<FilterRule>());
 
             // Live in-place gauge on stderr (kept off stdout so the summary stays clean and
@@ -65,27 +75,29 @@ switch (args[0])
         }
     case "top-slow":
         {
-            var project = Arg("--project", "workload.duckdb");
+            var project = OpenProject();
+            if (project is null) return 1;
             var limit = int.TryParse(Arg("--limit", "20"), out var l) ? l : 20;
-            using var db = DuckDbProject.Open(project);
+            using var db = project.OpenDb();
             var q = new WorkloadQueries(db.Connection);
             var rows = q.TopSlow(limit, "total_duration_us", Array.Empty<FilterRule>());
             foreach (var s in rows)
                 Console.WriteLine(
-                    $"{s.StatementKind,-7} {s.Count,8}  total={DisplayFormat.Duration(s.TotalDurationUs, config.DurationUnit),-12}  {Trim(s.NormalizedSql)}");
+                    $"{s.StatementKind,-7} {s.Count,8}  total={DisplayFormat.Duration(s.TotalDurationUs, project.Config.DurationUnit),-12}  {Trim(s.NormalizedSql)}");
             return 0;
         }
     case "export-blocking":
         {
-            var project = Arg("--project", "workload.duckdb");
+            var project = OpenProject();
+            if (project is null) return 1;
             var format = Arg("--format", "both");           // json | md | both
             var samples = int.TryParse(Arg("--samples", "5"), out var sv) ? sv : 5;
             var full = Array.IndexOf(args, "--full") >= 0;
             var outPath = Arg("--out", "");
-            if (outPath.Length > 0 && SqlFerret.Cli.BlockingDigestMarkdown.HasTraversal(outPath))
+            if (outPath.Length > 0 && outPath.Contains(".."))
             { Console.Error.WriteLine("export-blocking: invalid --out path"); return 1; }
 
-            using var db = DuckDbProject.Open(project);
+            using var db = project.OpenDb();
 
             if (full)
             {
