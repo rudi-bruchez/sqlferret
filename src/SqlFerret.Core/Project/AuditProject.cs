@@ -41,7 +41,6 @@ public sealed class AuditProject
         var fallback = configFallbackDir is null ? null : Path.GetFullPath(configFallbackDir);
 
         System.IO.Directory.CreateDirectory(dir);
-        System.IO.Directory.CreateDirectory(Path.Combine(dir, "plans"));
 
         var manifestPath = Path.Combine(dir, "project.json");
         var existing = ProjectManifest.TryRead(manifestPath);
@@ -69,6 +68,7 @@ public sealed class AuditProject
         var plans = Path.IsPathRooted(config.PlansFolder)
             ? config.PlansFolder
             : Path.GetFullPath(Path.Combine(dir, config.PlansFolder));
+        System.IO.Directory.CreateDirectory(plans);
 
         return new AuditProject(dir, config, manifest, plans);
     }

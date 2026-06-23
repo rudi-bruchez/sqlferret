@@ -111,6 +111,26 @@ public class AuditProjectTests
     }
 
     [Fact]
+    public void PlansFolder_absolute_config_honored_as_is()
+    {
+        var dir = NewTempDir();
+        var abs = NewTempDir(); // an absolute path that is not under the project dir
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "sqlferret.config.json"),
+            $$"""{ "server": { "plansFolder": "{{abs.Replace("\\", "\\\\")}}" } }""");
+        try
+        {
+            var p = AuditProject.OpenOrCreate(dir);
+            Assert.Equal(abs, p.PlansFolder);
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+            if (Directory.Exists(abs)) Directory.Delete(abs, true);
+        }
+    }
+
+    [Fact]
     public void Project_config_wins_over_cwd_config()
     {
         var proj = NewTempDir();
