@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\SqlFerret.Core\SqlFerret.Core.csproj" />
+    <ProjectReference Include="..\..\src\SqlFerret.Cli\SqlFerret.Cli.csproj" />
   </ItemGroup>
 
   <ItemGroup>

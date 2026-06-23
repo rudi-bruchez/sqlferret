@@ -1,4 +1,5 @@
 // tests/SqlFerret.Core.Tests/BlockingDigestTests.cs
+using SqlFerret.Cli;
 using SqlFerret.Core.Analysis;
 using SqlFerret.Core.Model;
 using SqlFerret.Core.Storage;
@@ -29,5 +30,25 @@ public class BlockingDigestTests
             Assert.Single(digest.Samples[0].Reports);
         }
         finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void Markdown_render_includes_locality_and_top_blockers()
+    {
+        var digest = new BlockingDigestResult(
+            new BlockingOverview(2, 0, new DateTime(2026, 2, 24), new DateTime(2026, 2, 24)),
+            [new LocalityStat("Object", 2, 100.0)],
+            [],
+            [new BlockingStat("fp_bk", "UPDATE dbo.Y SET ...", 2)],
+            [],
+            [new ContentionStat("S", 2)],
+            [new ContentionStat("read committed (2)", 2)],
+            new WaitTimeDist(5_000_000, 5_000_000, 5_000_000),
+            [],
+            []);
+        var md = BlockingDigestMarkdown.Render(digest);
+        Assert.Contains("Object", md);
+        Assert.Contains("UPDATE dbo.Y", md);
+        Assert.Contains("100", md);
     }
 }
