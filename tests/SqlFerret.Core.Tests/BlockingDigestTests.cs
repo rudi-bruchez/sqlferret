@@ -4,6 +4,21 @@ using SqlFerret.Core.Analysis;
 using SqlFerret.Core.Model;
 using SqlFerret.Core.Storage;
 
+public class HasTraversalTests
+{
+    // Fix 3 — path-segment traversal guard
+    [Theory]
+    [InlineData("../etc/passwd", true)]
+    [InlineData("a/../b", true)]
+    [InlineData("foo/../../secret", true)]
+    [InlineData("/tmp/report.md", false)]
+    [InlineData("q1..q2.md", false)]
+    [InlineData("report.md", false)]
+    [InlineData("/abs/path/ok.md", false)]
+    public void HasTraversal_detects_dotdot_segments(string path, bool expected) =>
+        Assert.Equal(expected, BlockingDigestMarkdown.HasTraversal(path));
+}
+
 public class BlockingDigestTests
 {
     [Fact]

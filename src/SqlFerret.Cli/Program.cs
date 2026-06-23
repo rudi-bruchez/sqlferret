@@ -82,7 +82,7 @@ switch (args[0])
             var samples = int.TryParse(Arg("--samples", "5"), out var sv) ? sv : 5;
             var full = Array.IndexOf(args, "--full") >= 0;
             var outPath = Arg("--out", "");
-            if (outPath.Length > 0 && outPath.Contains(".."))
+            if (outPath.Length > 0 && SqlFerret.Cli.BlockingDigestMarkdown.HasTraversal(outPath))
             { Console.Error.WriteLine("export-blocking: invalid --out path"); return 1; }
 
             using var db = DuckDbProject.Open(project);

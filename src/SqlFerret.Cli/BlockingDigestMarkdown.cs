@@ -44,4 +44,11 @@ public static class BlockingDigestMarkdown
     }
 
     private static string Trim(string s) => s.Length <= 100 ? s : s[..97] + "...";
+
+    /// <summary>
+    /// Returns true if <paramref name="path"/> contains a path-traversal segment (<c>..</c>).
+    /// Absolute paths are allowed; only segment-exact <c>..</c> is rejected.
+    /// </summary>
+    public static bool HasTraversal(string path) =>
+        path.Split('/', '\\').Any(seg => seg == "..");
 }

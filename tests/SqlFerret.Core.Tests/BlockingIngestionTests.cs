@@ -113,4 +113,49 @@ public class BlockingIngestionTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+
+    // Fix 1 — tokenize-failure redaction leak
+    // SQL Server truncates inputbuf at ~4000 chars, often mid-statement.
+    // An unterminated string literal causes ScriptDom to fail tokenization;
+    // FallbackCollapse only lowercases+collapses whitespace — it does NOT strip literals.
+    // Under any non-Off redaction mode the PII literal must NOT appear in storage.
+    [Fact]
+    public void Ingest_tokenize_failure_does_not_leak_pii_under_masked_redaction()
+    {
+        // The missing closing quote makes ScriptDom return parse errors → FallbackCollapse path
+        const string pii = "2921225462283";
+        const string truncatedInputbuf = $"exec dbo.X @Nir='{pii}"; // unterminated string — no closing quote
+
+        var path = TempDb();
+        try
+        {
+            using var db = SqlFerret.Core.Storage.DuckDbProject.Open(path);
+            var xml = "<blocked-process-report monitorLoop=\"1\">" +
+                      $"<blocked-process><process spid=\"201\" waitresource=\"OBJECT: 5:99:0\" waittime=\"5000\">" +
+                      $"<inputbuf>{truncatedInputbuf}</inputbuf></process></blocked-process>" +
+                      "<blocking-process><process spid=\"118\"><inputbuf>update dbo.Y set a=1</inputbuf></process></blocking-process>" +
+                      "</blocked-process-report>";
+            var ev = new FakeEvent("blocked_process_report", new DateTime(2026, 2, 24),
+                new Dictionary<string, object?> { ["blocked_process"] = xml },
+                new Dictionary<string, object?>());
+
+            new SqlFerret.Core.Ingestion.IngestionService(db,
+                    new SqlFerret.Core.Ingestion.IngestionOptions(SqlFerret.Core.Parameters.RedactionMode.Masked, []))
+                .Ingest("logs/", [((SqlFerret.Core.Ingestion.IXeEventData)ev, "s.xel", 0L)]);
+
+            using var c = db.Connection.CreateCommand();
+
+            // blocking_processes.inputbuf must not expose the PII literal
+            c.CommandText = "SELECT inputbuf FROM blocking_processes WHERE role='blocked'";
+            var storedInputbuf = c.ExecuteScalar() as string ?? "";
+            Assert.DoesNotContain(pii, storedInputbuf, StringComparison.Ordinal);
+
+            // normalized_queries.normalized_sql must not expose the PII literal either
+            c.CommandText = "SELECT normalized_sql FROM normalized_queries";
+            var storedNormalized = c.ExecuteScalar() as string;
+            if (storedNormalized is not null)
+                Assert.DoesNotContain(pii, storedNormalized, StringComparison.Ordinal);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
 }

@@ -52,6 +52,44 @@ public class BlockingQueriesTests
         return null;
     }
 
+    // Fix 2 — Chains() cycle guard
+    // Cyclic blocking: A→B, B→C, C→B within the same monitor_loop.
+    // Without the depth cap the recursive CTE walks forever.
+    [Fact]
+    public void Chains_terminates_and_bounds_depth_on_cyclic_data()
+    {
+        using var db = DuckDbProject.Open(Path.Combine(Path.GetTempPath(), $"sf_{Guid.NewGuid():N}.duckdb"));
+        long run = db.BeginRun("logs/", 1, 0, "masked");
+
+        PreparedBlockingProcess P(int spid, string role, string fp) =>
+            new(new BlockingProcess(spid, 0, "s", "X", WaitResourceType.Other, null, null, null, "S", "rc", 1, "app", "h", "l", "sql", fp),
+                null, "sql");
+
+        // A(100) blocks B(200): report 1
+        db.InsertBlockingBatch(run, [new PreparedBlockingReport(
+            new BlockingReport(new DateTime(2026, 2, 24), 99, 5, default!, default!),
+            P(200, "blocked",  "fp_b"),
+            P(100, "blocking", "fp_a"))]);
+
+        // B(200) blocks C(300): report 2
+        db.InsertBlockingBatch(run, [new PreparedBlockingReport(
+            new BlockingReport(new DateTime(2026, 2, 24), 99, 5, default!, default!),
+            P(300, "blocked",  "fp_c"),
+            P(200, "blocking", "fp_b"))]);
+
+        // C(300) blocks B(200): report 3 — closes the B↔C cycle
+        db.InsertBlockingBatch(run, [new PreparedBlockingReport(
+            new BlockingReport(new DateTime(2026, 2, 24), 99, 5, default!, default!),
+            P(200, "blocked",  "fp_b"),
+            P(300, "blocking", "fp_c"))]);
+
+        var q = new BlockingQueries(db.Connection);
+        // Must return (not hang) and all reported depths must be ≤ 64
+        var chains = q.Chains();
+        Assert.NotNull(chains);
+        Assert.All(chains, ch => Assert.True(ch.Depth <= 64, $"depth {ch.Depth} exceeded cap"));
+    }
+
     [SkippableFact]
     public void Real_blocking_xel_ingests_and_aggregates()
     {

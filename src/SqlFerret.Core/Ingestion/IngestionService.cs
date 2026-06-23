@@ -79,14 +79,28 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
         return new PreparedBlockingReport(rep, PrepareProc(rep.Blocked), PrepareProc(rep.Blocking));
     }
 
+    private const string FallbackRedactedPlaceholder = "(unparseable inputbuf; redacted)";
+
     private PreparedBlockingProcess PrepareProc(BlockingProcess p)
     {
         if (string.IsNullOrEmpty(p.InputBufRaw))
             return new PreparedBlockingProcess(p, null, null);
         var nq = QueryNormalizer.Normalize(p.InputBufRaw);
-        // store normalized SQL by default; raw only when redaction is explicitly off
-        string stored = options.Redaction == RedactionMode.Off ? p.InputBufRaw : nq.NormalizedSql;
-        return new PreparedBlockingProcess(p with { InputBufFingerprint = nq.NormalizedHash }, nq, stored);
+        if (options.Redaction == RedactionMode.Off)
+        {
+            // Off: store raw, no masking
+            return new PreparedBlockingProcess(p with { InputBufFingerprint = nq.NormalizedHash }, nq, p.InputBufRaw);
+        }
+        if (nq.TokenizeFailed)
+        {
+            // Tokenize failed under non-Off redaction: FallbackCollapse left literals unmasked.
+            // Replace both the stored inputbuf and the NormalizedSql with a safe placeholder.
+            // NormalizedHash (a non-reversible hash) is safe to persist — keep it for fingerprint joins.
+            var safeNq = nq with { NormalizedSql = FallbackRedactedPlaceholder };
+            return new PreparedBlockingProcess(p with { InputBufFingerprint = nq.NormalizedHash }, safeNq, FallbackRedactedPlaceholder);
+        }
+        // Successful tokenization: ScriptDom already stripped literals from nq.NormalizedSql
+        return new PreparedBlockingProcess(p with { InputBufFingerprint = nq.NormalizedHash }, nq, nq.NormalizedSql);
     }
 
     private List<PreparedParameter> RedactParams(ExecutionEvent e)

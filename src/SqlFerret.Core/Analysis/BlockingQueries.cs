@@ -44,20 +44,28 @@ public class BlockingQueries(DuckDBConnection conn)
     public IReadOnlyList<ContentionStat> IsolationLevels()
         => CountBy("SELECT COALESCE(isolation_level,'(none)'), count(*) FROM blocking_processes WHERE role='blocked' GROUP BY 1 ORDER BY 2 DESC");
 
-    public IReadOnlyList<BlockingStat> TopBlockers(int limit) => Top("blocking", limit);
-    public IReadOnlyList<BlockingStat> TopBlocked(int limit) => Top("blocked", limit);
+    public IReadOnlyList<BlockingStat> TopBlockers(int limit) => Top(ProcessRole.Blocking, limit);
+    public IReadOnlyList<BlockingStat> TopBlocked(int limit) => Top(ProcessRole.Blocked, limit);
 
-    private IReadOnlyList<BlockingStat> Top(string role, int limit)
+    private enum ProcessRole { Blocked, Blocking }
+
+    private IReadOnlyList<BlockingStat> Top(ProcessRole role, int limit)
     {
+        // Map the enum to a compile-time constant — no arbitrary string can reach the SQL.
+        string roleStr = role switch
+        {
+            ProcessRole.Blocked => "blocked",
+            ProcessRole.Blocking => "blocking",
+            _ => throw new ArgumentOutOfRangeException(nameof(role))
+        };
         using var c = conn.CreateCommand();
-        // role is a hard-coded literal ('blocked'|'blocking'), never user input; limit is an int
         c.CommandText = $"""
           SELECT bp.inputbuf_fingerprint,
                  COALESCE(nq.normalized_sql, bp.inputbuf, '(none)') AS sql,
                  count(*) AS cnt
           FROM blocking_processes bp
           LEFT JOIN normalized_queries nq ON nq.normalized_hash = bp.inputbuf_fingerprint
-          WHERE bp.role = '{role}' AND bp.inputbuf_fingerprint IS NOT NULL
+          WHERE bp.role = '{roleStr}' AND bp.inputbuf_fingerprint IS NOT NULL
           GROUP BY bp.inputbuf_fingerprint, sql ORDER BY cnt DESC LIMIT {limit}
           """;
         using var r = c.ExecuteReader();
@@ -100,6 +108,7 @@ public class BlockingQueries(DuckDBConnection conn)
             UNION ALL
             SELECT w.loop, w.head, e.blocked_spid, w.depth+1
             FROM walk w JOIN edges e ON e.loop=w.loop AND e.blocking_spid=w.cur
+            WHERE w.depth < 64
           )
           SELECT loop, max(depth) AS depth, head, (SELECT count(*) FROM edges e WHERE e.loop=walk.loop) AS edges
           FROM walk GROUP BY loop, head ORDER BY depth DESC
