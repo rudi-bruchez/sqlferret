@@ -44,9 +44,16 @@ mon-audit/
   plans/                     # the .sqlplan files (created on demand)
   exports/                   # AI export packs — future feature (created on demand)
   project.json               # manifest: provenance, maintained by the tool
+  README.md                  # static guide to the layout (for humans & AI agents)
   sqlferret.config.json      # settings (optional; falls back to ./ then defaults)
   .env                       # project-local secrets (optional, gitignored)
 ```
+
+The `README.md` is written once at creation. It is a **static, self-describing guide** to what
+each file and folder is, so anyone — or an AI agent — pointed at the directory understands the
+project without external context. It documents the layout, the role of each file, the meaning of
+`project.json` fields, and a note that `.sqlplan` files are estimated/Query-Store plans openable
+in SSMS. It is not regenerated on reopen (so user notes added to it survive).
 
 Two distinct files by design:
 
@@ -94,9 +101,10 @@ public record ProjectManifest(
 - Resolve `dir` to an absolute path.
 - If the directory does not exist: create it and `plans/`, write an initial `project.json`
   (`SchemaVersion = 1`, `ToolVersion` from the assembly version, `CreatedUtc = LastOpenedUtc =
-  DateTime.UtcNow`, `Notes = null`). `exports/` is created lazily by the future export feature,
-  not here.
+  DateTime.UtcNow`, `Notes = null`), and write a static `README.md` describing the layout.
+  `exports/` is created lazily by the future export feature, not here.
 - If it exists: read `project.json`, then update `LastOpenedUtc = DateTime.UtcNow` and persist.
+  `README.md` is **not** rewritten on reopen, so any user edits to it survive.
   A missing/malformed `project.json` in an existing directory is treated as a fresh project
   (re-initialized manifest) rather than a hard error — deliberate fallback path, bare `catch`
   acceptable per the C# baseline.
@@ -119,7 +127,9 @@ versions the project-directory format so future layout changes are detectable.
 
 ## CLI wiring (`Program.cs`)
 
-- `--project` now names a **directory**; default `.` (the cwd becomes the project).
+- `--project` now names a **directory** and is **required** — there is no default. A missing
+  `--project` prints the usage error and exits non-zero (no implicit cwd-as-project, so the cwd is
+  never polluted by accident).
 - The top-of-file `DotEnv.Load` / `SqlFerretConfig.Load` from cwd move under `AuditProject`'s
   control: after parsing `--project`, call `AuditProject.OpenOrCreate(dir)`, then drive
   everything from it.
@@ -133,8 +143,10 @@ versions the project-directory format so future layout changes are detectable.
 `AuditProject` is pure path/IO logic — tested against a temp directory:
 
 - `OpenOrCreate` on an absent dir creates the skeleton (`plans/`, `project.json` with
-  `SchemaVersion = 1` and sane manifest timestamps).
-- Reopening reads the manifest back and bumps `LastOpenedUtc` (and never resets `CreatedUtc`).
+  `SchemaVersion = 1` and sane manifest timestamps, `README.md`).
+- Reopening reads the manifest back and bumps `LastOpenedUtc` (and never resets `CreatedUtc`),
+  and does **not** overwrite an existing `README.md` (user edits survive).
+- CLI: a missing `--project` exits non-zero with the usage error (required, no default).
 - An existing dir with missing/malformed `project.json` re-initializes cleanly (no throw).
 - Config precedence: `<dir>/sqlferret.config.json` wins over `./sqlferret.config.json`.
 - `.env` precedence: a key in `<dir>/.env` wins over the same key in `./.env`; a real
