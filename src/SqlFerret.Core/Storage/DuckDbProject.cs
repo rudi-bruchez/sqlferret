@@ -30,6 +30,7 @@ public sealed class DuckDbProject : IDisposable
           run_id BIGINT PRIMARY KEY, source_path TEXT, files_count INTEGER, bytes_total BIGINT,
           started_at TIMESTAMP, finished_at TIMESTAMP, events_read BIGINT, events_mapped BIGINT,
           events_unmapped BIGINT, events_cleaned BIGINT, tokenize_failures BIGINT,
+          events_blocking BIGINT, events_deadlocks BIGINT, blocking_parse_failures BIGINT,
           normalizer_version INTEGER, redaction_policy TEXT);
 
         CREATE TABLE IF NOT EXISTS executions (
@@ -81,8 +82,9 @@ public sealed class DuckDbProject : IDisposable
         c.CommandText = """
           INSERT INTO ingestion_runs(run_id, source_path, files_count, bytes_total, started_at,
             finished_at, events_read, events_mapped, events_unmapped, events_cleaned,
-            tokenize_failures, normalizer_version, redaction_policy)
-          VALUES ($id,$src,$fc,$bt, now(), NULL, 0,0,0,0,0, $nv, $rp)
+            tokenize_failures, events_blocking, events_deadlocks, blocking_parse_failures,
+            normalizer_version, redaction_policy)
+          VALUES ($id,$src,$fc,$bt, now(), NULL, 0,0,0,0,0,0,0,0, $nv, $rp)
           """;
         Add(c, "$id", runId); Add(c, "$src", sourcePath); Add(c, "$fc", filesCount);
         Add(c, "$bt", bytesTotal); Add(c, "$nv", QueryNormalizer.Version); Add(c, "$rp", redactionPolicy);
@@ -152,15 +154,18 @@ public sealed class DuckDbProject : IDisposable
         c.ExecuteNonQuery();
     }
 
-    public void FinishRun(long runId, long read, long mapped, long unmapped, long cleaned, long tokenizeFailures)
+    public void FinishRun(long runId, long read, long mapped, long unmapped, long cleaned,
+        long tokenizeFailures, long blocking, long deadlocks, long blockingParseFailures)
     {
         using var c = Connection.CreateCommand();
         c.CommandText = """
           UPDATE ingestion_runs SET finished_at = now(), events_read=$r, events_mapped=$m,
-            events_unmapped=$u, events_cleaned=$cl, tokenize_failures=$tf WHERE run_id=$id
+            events_unmapped=$u, events_cleaned=$cl, tokenize_failures=$tf,
+            events_blocking=$bl, events_deadlocks=$dl, blocking_parse_failures=$bpf WHERE run_id=$id
           """;
         Add(c, "$r", read); Add(c, "$m", mapped); Add(c, "$u", unmapped); Add(c, "$cl", cleaned);
-        Add(c, "$tf", tokenizeFailures); Add(c, "$id", runId);
+        Add(c, "$tf", tokenizeFailures); Add(c, "$bl", blocking); Add(c, "$dl", deadlocks);
+        Add(c, "$bpf", blockingParseFailures); Add(c, "$id", runId);
         c.ExecuteNonQuery();
     }
 

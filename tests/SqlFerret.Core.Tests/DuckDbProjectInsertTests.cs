@@ -30,7 +30,7 @@ public class DuckDbProjectInsertTests
             var row = new PreparedRow(ev, nq, [new PreparedParameter(0, "@a", "rpc_parameter", "int", "1", false, false, 0.9)]);
 
             p.InsertBatch(run, [row]);
-            p.FinishRun(run, read: 1, mapped: 1, unmapped: 0, cleaned: 0, tokenizeFailures: 0);
+            p.FinishRun(run, read: 1, mapped: 1, unmapped: 0, cleaned: 0, tokenizeFailures: 0, blocking: 0, deadlocks: 0, blockingParseFailures: 0);
 
             using var c = p.Connection.CreateCommand();
             c.CommandText = "SELECT count(*) FROM executions"; Assert.Equal(1L, Convert.ToInt64(c.ExecuteScalar()));

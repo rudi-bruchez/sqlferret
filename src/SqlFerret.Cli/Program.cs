@@ -59,7 +59,8 @@ switch (args[0])
 
             Console.WriteLine(
                 $"run {result.RunId}: read={result.Read} mapped={result.Mapped} " +
-                $"unmapped={result.Unmapped} cleaned={result.Cleaned} tokenizeFailures={result.TokenizeFailures}");
+                $"unmapped={result.Unmapped} cleaned={result.Cleaned} tokenizeFailures={result.TokenizeFailures} " +
+                $"blocking={result.Blocking} deadlocks={result.Deadlocks} blockingParseFailures={result.BlockingParseFailures}");
             return 0;
         }
     case "top-slow":
