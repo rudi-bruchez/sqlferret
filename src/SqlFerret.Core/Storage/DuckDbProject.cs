@@ -30,6 +30,7 @@ public sealed class DuckDbProject : IDisposable
           run_id BIGINT PRIMARY KEY, source_path TEXT, files_count INTEGER, bytes_total BIGINT,
           started_at TIMESTAMP, finished_at TIMESTAMP, events_read BIGINT, events_mapped BIGINT,
           events_unmapped BIGINT, events_cleaned BIGINT, tokenize_failures BIGINT,
+          events_blocking BIGINT, events_deadlocks BIGINT, blocking_parse_failures BIGINT,
           normalizer_version INTEGER, redaction_policy TEXT);
 
         CREATE TABLE IF NOT EXISTS executions (
@@ -47,6 +48,21 @@ public sealed class DuckDbProject : IDisposable
         CREATE TABLE IF NOT EXISTS execution_parameters (
           execution_id BIGINT, ordinal INTEGER, name TEXT, source_kind TEXT, sql_type_guess TEXT,
           value_text TEXT, value_redacted BOOLEAN, is_truncated BOOLEAN, parse_confidence DOUBLE);
+
+        CREATE TABLE IF NOT EXISTS blocking_reports (
+          report_id BIGINT PRIMARY KEY, run_id BIGINT, captured_at TIMESTAMP,
+          monitor_loop INTEGER, database_id INTEGER);
+
+        CREATE TABLE IF NOT EXISTS blocking_processes (
+          report_id BIGINT, role TEXT, spid INTEGER, ecid INTEGER, status TEXT,
+          wait_resource_raw TEXT, wait_resource_type TEXT, object_id BIGINT, hobt_id BIGINT,
+          wait_time_us BIGINT, lock_mode TEXT, isolation_level TEXT, trancount INTEGER,
+          client_app TEXT, host_name TEXT, login_name TEXT,
+          inputbuf TEXT, inputbuf_fingerprint TEXT);
+
+        CREATE TABLE IF NOT EXISTS deadlock_reports (
+          report_id BIGINT PRIMARY KEY, run_id BIGINT, captured_at TIMESTAMP,
+          victim_spids TEXT, participant_spids TEXT, graph_xml TEXT);
         """;
         cmd.ExecuteNonQuery();
     }
@@ -66,8 +82,9 @@ public sealed class DuckDbProject : IDisposable
         c.CommandText = """
           INSERT INTO ingestion_runs(run_id, source_path, files_count, bytes_total, started_at,
             finished_at, events_read, events_mapped, events_unmapped, events_cleaned,
-            tokenize_failures, normalizer_version, redaction_policy)
-          VALUES ($id,$src,$fc,$bt, now(), NULL, 0,0,0,0,0, $nv, $rp)
+            tokenize_failures, events_blocking, events_deadlocks, blocking_parse_failures,
+            normalizer_version, redaction_policy)
+          VALUES ($id,$src,$fc,$bt, now(), NULL, 0,0,0,0,0,0,0,0, $nv, $rp)
           """;
         Add(c, "$id", runId); Add(c, "$src", sourcePath); Add(c, "$fc", filesCount);
         Add(c, "$bt", bytesTotal); Add(c, "$nv", QueryNormalizer.Version); Add(c, "$rp", redactionPolicy);
@@ -137,15 +154,18 @@ public sealed class DuckDbProject : IDisposable
         c.ExecuteNonQuery();
     }
 
-    public void FinishRun(long runId, long read, long mapped, long unmapped, long cleaned, long tokenizeFailures)
+    public void FinishRun(long runId, long read, long mapped, long unmapped, long cleaned,
+        long tokenizeFailures, long blocking, long deadlocks, long blockingParseFailures)
     {
         using var c = Connection.CreateCommand();
         c.CommandText = """
           UPDATE ingestion_runs SET finished_at = now(), events_read=$r, events_mapped=$m,
-            events_unmapped=$u, events_cleaned=$cl, tokenize_failures=$tf WHERE run_id=$id
+            events_unmapped=$u, events_cleaned=$cl, tokenize_failures=$tf,
+            events_blocking=$bl, events_deadlocks=$dl, blocking_parse_failures=$bpf WHERE run_id=$id
           """;
         Add(c, "$r", read); Add(c, "$m", mapped); Add(c, "$u", unmapped); Add(c, "$cl", cleaned);
-        Add(c, "$tf", tokenizeFailures); Add(c, "$id", runId);
+        Add(c, "$tf", tokenizeFailures); Add(c, "$bl", blocking); Add(c, "$dl", deadlocks);
+        Add(c, "$bpf", blockingParseFailures); Add(c, "$id", runId);
         c.ExecuteNonQuery();
     }
 
@@ -157,6 +177,91 @@ public sealed class DuckDbProject : IDisposable
         p.ParameterName = name.TrimStart('$');
         p.Value = value ?? DBNull.Value;
         c.Parameters.Add(p);
+    }
+
+    private long _nextBlockingReportId = -1;
+
+    public long NextBlockingReportId()
+    {
+        if (_nextBlockingReportId < 0)
+            _nextBlockingReportId = Scalar("SELECT COALESCE(MAX(report_id),0) FROM blocking_reports");
+        return ++_nextBlockingReportId;
+    }
+
+    private long _nextDeadlockReportId = -1;
+
+    public long NextDeadlockReportId()
+    {
+        if (_nextDeadlockReportId < 0)
+            _nextDeadlockReportId = Scalar("SELECT COALESCE(MAX(report_id),0) FROM deadlock_reports");
+        return ++_nextDeadlockReportId;
+    }
+
+    public void InsertBlockingBatch(long runId, IReadOnlyList<PreparedBlockingReport> reports)
+    {
+        using var tx = Connection.BeginTransaction();
+        foreach (var pr in reports)
+        {
+            long id = NextBlockingReportId();
+            using (var c = Connection.CreateCommand())
+            {
+                c.Transaction = tx;
+                c.CommandText = "INSERT INTO blocking_reports VALUES ($id,$run,$ts,$loop,$db)";
+                Add(c, "$id", id); Add(c, "$run", runId); Add(c, "$ts", pr.Report.CapturedAt);
+                Add(c, "$loop", (object?)pr.Report.MonitorLoop); Add(c, "$db", (object?)pr.Report.DatabaseId);
+                c.ExecuteNonQuery();
+            }
+            InsertBlockingProcess(tx, id, "blocked", pr.Blocked, pr.Report.CapturedAt);
+            InsertBlockingProcess(tx, id, "blocking", pr.Blocking, pr.Report.CapturedAt);
+        }
+        tx.Commit();
+    }
+
+    private void InsertBlockingProcess(DuckDBTransaction tx, long reportId, string role, PreparedBlockingProcess p, DateTime capturedAt)
+    {
+        var proc = p.Process;
+        using var c = Connection.CreateCommand(); c.Transaction = tx;
+        c.CommandText = """
+          INSERT INTO blocking_processes VALUES ($rid,$role,$spid,$ecid,$status,$wrr,$wrt,$oid,$hobt,
+            $wus,$lm,$iso,$tc,$app,$host,$login,$buf,$fp)
+          """;
+        Add(c, "$rid", reportId); Add(c, "$role", role); Add(c, "$spid", (object?)proc.Spid);
+        Add(c, "$ecid", (object?)proc.Ecid); Add(c, "$status", (object?)proc.Status);
+        Add(c, "$wrr", (object?)proc.WaitResourceRaw); Add(c, "$wrt", proc.WaitResourceType.ToString());
+        Add(c, "$oid", (object?)proc.ObjectId); Add(c, "$hobt", (object?)proc.HobtId);
+        Add(c, "$wus", (object?)proc.WaitTimeUs); Add(c, "$lm", (object?)proc.LockMode);
+        Add(c, "$iso", (object?)proc.IsolationLevel); Add(c, "$tc", (object?)proc.TranCount);
+        Add(c, "$app", (object?)proc.ClientApp); Add(c, "$host", (object?)proc.HostName);
+        Add(c, "$login", (object?)proc.LoginName); Add(c, "$buf", (object?)p.StoredInputBuf);
+        Add(c, "$fp", (object?)proc.InputBufFingerprint);
+        c.ExecuteNonQuery();
+        if (p.Normalized is { } n)
+        {
+            using var u = Connection.CreateCommand(); u.Transaction = tx;
+            u.CommandText = """
+              INSERT INTO normalized_queries VALUES ($h,$sql,$kind,$tbl,$ver,$ts,$ts)
+              ON CONFLICT (normalized_hash) DO UPDATE SET last_seen_at = $ts
+              """;
+            Add(u, "$h", n.NormalizedHash); Add(u, "$sql", n.NormalizedSql); Add(u, "$kind", n.StatementKind);
+            Add(u, "$tbl", (object?)n.PrimaryTable); Add(u, "$ver", QueryNormalizer.Version); Add(u, "$ts", capturedAt);
+            u.ExecuteNonQuery();
+        }
+    }
+
+    public void InsertDeadlockBatch(long runId, IReadOnlyList<DeadlockReport> reports)
+    {
+        using var tx = Connection.BeginTransaction();
+        foreach (var d in reports)
+        {
+            long id = NextDeadlockReportId();
+            using var c = Connection.CreateCommand(); c.Transaction = tx;
+            c.CommandText = "INSERT INTO deadlock_reports VALUES ($id,$run,$ts,$v,$p,$g)";
+            Add(c, "$id", id); Add(c, "$run", runId); Add(c, "$ts", d.CapturedAt);
+            Add(c, "$v", string.Join(',', d.VictimSpids)); Add(c, "$p", string.Join(',', d.ParticipantSpids));
+            Add(c, "$g", d.GraphXmlRedacted);
+            c.ExecuteNonQuery();
+        }
+        tx.Commit();
     }
 
     public void Dispose() => Connection.Dispose();

@@ -3,6 +3,8 @@ using SqlFerret.Core.Parameters;
 
 namespace SqlFerret.Core.Ingestion;
 
+public enum BlockingEventKind { None, Blocked, Deadlock }
+
 public static class EventMapper
 {
     public static ExecutionEvent Map(IXeEventData ev, string fileName, long fileOffset)
@@ -52,6 +54,14 @@ public static class EventMapper
         EventClass.RpcCall or EventClass.Statement => Str(ev.Fields, "statement") ?? Str(ev.Fields, "sql_text"),
         _ => null
     };
+
+    public static BlockingEventKind ClassifyBlocking(string name) =>
+        name.Equals("blocked_process_report", StringComparison.OrdinalIgnoreCase) ? BlockingEventKind.Blocked :
+        name.Equals("xml_deadlock_report", StringComparison.OrdinalIgnoreCase) ? BlockingEventKind.Deadlock :
+        BlockingEventKind.None;
+
+    public static string? ExtractBlockingXml(IXeEventData ev) => Str(ev.Fields, "blocked_process");
+    public static string? ExtractDeadlockXml(IXeEventData ev) => Str(ev.Fields, "xml_report");
 
     private static string? Str(IReadOnlyDictionary<string, object?> d, string k) =>
         d.TryGetValue(k, out var v) && v is not null ? v.ToString() : null;

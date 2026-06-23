@@ -20,6 +20,7 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
             redactionPolicy: options.Redaction.ToString().ToLowerInvariant());
 
         long read = 0, mapped = 0, unmapped = 0, cleaned = 0, tokenizeFailures = 0;
+        long blocking = 0, deadlocks = 0, blockingParseFailures = 0;
         string currentFile = "";
         var buffer = new List<PreparedRow>(options.BatchSize);
 
@@ -27,6 +28,29 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
         {
             currentFile = fileName;
             read++;
+
+            var bkind = EventMapper.ClassifyBlocking(ev.Name);
+            if (bkind != BlockingEventKind.None)
+            {
+                if (bkind == BlockingEventKind.Blocked)
+                {
+                    var xml = EventMapper.ExtractBlockingXml(ev);
+                    var rep = xml is null ? null : BlockingReportParser.Parse(xml, ev.Timestamp);
+                    if (rep is null) { blockingParseFailures++; continue; }
+                    project.InsertBlockingBatch(runId, [Prepare(rep)]);
+                    blocking++;
+                }
+                else
+                {
+                    var xml = EventMapper.ExtractDeadlockXml(ev);
+                    var dl = xml is null ? null : DeadlockReportParser.Parse(xml, ev.Timestamp);
+                    if (dl is null) { blockingParseFailures++; continue; }
+                    project.InsertDeadlockBatch(runId, [dl with { GraphXmlRedacted = options.Redaction == RedactionMode.Off ? dl.GraphXmlRedacted : "<redacted/>" }]);
+                    deadlocks++;
+                }
+                continue;
+            }
+
             var e = EventMapper.Map(ev, fileName, offset);
             if (e.EventClass == EventClass.Unknown || string.IsNullOrEmpty(e.SqlTextRaw)) { unmapped++; continue; }
             if (!_ingestKeep(e)) { cleaned++; continue; }
@@ -46,8 +70,37 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
         if (buffer.Count > 0) project.InsertBatch(runId, buffer);
 
         progress?.Report(new IngestionProgress(read, mapped, unmapped, cleaned, tokenizeFailures, currentFile));
-        project.FinishRun(runId, read, mapped, unmapped, cleaned, tokenizeFailures);
-        return new IngestionResult(runId, read, mapped, unmapped, cleaned, tokenizeFailures);
+        project.FinishRun(runId, read, mapped, unmapped, cleaned, tokenizeFailures, blocking, deadlocks, blockingParseFailures);
+        return new IngestionResult(runId, read, mapped, unmapped, cleaned, tokenizeFailures, blocking, deadlocks, blockingParseFailures);
+    }
+
+    private PreparedBlockingReport Prepare(BlockingReport rep)
+    {
+        return new PreparedBlockingReport(rep, PrepareProc(rep.Blocked), PrepareProc(rep.Blocking));
+    }
+
+    private const string FallbackRedactedPlaceholder = "(unparseable inputbuf; redacted)";
+
+    private PreparedBlockingProcess PrepareProc(BlockingProcess p)
+    {
+        if (string.IsNullOrEmpty(p.InputBufRaw))
+            return new PreparedBlockingProcess(p, null, null);
+        var nq = QueryNormalizer.Normalize(p.InputBufRaw);
+        if (options.Redaction == RedactionMode.Off)
+        {
+            // Off: store raw, no masking
+            return new PreparedBlockingProcess(p with { InputBufFingerprint = nq.NormalizedHash }, nq, p.InputBufRaw);
+        }
+        if (nq.TokenizeFailed)
+        {
+            // Tokenize failed under non-Off redaction: FallbackCollapse left literals unmasked.
+            // Replace both the stored inputbuf and the NormalizedSql with a safe placeholder.
+            // NormalizedHash (a non-reversible hash) is safe to persist — keep it for fingerprint joins.
+            var safeNq = nq with { NormalizedSql = FallbackRedactedPlaceholder };
+            return new PreparedBlockingProcess(p with { InputBufFingerprint = nq.NormalizedHash }, safeNq, FallbackRedactedPlaceholder);
+        }
+        // Successful tokenization: ScriptDom already stripped literals from nq.NormalizedSql
+        return new PreparedBlockingProcess(p with { InputBufFingerprint = nq.NormalizedHash }, nq, nq.NormalizedSql);
     }
 
     private List<PreparedParameter> RedactParams(ExecutionEvent e)
