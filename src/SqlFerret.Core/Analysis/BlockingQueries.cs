@@ -85,7 +85,7 @@ public class BlockingQueries(DuckDBConnection conn)
         // never itself blocked in the same monitor_loop. Depth via recursive CTE over (loop, from->to).
         using var c = conn.CreateCommand();
         c.CommandText = """
-          WITH edges AS (
+          WITH RECURSIVE edges AS (
             SELECT r.monitor_loop AS loop, b.spid AS blocked_spid, k.spid AS blocking_spid
             FROM blocking_reports r
             JOIN blocking_processes b ON b.report_id=r.report_id AND b.role='blocked'
