@@ -1,26 +1,27 @@
 // src/SqlFerret.Tui/Program.cs
 // Terminal.Gui v2.4.6 instance-model entry-point.
-// Usage: SqlFerret.Tui <project.duckdb>
+// Usage: SqlFerret.Tui <project-dir>
 using SqlFerret.Core.Config;
-using SqlFerret.Core.Storage;
+using SqlFerret.Core.Project;
 using SqlFerret.Tui.Clipboard;
 using SqlFerret.Tui.Shell;
 using Terminal.Gui.App;
 
-DotEnv.Load(Path.Combine(Directory.GetCurrentDirectory(), ".env"));
-var config = SqlFerretConfig.Load(
-    Path.Combine(Directory.GetCurrentDirectory(), "sqlferret.config.json"));
-
 if (args.Length < 1)
 {
-    Console.Error.WriteLine("Usage: sqlferret <path.duckdb>");
+    Console.Error.WriteLine("Usage: sqlferret <project-dir>");
     return 1;
 }
+
+var ap = AuditProject.OpenOrCreate(args[0], Directory.GetCurrentDirectory());
+// Item 5: surface corrupt-manifest recovery.
+if (ap.RecoveredFromCorruptManifest)
+    Console.Error.WriteLine("warning: project.json was unreadable and has been reinitialized; provenance (CreatedUtc) was reset.");
 
 var uiStatePath = Path.Combine(AppContext.BaseDirectory, "uistate.json");
 var ui = UiState.Load(uiStatePath);
 
-using var project = DuckDbProject.Open(args[0]);
+using var project = ap.OpenDb();
 
 using IApplication app = Application.Create();
 app.Init();
@@ -33,7 +34,7 @@ Func<string, bool>? trySet = app.Clipboard is not null
 
 var clipboard = new NativeClipboard(new FileFallbackClipboard(Path.GetTempPath()), trySet);
 
-var ctx = new TuiContext(app, project, config, ui, clipboard, uiStatePath);
+var ctx = new TuiContext(app, project, ap.Config, ui, clipboard, uiStatePath);
 var win = new MainWindow(ctx);
 
 app.Run(win);

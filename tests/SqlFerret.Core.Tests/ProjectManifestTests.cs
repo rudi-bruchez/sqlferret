@@ -9,7 +9,7 @@ public class ProjectManifestTests
         var path = Path.Combine(Path.GetTempPath(), $"pm_{Guid.NewGuid():N}.json");
         try
         {
-            var created = new DateTime(2026, 6, 23, 10, 0, 0, DateTimeKind.Utc);
+            var created = new DateTimeOffset(2026, 6, 23, 10, 0, 0, TimeSpan.Zero);
             var m = new ProjectManifest(1, "1.2.3", created, created, null);
             m.Write(path);
 

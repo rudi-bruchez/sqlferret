@@ -1,6 +1,11 @@
 using SqlFerret.Core.Project;
 using Xunit;
 
+// Item 3: Isolate env-mutating tests from xUnit parallelism.
+[CollectionDefinition("EnvMutating", DisableParallelization = true)]
+public class EnvMutatingCollection { }
+
+[Collection("EnvMutating")]
 public class AuditProjectTests
 {
     static string NewTempDir() => Path.Combine(Path.GetTempPath(), $"ap_{Guid.NewGuid():N}");
@@ -14,6 +19,7 @@ public class AuditProjectTests
             var p = AuditProject.OpenOrCreate(dir);
             Assert.True(Directory.Exists(p.Directory));
             Assert.True(Directory.Exists(Path.Combine(p.Directory, "plans")));
+            Assert.True(Directory.Exists(p.ExportsFolder));   // Item 8: exports/ created eagerly
             Assert.True(File.Exists(Path.Combine(p.Directory, "project.json")));
             Assert.True(File.Exists(Path.Combine(p.Directory, "README.md")));
             Assert.Equal(ProjectManifest.CurrentSchemaVersion, p.Manifest.SchemaVersion);
@@ -32,7 +38,7 @@ public class AuditProjectTests
         {
             var first = AuditProject.OpenOrCreate(dir);
             var created = first.Manifest.CreatedUtc;
-            Thread.Sleep(15);
+            Thread.Sleep(50);
             var second = AuditProject.OpenOrCreate(dir);
             Assert.Equal(created, second.Manifest.CreatedUtc);
             Assert.True(second.Manifest.LastOpenedUtc > first.Manifest.LastOpenedUtc);
@@ -188,5 +194,48 @@ public class AuditProjectTests
             Environment.SetEnvironmentVariable("SF_PREC_B", null);
             Directory.Delete(proj, true);
         }
+    }
+
+    // Item 4: friendly error when --project resolves to an existing regular file.
+    [Fact]
+    public void OpenOrCreate_throws_IOException_when_path_is_existing_file()
+    {
+        var filePath = Path.Combine(Path.GetTempPath(), $"ap_{Guid.NewGuid():N}.duckdb");
+        File.WriteAllText(filePath, "placeholder");
+        try
+        {
+            var ex = Assert.Throws<IOException>(() => AuditProject.OpenOrCreate(filePath));
+            Assert.Contains("--project must be a directory", ex.Message);
+            Assert.Contains(filePath, ex.Message);
+        }
+        finally { if (File.Exists(filePath)) File.Delete(filePath); }
+    }
+
+    // Item 5: corrupt manifest → RecoveredFromCorruptManifest = true; normal reopen = false.
+    [Fact]
+    public void RecoveredFromCorruptManifest_true_when_json_unreadable()
+    {
+        var dir = NewTempDir();
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "project.json"), "{ broken ");
+        try
+        {
+            var p = AuditProject.OpenOrCreate(dir);
+            Assert.True(p.RecoveredFromCorruptManifest);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public void RecoveredFromCorruptManifest_false_on_normal_reopen()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            AuditProject.OpenOrCreate(dir);          // create
+            var second = AuditProject.OpenOrCreate(dir); // reopen
+            Assert.False(second.RecoveredFromCorruptManifest);
+        }
+        finally { if (Directory.Exists(dir)) Directory.Delete(dir, true); }
     }
 }

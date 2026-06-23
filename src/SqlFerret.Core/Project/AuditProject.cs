@@ -17,34 +17,47 @@ public sealed class AuditProject
     public SqlFerretConfig Config { get; }
     public ProjectManifest Manifest { get; }
 
-    private static readonly string ToolVersion =
-        typeof(AuditProject).Assembly.GetName().Version?.ToString() ?? "0.0.0";
+    /// <summary>True when project.json existed but was unreadable (corrupt/null); provenance was reset.</summary>
+    public bool RecoveredFromCorruptManifest { get; }
 
-    private AuditProject(string dir, SqlFerretConfig config, ProjectManifest manifest, string plansFolder)
+    private static string ToolVersion =>
+        (System.Reflection.Assembly.GetEntryAssembly() ?? typeof(AuditProject).Assembly)
+            .GetName().Version?.ToString() ?? "0.0.0";
+
+    private AuditProject(string dir, SqlFerretConfig config, ProjectManifest manifest,
+        string plansFolder, string exportsFolder, bool recoveredFromCorruptManifest)
     {
         Directory = dir;
         Config = config;
         Manifest = manifest;
         PlansFolder = plansFolder;
+        ExportsFolder = exportsFolder;
         DuckDbPath = Path.Combine(dir, "sqlferret.duckdb");
-        ExportsFolder = Path.Combine(dir, "exports");
+        RecoveredFromCorruptManifest = recoveredFromCorruptManifest;
     }
 
     /// <summary>
-    /// Creates the project skeleton (dir, plans/, project.json, README.md) if absent;
+    /// Creates the project skeleton (dir, plans/, exports/, project.json, README.md) if absent;
     /// otherwise reads the manifest and bumps LastOpenedUtc. Config and secrets resolve
     /// project-first, falling back to <paramref name="configFallbackDir"/> (the cwd in hosts).
     /// </summary>
     public static AuditProject OpenOrCreate(string projectDir, string? configFallbackDir = null)
     {
         var dir = Path.GetFullPath(projectDir);
+
+        // Item 4: reject if a regular file already exists at the path.
+        if (File.Exists(dir))
+            throw new IOException($"--project must be a directory, but a file exists at: {dir}");
+
         var fallback = configFallbackDir is null ? null : Path.GetFullPath(configFallbackDir);
 
         System.IO.Directory.CreateDirectory(dir);
 
         var manifestPath = Path.Combine(dir, "project.json");
         var existing = ProjectManifest.TryRead(manifestPath);
-        var now = DateTime.UtcNow;
+        // Item 5: detect corrupt manifest (file present but unreadable).
+        bool corrupt = File.Exists(manifestPath) && existing is null;
+        var now = DateTimeOffset.UtcNow;
         var manifest = existing is null
             ? new ProjectManifest(ProjectManifest.CurrentSchemaVersion, ToolVersion, now, now, null)
             : existing with { LastOpenedUtc = now };
@@ -70,7 +83,11 @@ public sealed class AuditProject
             : Path.GetFullPath(Path.Combine(dir, config.PlansFolder));
         System.IO.Directory.CreateDirectory(plans);
 
-        return new AuditProject(dir, config, manifest, plans);
+        // Item 8: create exports/ eagerly (symmetry with plans/).
+        var exports = Path.Combine(dir, "exports");
+        System.IO.Directory.CreateDirectory(exports);
+
+        return new AuditProject(dir, config, manifest, plans, exports, corrupt);
     }
 
     /// <summary>Opens the project's DuckDB database (creating its schema if new).</summary>

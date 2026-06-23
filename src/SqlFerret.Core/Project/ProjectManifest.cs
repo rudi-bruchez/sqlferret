@@ -9,8 +9,8 @@ namespace SqlFerret.Core.Project;
 public record ProjectManifest(
     int SchemaVersion,
     string ToolVersion,
-    DateTime CreatedUtc,
-    DateTime LastOpenedUtc,
+    DateTimeOffset CreatedUtc,
+    DateTimeOffset LastOpenedUtc,
     string? Notes)
 {
     /// <summary>Current version of the project-directory format.</summary>

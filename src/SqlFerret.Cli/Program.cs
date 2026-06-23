@@ -20,7 +20,11 @@ AuditProject? OpenProject()
         Console.Error.WriteLine("--project <dir> is required");
         return null;
     }
-    return AuditProject.OpenOrCreate(dir, Directory.GetCurrentDirectory());
+    var ap = AuditProject.OpenOrCreate(dir, Directory.GetCurrentDirectory());
+    // Item 5: surface corrupt-manifest recovery so the user knows provenance was reset.
+    if (ap.RecoveredFromCorruptManifest)
+        Console.Error.WriteLine("warning: project.json was unreadable and has been reinitialized; provenance (CreatedUtc) was reset.");
+    return ap;
 }
 
 if (args.Length == 0)
