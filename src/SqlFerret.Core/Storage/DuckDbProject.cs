@@ -5,7 +5,7 @@ using SqlFerret.Core.Normalization;
 
 namespace SqlFerret.Core.Storage;
 
-public sealed class DuckDbProject : IDisposable
+public sealed partial class DuckDbProject : IDisposable
 {
     public DuckDBConnection Connection { get; }
 
@@ -65,6 +65,7 @@ public sealed class DuckDbProject : IDisposable
           victim_spids TEXT, participant_spids TEXT, graph_xml TEXT);
         """;
         cmd.ExecuteNonQuery();
+        CreateQdsSchema(conn);
     }
 
     private long Scalar(string sql)
