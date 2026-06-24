@@ -22,16 +22,21 @@ feature follows: a `SqlConnection` from a config-supplied connection string, bra
 ## Goal
 
 A new `query-store-import` CLI command and `QueryStoreImportService` Core service that connect to a
-target database, read its entire Query Store, write each execution plan as a `.sqlplan` file, and
-load queries / plans / per-interval runtime stats / wait stats into new DuckDB `qds_*` tables inside
-the audit project. The result is a self-contained project a later export/MCP/feature-extraction step
+target database, read its Query Store (all of it, or an optional time window), write each execution
+plan as a `.sqlplan` file, and load queries / plans / per-interval runtime stats / wait stats into new
+DuckDB `qds_*` tables inside the audit project. The result is a self-contained project a later export/MCP/feature-extraction step
 can analyze offline.
 
 ## Decisions (locked during brainstorming)
 
-1. **Scope: everything.** Pull the entire Query Store — every query, plan, runtime-stats interval,
-   and wait-stats row. No top-N / regression / time-window selection; narrowing is deferred to the
-   later query/export layer.
+1. **Scope: everything, optionally time-scoped.** By default pull the entire Query Store — every
+   query, plan, runtime-stats interval, and wait-stats row. No top-N / regression selection. An
+   optional **time window** narrows the extraction: `--from <datetime> --to <datetime>`, or
+   `--last <N>{h|d}` (shorthand for `now − N … now`). When a window is set, only runtime-stats and
+   wait-stats whose `runtime_stats_interval` overlaps the window are pulled, and the included
+   plans / queries / query-text are exactly those referenced by that windowed activity (a plan with
+   no executions in the window is excluded). Narrowing beyond a time window (top-N, regression) stays
+   deferred to the later query/export layer.
 2. **Plan XML: one `.sqlplan` file per plan**, written during extraction; DuckDB holds a path index
    (`qds_plans.sqlplan_path`), not the XML. Files live under `<project>/plans/qds/<plan_id>.sqlplan`
    — a `qds/` subfolder so Query Store `plan_id`-named files never collide with the `.xel`
@@ -80,6 +85,16 @@ CLI query-store-import
   (`"Query Store is not enabled on database <db> (actual_state=OFF)"`) and a non-zero exit — never a
   raw stack trace. `SqlException` (login/connect failures), and missing/old catalog views are caught
   and presented cleanly, per the error-handling lesson from the audit-project review.
+- **Read isolation (resolves the inline QUESTION — yes, we want it):** the extraction connection
+  runs `SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;` before reading. `sys.query_store_*` reads
+  internal tables that Query Store's background flush task writes; READ UNCOMMITTED keeps the
+  extraction from blocking, or being blocked by, that activity. A reporting extraction tolerates a
+  marginally inconsistent snapshot, so this is the right trade (and mirrors the actual-plan spec).
+- **Time window (optional, Decision 1):** `--from <datetime> --to <datetime>` or `--last <N>{h|d}`
+  restrict the pull to runtime/wait-stats intervals overlapping the window. Omitted → full Query
+  Store. `--from/--to` and `--last` are mutually exclusive; `--last 24h` ≡ `--from (now−24h) --to now`.
+  Window bounds are passed as **bound parameters** to the source queries (no interpolation) and
+  recorded in `qds_runs` (`window_from`/`window_to`; NULL for a full extraction).
 
 ## DuckDB schema (new `qds_*` tables)
 
@@ -91,6 +106,7 @@ Source binary columns (`query_hash`, `query_plan_hash`) are stored as hex `TEXT`
 ### `qds_runs` — one row per extraction (provenance + exhaustive counters)
 ```
 run_id BIGINT PRIMARY KEY, server_name TEXT, database_name TEXT, captured_at TIMESTAMP,
+window_from TIMESTAMP, window_to TIMESTAMP,
 sql_server_version TEXT, query_store_actual_state TEXT, query_store_desired_state TEXT,
 wait_stats_available BOOLEAN, plans_requested BOOLEAN,
 queries_count BIGINT, query_text_count BIGINT, plans_count BIGINT,
@@ -170,16 +186,20 @@ empty for that run.
 
 `QueryStoreImportService.Import(progress)` (synchronous over an open connection; async optional):
 
-1. Open `SqlConnection`; if `--database` given, `USE [db]` (bracket-escaped).
+1. Open `SqlConnection`; `SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;`; if `--database` given,
+   `USE [db]` (bracket-escaped).
 2. Read `@@SERVERNAME`, `SERVERPROPERTY('ProductVersion')`, and
    `sys.database_query_store_options` (`actual_state_desc`, `desired_state_desc`). Abort cleanly if
    not `READ_WRITE`/`READ_ONLY`.
 3. Detect wait-stats availability (the `sys.query_store_wait_stats` view exists, SQL 2017+).
 4. `BeginRun` → `qds_runs` row (zeroed counters).
-5. Stream and batch-insert in dependency order: `qds_query_text` → `qds_queries` → `qds_plans`
-   (writing `plans/qds/<plan_id>.sqlplan` per plan when `--plans`, counting writes and failures) →
-   `qds_runtime_stats` → `qds_wait_stats` (when available). Batched DuckDB transactions, same
-   `InsertBatch`/bound-`$param` pattern as the existing inserts.
+5. Stream and batch-insert. **Without a window** (default): dependency order `qds_query_text` →
+   `qds_queries` → `qds_plans` (writing `plans/qds/<plan_id>.sqlplan` per plan when `--plans`,
+   counting writes/failures) → `qds_runtime_stats` → `qds_wait_stats` (when available). **With a
+   window**: the overlapping `runtime_stats_interval`s define the included `plan_id` set;
+   `qds_runtime_stats`/`qds_wait_stats` are filtered to those intervals and
+   `qds_plans`/`qds_queries`/`qds_query_text` are restricted to the referenced ids. Batched DuckDB
+   transactions, same `InsertBatch`/bound-`$param` pattern as the existing inserts.
 6. `FinishRun` → write final counters.
 7. Report a result record (`run_id` + all counts) the CLI prints; progress is streamed to a stderr
    gauge during steps 5 (queries/plans/intervals processed), like `.xel import`.
@@ -236,6 +256,8 @@ Store does not expose as a separate stream, so there is no parameter-value sink 
   - The wait-stats ms→µs conversion.
   - `.sqlplan` path construction + path-safety (plan_id is integer; fixed subfolder).
   - `qds_runs` counter exhaustiveness (written + failures == plans_count).
+  - Time-window flag parsing: `--last 24h`/`7d` → `(from, to)`; `--from/--to` vs `--last` are mutually
+    exclusive; an invalid `--last` value is rejected cleanly.
   - `--plans`/`--no-plans` effect on `sqlplan_path`/`plan_written` (can be exercised with a fake
     plan-writer seam if the file write is factored, else covered by the live test).
 
@@ -243,6 +265,14 @@ Store does not expose as a separate stream, so there is no parameter-value sink 
 
 - Plan-XML feature parsing (MissingIndexes, warnings, operators) → reads the `.sqlplan` files offline.
 - AI export pack; MCP host.
-- Selective extraction (top-N / regressed / time-window) — superseded by "everything".
+- Selective extraction by **rank or regression** (top-N, regressed) → deferred to the query/export
+  layer. (A **time-window** filter *is* in scope — see Decision 1.)
+- **Reconstructing executable queries from captured plans** — the showplan XML in each `.sqlplan`
+  embeds the parameter values used at compile/run time (`ParameterCompiledValue` /
+  `ParameterRuntimeValue` under `<ParameterList>`). Because this extraction keeps the full `.sqlplan`
+  files, a later iteration can parse those values and combine them with the parameterized query text
+  to emit a runnable statement (akin to `ReplayBuilder` for `.xel` events) — feeding, e.g., the
+  actual-plan capture service. No change to this spec is needed: the data is already preserved.
+  Privacy caveat: those values are literals (see Redaction); `--no-plans` omits them entirely.
 - Incremental/delta extraction — each run is a full snapshot appended by `run_id`.
 - TUI surface for Query Store data.
