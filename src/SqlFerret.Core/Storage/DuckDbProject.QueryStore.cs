@@ -146,4 +146,57 @@ public sealed partial class DuckDbProject
         }
         tx.Commit();
     }
+
+    private static readonly string RuntimeInsertSql = BuildRuntimeInsertSql();
+
+    private static string BuildRuntimeInsertSql()
+    {
+        var baseCols = "run_id, runtime_stats_id, plan_id, runtime_stats_interval_id, " +
+                       "interval_start_time, interval_end_time, execution_type, count_executions";
+        var basePh = "$run,$id,$plan,$iid,$istart,$iend,$etype,$cnt";
+        var metricCols = string.Join(", ", QdsSchema.RuntimeMetrics.SelectMany(m =>
+            new[] { $"avg_{m.Duck}", $"min_{m.Duck}", $"max_{m.Duck}", $"last_{m.Duck}", $"stdev_{m.Duck}" }));
+        var metricPh = string.Join(", ", QdsSchema.RuntimeMetrics.Select((_, i) =>
+            $"$a{i},$mn{i},$mx{i},$ls{i},$sd{i}").ToArray());
+        return $"INSERT INTO qds_runtime_stats ({baseCols}, {metricCols}) VALUES ({basePh}, {metricPh})";
+    }
+
+    public void InsertQdsRuntimeStats(long runId, IReadOnlyList<QdsRuntimeStatRow> rows)
+    {
+        using var tx = Connection.BeginTransaction();
+        foreach (var r in rows)
+        {
+            using var c = Connection.CreateCommand(); c.Transaction = tx;
+            c.CommandText = RuntimeInsertSql;
+            Add(c, "$run", runId); Add(c, "$id", r.RuntimeStatsId); Add(c, "$plan", r.PlanId); Add(c, "$iid", r.IntervalId);
+            Add(c, "$istart", r.IntervalStart); Add(c, "$iend", r.IntervalEnd); Add(c, "$etype", (object?)r.ExecutionType);
+            Add(c, "$cnt", r.CountExecutions);
+            for (int i = 0; i < QdsSchema.RuntimeMetrics.Length; i++)
+            {
+                var m = r.Metrics[i];
+                Add(c, $"$a{i}", (object?)m.Avg); Add(c, $"$mn{i}", (object?)m.Min); Add(c, $"$mx{i}", (object?)m.Max);
+                Add(c, $"$ls{i}", (object?)m.Last); Add(c, $"$sd{i}", (object?)m.Stdev);
+            }
+            c.ExecuteNonQuery();
+        }
+        tx.Commit();
+    }
+
+    public void InsertQdsWaitStats(long runId, IReadOnlyList<QdsWaitStatRow> rows)
+    {
+        using var tx = Connection.BeginTransaction();
+        foreach (var r in rows)
+        {
+            using var c = Connection.CreateCommand(); c.Transaction = tx;
+            c.CommandText = "INSERT INTO qds_wait_stats VALUES ($run,$id,$plan,$iid,$cat,$etype,$cnt,$tot,$avg,$min,$max,$last,$sd)";
+            Add(c, "$run", runId); Add(c, "$id", r.WaitStatsId); Add(c, "$plan", r.PlanId); Add(c, "$iid", r.IntervalId);
+            Add(c, "$cat", (object?)r.WaitCategory); Add(c, "$etype", (object?)r.ExecutionType); Add(c, "$cnt", r.CountExecutions);
+            Add(c, "$tot", r.TotalWaitTimeUs);
+            Add(c, "$avg", (object?)r.WaitTimeUs.Avg); Add(c, "$min", (object?)r.WaitTimeUs.Min);
+            Add(c, "$max", (object?)r.WaitTimeUs.Max); Add(c, "$last", (object?)r.WaitTimeUs.Last);
+            Add(c, "$sd", (object?)r.WaitTimeUs.Stdev);
+            c.ExecuteNonQuery();
+        }
+        tx.Commit();
+    }
 }

@@ -88,4 +88,77 @@ public class QdsStorageTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+
+    static IReadOnlyList<MetricAggregate> ElevenMetrics(long seed)
+    {
+        var list = new List<MetricAggregate>();
+        for (int i = 0; i < QdsSchema.RuntimeMetrics.Length; i++)
+            list.Add(new MetricAggregate(seed + i, 0, seed + i + 100, seed + i, 1.5));
+        return list;
+    }
+
+    [Fact]
+    public void Insert_runtime_stats_binds_generated_metric_columns()
+    {
+        var path = NewDb();
+        try
+        {
+            using var p = DuckDbProject.Open(path);
+            var run = p.BeginQdsRun(new QdsRunInfo(null, null, null, null, null, null, null, false, false));
+            p.InsertQdsRuntimeStats(run, [new QdsRuntimeStatRow(
+                RuntimeStatsId: 1, PlanId: 5, IntervalId: 42,
+                IntervalStart: new DateTime(2026, 6, 1, 10, 0, 0), IntervalEnd: new DateTime(2026, 6, 1, 11, 0, 0),
+                ExecutionType: "Regular", CountExecutions: 9, Metrics: ElevenMetrics(1000))]);
+
+            using var c = p.Connection.CreateCommand();
+            c.CommandText = "SELECT count_executions FROM qds_runtime_stats WHERE runtime_stats_id=1";
+            Assert.Equal(9L, Convert.ToInt64(c.ExecuteScalar()));
+            // first metric is duration_us → avg = seed+0 = 1000
+            c.CommandText = "SELECT avg_duration_us FROM qds_runtime_stats WHERE runtime_stats_id=1";
+            Assert.Equal(1000L, Convert.ToInt64(c.ExecuteScalar()));
+            // last metric (index 10) is log_bytes_used → avg = 1000+10 = 1010
+            c.CommandText = "SELECT avg_log_bytes_used FROM qds_runtime_stats WHERE runtime_stats_id=1";
+            Assert.Equal(1010L, Convert.ToInt64(c.ExecuteScalar()));
+            c.CommandText = "SELECT stdev_duration_us FROM qds_runtime_stats WHERE runtime_stats_id=1";
+            Assert.Equal(1.5, Convert.ToDouble(c.ExecuteScalar()));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void Insert_runtime_stats_null_metric_stored_null()
+    {
+        var path = NewDb();
+        try
+        {
+            using var p = DuckDbProject.Open(path);
+            var run = p.BeginQdsRun(new QdsRunInfo(null, null, null, null, null, null, null, false, false));
+            var metrics = ElevenMetrics(1).ToList();
+            metrics[10] = new MetricAggregate(null, null, null, null, null); // log_bytes_used absent (2016)
+            p.InsertQdsRuntimeStats(run, [new QdsRuntimeStatRow(2, 5, 1, new DateTime(2026, 6, 1), new DateTime(2026, 6, 1), "Regular", 1, metrics)]);
+            using var c = p.Connection.CreateCommand();
+            c.CommandText = "SELECT avg_log_bytes_used IS NULL FROM qds_runtime_stats WHERE runtime_stats_id=2";
+            Assert.True(Convert.ToBoolean(c.ExecuteScalar()));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void Insert_wait_stats_stores_microseconds()
+    {
+        var path = NewDb();
+        try
+        {
+            using var p = DuckDbProject.Open(path);
+            var run = p.BeginQdsRun(new QdsRunInfo(null, null, null, null, null, null, null, true, false));
+            p.InsertQdsWaitStats(run, [new QdsWaitStatRow(1, 5, 42, "CPU", "Regular", 3,
+                new MetricAggregate(2000, 1000, 5000, 2000, 0.5), TotalWaitTimeUs: 6000)]);
+            using var c = p.Connection.CreateCommand();
+            c.CommandText = "SELECT avg_query_wait_time_us FROM qds_wait_stats WHERE wait_stats_id=1";
+            Assert.Equal(2000L, Convert.ToInt64(c.ExecuteScalar()));
+            c.CommandText = "SELECT total_query_wait_time_us FROM qds_wait_stats WHERE wait_stats_id=1";
+            Assert.Equal(6000L, Convert.ToInt64(c.ExecuteScalar()));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
 }
