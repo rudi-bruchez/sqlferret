@@ -24,7 +24,11 @@ public static class QdsSchema
     public static readonly HashSet<string> V2017Plus = ["tempdb_space_used", "log_bytes_used"];
 }
 
-/// <summary>One aggregate set for a metric; any value may be NULL (QS NULLs, or 2017+ metric on 2016).</summary>
+/// <summary>
+/// One aggregate set for a metric; any value may be NULL (QS NULLs, or a 2017+ metric on SQL 2016).
+/// Avg/Min/Max/Last are stored as long: Query Store's avg_* columns are float, so fractional averages
+/// are intentionally truncated (spec: only stdev is DOUBLE). Do not "fix" this without a schema change.
+/// </summary>
 public readonly record struct MetricAggregate(long? Avg, long? Min, long? Max, long? Last, double? Stdev);
 
 public record QdsRunInfo(string? ServerName, string? DatabaseName, DateTime? WindowFrom, DateTime? WindowTo,

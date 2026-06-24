@@ -27,6 +27,7 @@ public class QueryStoreWindowTests
     {
         var w = QueryStoreWindow.Parse(null, null, "7d", Now);
         Assert.Equal(Now.AddDays(-7), w.From);
+        Assert.Equal(Now, w.To);
     }
 
     [Fact]

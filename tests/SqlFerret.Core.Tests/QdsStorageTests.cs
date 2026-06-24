@@ -31,6 +31,8 @@ public class QdsStorageTests
             c.CommandText = "SELECT wait_stats_available FROM qds_runs"; Assert.True(Convert.ToBoolean(c.ExecuteScalar()));
             c.CommandText = "SELECT window_from IS NOT NULL FROM qds_runs"; Assert.True(Convert.ToBoolean(c.ExecuteScalar()));
             c.CommandText = "SELECT extractor_version FROM qds_runs"; Assert.Equal(1L, Convert.ToInt64(c.ExecuteScalar()));
+            c.CommandText = "SELECT runtime_stat_rows FROM qds_runs"; Assert.Equal(100L, Convert.ToInt64(c.ExecuteScalar()));
+            c.CommandText = "SELECT wait_stat_rows FROM qds_runs"; Assert.Equal(40L, Convert.ToInt64(c.ExecuteScalar()));
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
