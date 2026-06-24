@@ -12,6 +12,7 @@ queries, their execution plans (as showplan XML — i.e. `.sqlplan`), per-interv
 and per-query wait statistics, directly inside the database. Extracting it lets SqlFerret analyze a
 workload without needing a trace capture, and gives a downstream AI the raw material to find
 regressions, expensive queries, plan instability, and waits.
+We want to have both possibilities to be able to analyze all informations from a server, for a complete audit.
 
 There is no Query Store extraction in SqlFerret today. The only live-server code is
 `EstimatedPlanService` (compile-only `SET SHOWPLAN_XML ON`), which establishes the patterns this
