@@ -54,9 +54,10 @@ public class QueryStoreImportService(string connectionString, DuckDbProject db, 
         {
             long planId = Convert.ToInt64(r.GetValue(0));
             string? path = null; bool ok = false;
-            if (opts.WritePlans)
+            var planXml = S(r, 12);
+            if (opts.WritePlans && planXml is not null) // skip plans with no captured XML (NULL query_plan)
             {
-                try { path = WritePlan(planId, S(r, 12) ?? ""); ok = true; plansWritten++; }
+                try { path = WritePlan(planId, planXml); ok = true; plansWritten++; }
                 catch { planFailures++; }
             }
             return new QdsPlanRow(planId, Convert.ToInt64(r.GetValue(1)), S(r, 2), S(r, 3),
@@ -184,7 +185,7 @@ public class QueryStoreImportService(string connectionString, DuckDbProject db, 
     private static long? L(SqlDataReader r, int i) => r.IsDBNull(i) ? null : Convert.ToInt64(r.GetValue(i));
     private static double? D(SqlDataReader r, int i) => r.IsDBNull(i) ? null : Convert.ToDouble(r.GetValue(i));
     private static string? S(SqlDataReader r, int i) => r.IsDBNull(i) ? null : Convert.ToString(r.GetValue(i));
-    private static DateTime? Dt(SqlDataReader r, int i) => r.IsDBNull(i) ? null : Convert.ToDateTime(r.GetValue(i));
+    private static DateTime? Dt(SqlDataReader r, int i) => r.IsDBNull(i) ? null : QdsConvert.AsDateTime(r.GetValue(i));
 
     private static QdsQueryTextRow ReadQueryText(SqlDataReader r) =>
         new(Convert.ToInt64(r.GetValue(0)), S(r, 1), Convert.ToBoolean(r.GetValue(2)), Convert.ToBoolean(r.GetValue(3)));
@@ -203,16 +204,17 @@ public class QueryStoreImportService(string connectionString, DuckDbProject db, 
             metrics.Add(new MetricAggregate(L(r, b), L(r, b + 1), L(r, b + 2), L(r, b + 3), D(r, b + 4)));
         }
         return new QdsRuntimeStatRow(Convert.ToInt64(r.GetValue(0)), Convert.ToInt64(r.GetValue(1)), Convert.ToInt64(r.GetValue(2)),
-            Convert.ToDateTime(r.GetValue(3)), Convert.ToDateTime(r.GetValue(4)), S(r, 5), Convert.ToInt64(r.GetValue(6)), metrics);
+            QdsConvert.AsDateTime(r.GetValue(3)), QdsConvert.AsDateTime(r.GetValue(4)), S(r, 5), Convert.ToInt64(r.GetValue(6)), metrics);
     }
 
     private static QdsWaitStatRow ReadWaitStat(SqlDataReader r)
     {
-        // ms → µs at the ingestion boundary
-        static long? Us(long? ms) => ms is null ? null : ms * 1000;
-        static double? UsD(double? ms) => ms is null ? null : ms * 1000;
-        long totalUs = (L(r, 6) ?? 0) * 1000;
-        var wait = new MetricAggregate(Us(L(r, 7)), Us(L(r, 8)), Us(L(r, 9)), Us(L(r, 10)), UsD(D(r, 11)));
+        // QS wait times are float milliseconds → microseconds at the ingestion boundary. Read as
+        // double so sub-millisecond waits are not truncated to zero before the ×1000.
+        static long? Us(double? ms) => ms is null ? null : QdsConvert.MsToUs(ms.Value);
+        static double? UsD(double? ms) => ms is null ? null : ms * 1000.0;
+        long totalUs = QdsConvert.MsToUs(D(r, 6) ?? 0);
+        var wait = new MetricAggregate(Us(D(r, 7)), Us(D(r, 8)), Us(D(r, 9)), Us(D(r, 10)), UsD(D(r, 11)));
         return new QdsWaitStatRow(Convert.ToInt64(r.GetValue(0)), Convert.ToInt64(r.GetValue(1)), Convert.ToInt64(r.GetValue(2)),
             S(r, 3), S(r, 4), Convert.ToInt64(r.GetValue(5)), wait, totalUs);
     }
@@ -234,10 +236,12 @@ public class QueryStoreImportService(string connectionString, DuckDbProject db, 
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
         cmd.CommandTimeout = 0; // Query Store reads can be large; no client timeout
-        if (window.IsBounded) // windowed SQL references @from/@to; bind their values
-        {
-            cmd.Parameters.Add(new SqlParameter("@from", System.Data.SqlDbType.DateTime2) { Value = window.From });
-            cmd.Parameters.Add(new SqlParameter("@to", System.Data.SqlDbType.DateTime2) { Value = window.To });
+        if (window.IsBounded) // windowed SQL references @from/@to; bind as datetimeoffset (the QS
+        {                     // interval column type). A one-sided window opens the other end.
+            cmd.Parameters.Add(new SqlParameter("@from", System.Data.SqlDbType.DateTimeOffset)
+            { Value = QdsConvert.WindowBound(window.From, DateTimeOffset.MinValue) });
+            cmd.Parameters.Add(new SqlParameter("@to", System.Data.SqlDbType.DateTimeOffset)
+            { Value = QdsConvert.WindowBound(window.To, DateTimeOffset.MaxValue) });
         }
         using var reader = cmd.ExecuteReader();
         while (reader.Read()) list.Add(read(reader));
