@@ -1,10 +1,12 @@
 // src/SqlFerret.Cli/Program.cs
+using Microsoft.Data.SqlClient;
 using SqlFerret.Core.Analysis;
 using SqlFerret.Core.Config;
 using SqlFerret.Core.Filtering;
 using SqlFerret.Core.Ingestion;
 using SqlFerret.Core.Parameters;
 using SqlFerret.Core.Project;
+using SqlFerret.Core.Server;
 
 string Arg(string name, string? fallback = null)
 {
@@ -37,7 +39,7 @@ AuditProject? OpenProject()
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: import <path> --project <dir> | top-slow --project <dir> | export-blocking --project <dir> [--format json|md|both] [--samples N] [--full] [--out file]");
+    Console.Error.WriteLine("usage: import <path> --project <dir> | top-slow --project <dir> | export-blocking --project <dir> [...] | query-store-import --project <dir> [--conn <s>] [--database <db>] [--no-plans] [--from <dt> --to <dt> | --last <N>{h|d}]");
     return 1;
 }
 
@@ -139,12 +141,67 @@ switch (args[0])
             if (outPath.Length > 0) File.WriteAllText(outPath, payload); else Console.WriteLine(payload);
             return 0;
         }
+    case "query-store-import":
+        {
+            var project = OpenProject();
+            if (project is null) return 1;
+
+            var connOverride = Arg("--conn", "");
+            var connStr = connOverride.Length > 0 ? connOverride : project.Config.ConnectionString;
+            if (string.IsNullOrWhiteSpace(connStr))
+            {
+                Console.Error.WriteLine("query-store-import: no connection string (set server.connectionString in config/.env, or pass --conn)");
+                return 1;
+            }
+
+            var database = Arg("--database", "");
+            var noPlans = Array.IndexOf(args, "--no-plans") >= 0;
+
+            QueryStoreWindow window;
+            try
+            {
+                window = QueryStoreWindow.Parse(
+                    NullIfEmpty(Arg("--from", "")), NullIfEmpty(Arg("--to", "")), NullIfEmpty(Arg("--last", "")),
+                    DateTime.UtcNow);
+            }
+            catch (ArgumentException ex) { Console.Error.WriteLine($"query-store-import: {ex.Message}"); return 1; }
+
+            if (!noPlans && !string.Equals(project.Config.RedactionPolicy, "off", StringComparison.OrdinalIgnoreCase))
+                Console.Error.WriteLine(
+                    $"warning: --plans writes raw showplan XML; .sqlplan files may contain literal values not " +
+                    $"covered by redaction (policy={project.Config.RedactionPolicy}). Use --no-plans to skip.");
+
+            using var db = project.OpenDb();
+            var svc = new QueryStoreImportService(connStr!, db, project.PlansFolder);
+            var opts = new QueryStoreImportOptions(NullIfEmpty(database), WritePlans: !noPlans, Window: window);
+
+            var showGauge = !Console.IsErrorRedirected;
+            var progress = new SyncProgress<string>(s => { if (showGauge) Console.Error.Write("\r" + s.PadRight(60)); });
+
+            QdsImportResult result;
+            try { result = svc.Import(opts, progress); }
+            catch (Exception ex) when (ex is SqlException or InvalidOperationException or IOException)
+            {
+                if (showGauge) Console.Error.WriteLine();
+                Console.Error.WriteLine($"query-store-import: {ex.Message}");
+                return 1;
+            }
+            if (showGauge) Console.Error.WriteLine();
+
+            Console.WriteLine(
+                $"qds run {result.RunId}: queries={result.QueriesCount} queryText={result.QueryTextCount} " +
+                $"plans={result.PlansCount} runtimeRows={result.RuntimeStatRows} waitRows={result.WaitStatRows} " +
+                $"plansWritten={result.PlanFilesWritten} planFailures={result.PlanWriteFailures}");
+            return 0;
+        }
     default:
         Console.Error.WriteLine($"unknown command: {args[0]}");
         return 1;
 }
 
 static string Trim(string s) => s.Length <= 80 ? s : s[..77] + "...";
+
+static string? NullIfEmpty(string s) => string.IsNullOrWhiteSpace(s) ? null : s;
 
 file sealed class SyncProgress<T>(Action<T> onReport) : IProgress<T>
 {
