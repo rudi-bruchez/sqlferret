@@ -13,10 +13,18 @@ if (args.Length < 1)
     return 1;
 }
 
-var ap = AuditProject.OpenOrCreate(args[0], Directory.GetCurrentDirectory());
-// Item 5: surface corrupt-manifest recovery.
-if (ap.RecoveredFromCorruptManifest)
-    Console.Error.WriteLine("warning: project.json was unreadable and has been reinitialized; provenance (CreatedUtc) was reset.");
+AuditProject ap;
+try { ap = AuditProject.OpenOrCreate(args[0], Directory.GetCurrentDirectory()); }
+catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException or UnauthorizedAccessException)
+{
+    // File-at-path guard, malformed sqlferret.config.json, or a permission/IO error:
+    // present a clean message instead of an unhandled stack trace before the UI starts.
+    Console.Error.WriteLine($"error opening project: {ex.Message}");
+    return 1;
+}
+// Surface corrupt-manifest recovery.
+if (ap.ManifestWarning is { } warning)
+    Console.Error.WriteLine(warning);
 
 var uiStatePath = Path.Combine(AppContext.BaseDirectory, "uistate.json");
 var ui = UiState.Load(uiStatePath);

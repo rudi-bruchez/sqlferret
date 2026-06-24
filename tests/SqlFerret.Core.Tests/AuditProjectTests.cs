@@ -205,7 +205,7 @@ public class AuditProjectTests
         try
         {
             var ex = Assert.Throws<IOException>(() => AuditProject.OpenOrCreate(filePath));
-            Assert.Contains("--project must be a directory", ex.Message);
+            Assert.Contains("must be a directory", ex.Message);
             Assert.Contains(filePath, ex.Message);
         }
         finally { if (File.Exists(filePath)) File.Delete(filePath); }
@@ -237,5 +237,24 @@ public class AuditProjectTests
             Assert.False(second.RecoveredFromCorruptManifest);
         }
         finally { if (Directory.Exists(dir)) Directory.Delete(dir, true); }
+    }
+
+    // ManifestWarning is the single source of the host-printed warning string.
+    [Fact]
+    public void ManifestWarning_set_only_when_recovered()
+    {
+        var dir = NewTempDir();
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "project.json"), "{ broken ");
+        try
+        {
+            var corrupt = AuditProject.OpenOrCreate(dir);
+            Assert.NotNull(corrupt.ManifestWarning);
+            Assert.Contains("unreadable", corrupt.ManifestWarning);
+
+            var reopen = AuditProject.OpenOrCreate(dir); // now has a valid manifest
+            Assert.Null(reopen.ManifestWarning);
+        }
+        finally { Directory.Delete(dir, true); }
     }
 }

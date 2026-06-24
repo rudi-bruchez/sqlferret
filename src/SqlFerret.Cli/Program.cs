@@ -20,10 +20,18 @@ AuditProject? OpenProject()
         Console.Error.WriteLine("--project <dir> is required");
         return null;
     }
-    var ap = AuditProject.OpenOrCreate(dir, Directory.GetCurrentDirectory());
-    // Item 5: surface corrupt-manifest recovery so the user knows provenance was reset.
-    if (ap.RecoveredFromCorruptManifest)
-        Console.Error.WriteLine("warning: project.json was unreadable and has been reinitialized; provenance (CreatedUtc) was reset.");
+    AuditProject ap;
+    try { ap = AuditProject.OpenOrCreate(dir, Directory.GetCurrentDirectory()); }
+    catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException or UnauthorizedAccessException)
+    {
+        // File-at-path guard, malformed sqlferret.config.json, or a permission/IO error:
+        // present a clean message instead of an unhandled stack trace.
+        Console.Error.WriteLine($"--project: {ex.Message}");
+        return null;
+    }
+    // Surface corrupt-manifest recovery so the user knows provenance was reset.
+    if (ap.ManifestWarning is { } warning)
+        Console.Error.WriteLine(warning);
     return ap;
 }
 

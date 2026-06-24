@@ -20,6 +20,15 @@ public sealed class AuditProject
     /// <summary>True when project.json existed but was unreadable (corrupt/null); provenance was reset.</summary>
     public bool RecoveredFromCorruptManifest { get; }
 
+    /// <summary>
+    /// A host-printable warning when opening had to recover/reset state, else null.
+    /// Single source of the message so every host prints it identically.
+    /// </summary>
+    public string? ManifestWarning =>
+        RecoveredFromCorruptManifest
+            ? "warning: project.json was unreadable and has been reinitialized; provenance (CreatedUtc) was reset."
+            : null;
+
     private static string ToolVersion =>
         (System.Reflection.Assembly.GetEntryAssembly() ?? typeof(AuditProject).Assembly)
             .GetName().Version?.ToString() ?? "0.0.0";
@@ -45,9 +54,10 @@ public sealed class AuditProject
     {
         var dir = Path.GetFullPath(projectDir);
 
-        // Item 4: reject if a regular file already exists at the path.
+        // Item 4: reject if a regular file already exists at the path. Host-agnostic message:
+        // hosts (CLI --project, TUI positional arg) add their own flag context when presenting it.
         if (File.Exists(dir))
-            throw new IOException($"--project must be a directory, but a file exists at: {dir}");
+            throw new IOException($"path must be a directory, but a file exists at: {dir}");
 
         var fallback = configFallbackDir is null ? null : Path.GetFullPath(configFallbackDir);
 
@@ -61,7 +71,9 @@ public sealed class AuditProject
         var manifest = existing is null
             ? new ProjectManifest(ProjectManifest.CurrentSchemaVersion, ToolVersion, now, now, null)
             : existing with { LastOpenedUtc = now };
-        manifest.Write(manifestPath);
+        // Best-effort provenance: never let a read-only/full filesystem fail an otherwise valid
+        // open (e.g. running a read-only top-slow/export against an archived, read-only project).
+        try { manifest.Write(manifestPath); } catch { /* provenance is non-critical */ }
 
         var readmePath = Path.Combine(dir, "README.md");
         if (!File.Exists(readmePath)) File.WriteAllText(readmePath, ReadmeContent);
@@ -105,7 +117,7 @@ public sealed class AuditProject
         |------|------|
         | `sqlferret.duckdb` | Embedded DuckDB database: normalized workload, blocking/deadlock reports, analysis tables. Open with the DuckDB CLI for ad-hoc SQL. |
         | `plans/` | Captured `*.sqlplan` execution plans (estimated / Query Store). Open in SSMS or Plan Explorer. |
-        | `exports/` | Generated export packs (JSON/YAML + plans) for downstream / AI analysis. Created on demand. |
+        | `exports/` | Generated export packs (JSON/YAML + plans) for downstream / AI analysis. Created at project creation; empty until an export runs. |
         | `project.json` | Project manifest — provenance maintained by SqlFerret. Do not edit by hand. |
         | `sqlferret.config.json` | Optional settings (display units, redaction policy, server connection). Edit to taste. |
         | `.env` | Optional project-local secrets (e.g. `${SQLFERRET_CONN}`). Gitignored. Real environment variables win over this file. |
