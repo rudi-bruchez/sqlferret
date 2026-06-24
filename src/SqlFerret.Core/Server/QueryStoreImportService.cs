@@ -172,7 +172,7 @@ public class QueryStoreImportService(string connectionString, DuckDbProject db, 
 
     private static string WaitStatsSql(QueryStoreWindow w) => $"""
           SELECT ws.wait_stats_id, ws.plan_id, ws.runtime_stats_interval_id, ws.wait_category_desc,
-            ws.execution_type_desc, ws.count_executions, ws.total_query_wait_time_ms,
+            ws.execution_type_desc, ws.total_query_wait_time_ms,
             ws.avg_query_wait_time_ms, ws.min_query_wait_time_ms, ws.max_query_wait_time_ms,
             ws.last_query_wait_time_ms, ws.stdev_query_wait_time_ms
           FROM sys.query_store_wait_stats ws
@@ -213,10 +213,10 @@ public class QueryStoreImportService(string connectionString, DuckDbProject db, 
         // double so sub-millisecond waits are not truncated to zero before the ×1000.
         static long? Us(double? ms) => ms is null ? null : QdsConvert.MsToUs(ms.Value);
         static double? UsD(double? ms) => ms is null ? null : ms * 1000.0;
-        long totalUs = QdsConvert.MsToUs(D(r, 6) ?? 0);
-        var wait = new MetricAggregate(Us(D(r, 7)), Us(D(r, 8)), Us(D(r, 9)), Us(D(r, 10)), UsD(D(r, 11)));
+        long totalUs = QdsConvert.MsToUs(D(r, 5) ?? 0);
+        var wait = new MetricAggregate(Us(D(r, 6)), Us(D(r, 7)), Us(D(r, 8)), Us(D(r, 9)), UsD(D(r, 10)));
         return new QdsWaitStatRow(Convert.ToInt64(r.GetValue(0)), Convert.ToInt64(r.GetValue(1)), Convert.ToInt64(r.GetValue(2)),
-            S(r, 3), S(r, 4), Convert.ToInt64(r.GetValue(5)), wait, totalUs);
+            S(r, 3), S(r, 4), wait, totalUs);
     }
 
     // ---- plumbing -------------------------------------------------------------------------------

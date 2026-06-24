@@ -52,4 +52,4 @@ public record QdsRuntimeStatRow(long RuntimeStatsId, long PlanId, long IntervalI
     IReadOnlyList<MetricAggregate> Metrics); // length 11, in QdsSchema.RuntimeMetrics order
 
 public record QdsWaitStatRow(long WaitStatsId, long PlanId, long IntervalId, string? WaitCategory,
-    string? ExecutionType, long CountExecutions, MetricAggregate WaitTimeUs, long TotalWaitTimeUs);
+    string? ExecutionType, MetricAggregate WaitTimeUs, long TotalWaitTimeUs);

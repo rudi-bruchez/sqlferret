@@ -153,7 +153,7 @@ public class QdsStorageTests
         {
             using var p = DuckDbProject.Open(path);
             var run = p.BeginQdsRun(new QdsRunInfo(null, null, null, null, null, null, null, true, false));
-            p.InsertQdsWaitStats(run, [new QdsWaitStatRow(1, 5, 42, "CPU", "Regular", 3,
+            p.InsertQdsWaitStats(run, [new QdsWaitStatRow(1, 5, 42, "CPU", "Regular",
                 new MetricAggregate(2000, 1000, 5000, 2000, 0.5), TotalWaitTimeUs: 6000)]);
             using var c = p.Connection.CreateCommand();
             c.CommandText = "SELECT avg_query_wait_time_us FROM qds_wait_stats WHERE wait_stats_id=1";

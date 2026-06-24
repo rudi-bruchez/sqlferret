@@ -55,7 +55,7 @@ public sealed partial class DuckDbProject
 
         CREATE TABLE IF NOT EXISTS qds_wait_stats (
           run_id BIGINT, wait_stats_id BIGINT, plan_id BIGINT, runtime_stats_interval_id BIGINT,
-          wait_category TEXT, execution_type TEXT, count_executions BIGINT,
+          wait_category TEXT, execution_type TEXT,
           total_query_wait_time_us BIGINT,
           avg_query_wait_time_us BIGINT, min_query_wait_time_us BIGINT,
           max_query_wait_time_us BIGINT, last_query_wait_time_us BIGINT, stdev_query_wait_time_us DOUBLE,
@@ -188,9 +188,9 @@ public sealed partial class DuckDbProject
         foreach (var r in rows)
         {
             using var c = Connection.CreateCommand(); c.Transaction = tx;
-            c.CommandText = "INSERT INTO qds_wait_stats VALUES ($run,$id,$plan,$iid,$cat,$etype,$cnt,$tot,$avg,$min,$max,$last,$sd)";
+            c.CommandText = "INSERT INTO qds_wait_stats VALUES ($run,$id,$plan,$iid,$cat,$etype,$tot,$avg,$min,$max,$last,$sd)";
             Add(c, "$run", runId); Add(c, "$id", r.WaitStatsId); Add(c, "$plan", r.PlanId); Add(c, "$iid", r.IntervalId);
-            Add(c, "$cat", (object?)r.WaitCategory); Add(c, "$etype", (object?)r.ExecutionType); Add(c, "$cnt", r.CountExecutions);
+            Add(c, "$cat", (object?)r.WaitCategory); Add(c, "$etype", (object?)r.ExecutionType);
             Add(c, "$tot", r.TotalWaitTimeUs);
             Add(c, "$avg", (object?)r.WaitTimeUs.Avg); Add(c, "$min", (object?)r.WaitTimeUs.Min);
             Add(c, "$max", (object?)r.WaitTimeUs.Max); Add(c, "$last", (object?)r.WaitTimeUs.Last);
