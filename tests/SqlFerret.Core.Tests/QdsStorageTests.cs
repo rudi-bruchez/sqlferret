@@ -48,4 +48,44 @@ public class QdsStorageTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+
+    [Fact]
+    public void Insert_metadata_rows_bind_columns()
+    {
+        var path = NewDb();
+        try
+        {
+            using var p = DuckDbProject.Open(path);
+            var run = p.BeginQdsRun(new QdsRunInfo(null, null, null, null, null, null, null, false, true));
+
+            p.InsertQdsQueryText(run, [new QdsQueryTextRow(7, "SELECT * FROM dbo.Orders WHERE id=@p", false, false)]);
+            p.InsertQdsQueries(run, [new QdsQueryRow(3, 7, 100, "dbo.Orders", "0xABCD", "None", false, 2, new DateTime(2026, 6, 1))]);
+            p.InsertQdsPlans(run, [new QdsPlanRow(5, 3, "0xPLAN", "16.0", 150, true, false, true, 0, null, 1, new DateTime(2026, 6, 1), "qds/5.sqlplan", true)]);
+
+            using var c = p.Connection.CreateCommand();
+            c.CommandText = "SELECT query_sql_text FROM qds_query_text WHERE query_text_id=7";
+            Assert.Equal("SELECT * FROM dbo.Orders WHERE id=@p", c.ExecuteScalar());
+            c.CommandText = "SELECT object_name FROM qds_queries WHERE query_id=3"; Assert.Equal("dbo.Orders", c.ExecuteScalar());
+            c.CommandText = "SELECT is_forced_plan FROM qds_plans WHERE plan_id=5"; Assert.True(Convert.ToBoolean(c.ExecuteScalar()));
+            c.CommandText = "SELECT sqlplan_path FROM qds_plans WHERE plan_id=5"; Assert.Equal("qds/5.sqlplan", c.ExecuteScalar());
+            c.CommandText = "SELECT plan_written FROM qds_plans WHERE plan_id=5"; Assert.True(Convert.ToBoolean(c.ExecuteScalar()));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void Insert_plan_without_file_stores_null_path()
+    {
+        var path = NewDb();
+        try
+        {
+            using var p = DuckDbProject.Open(path);
+            var run = p.BeginQdsRun(new QdsRunInfo(null, null, null, null, null, null, null, false, false));
+            p.InsertQdsPlans(run, [new QdsPlanRow(9, 1, null, null, null, false, false, false, 0, null, 0, null, null, false)]);
+            using var c = p.Connection.CreateCommand();
+            c.CommandText = "SELECT sqlplan_path IS NULL FROM qds_plans WHERE plan_id=9"; Assert.True(Convert.ToBoolean(c.ExecuteScalar()));
+            c.CommandText = "SELECT plan_written FROM qds_plans WHERE plan_id=9"; Assert.False(Convert.ToBoolean(c.ExecuteScalar()));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
 }

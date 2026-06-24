@@ -98,4 +98,52 @@ public sealed partial class DuckDbProject
         Add(cmd, "$pw", c.PlanFilesWritten); Add(cmd, "$pf", c.PlanWriteFailures); Add(cmd, "$id", runId);
         cmd.ExecuteNonQuery();
     }
+
+    public void InsertQdsQueryText(long runId, IReadOnlyList<QdsQueryTextRow> rows)
+    {
+        using var tx = Connection.BeginTransaction();
+        foreach (var r in rows)
+        {
+            using var c = Connection.CreateCommand(); c.Transaction = tx;
+            c.CommandText = "INSERT INTO qds_query_text VALUES ($run,$id,$txt,$enc,$rst)";
+            Add(c, "$run", runId); Add(c, "$id", r.QueryTextId); Add(c, "$txt", (object?)r.QuerySqlText);
+            Add(c, "$enc", r.IsPartOfEncryptedModule); Add(c, "$rst", r.HasRestrictedText);
+            c.ExecuteNonQuery();
+        }
+        tx.Commit();
+    }
+
+    public void InsertQdsQueries(long runId, IReadOnlyList<QdsQueryRow> rows)
+    {
+        using var tx = Connection.BeginTransaction();
+        foreach (var r in rows)
+        {
+            using var c = Connection.CreateCommand(); c.Transaction = tx;
+            c.CommandText = "INSERT INTO qds_queries VALUES ($run,$id,$tid,$oid,$obj,$qh,$pt,$int,$cc,$let)";
+            Add(c, "$run", runId); Add(c, "$id", r.QueryId); Add(c, "$tid", (object?)r.QueryTextId);
+            Add(c, "$oid", (object?)r.ObjectId); Add(c, "$obj", (object?)r.ObjectName); Add(c, "$qh", (object?)r.QueryHash);
+            Add(c, "$pt", (object?)r.QueryParameterizationType); Add(c, "$int", r.IsInternalQuery);
+            Add(c, "$cc", r.CountCompiles); Add(c, "$let", (object?)r.LastExecutionTime);
+            c.ExecuteNonQuery();
+        }
+        tx.Commit();
+    }
+
+    public void InsertQdsPlans(long runId, IReadOnlyList<QdsPlanRow> rows)
+    {
+        using var tx = Connection.BeginTransaction();
+        foreach (var r in rows)
+        {
+            using var c = Connection.CreateCommand(); c.Transaction = tx;
+            c.CommandText = "INSERT INTO qds_plans VALUES ($run,$id,$qid,$qph,$ev,$cl,$f,$t,$par,$ffc,$frr,$cc,$let,$path,$pw)";
+            Add(c, "$run", runId); Add(c, "$id", r.PlanId); Add(c, "$qid", r.QueryId); Add(c, "$qph", (object?)r.QueryPlanHash);
+            Add(c, "$ev", (object?)r.EngineVersion); Add(c, "$cl", (object?)r.CompatibilityLevel);
+            Add(c, "$f", r.IsForcedPlan); Add(c, "$t", r.IsTrivialPlan); Add(c, "$par", r.IsParallelPlan);
+            Add(c, "$ffc", r.ForceFailureCount); Add(c, "$frr", (object?)r.LastForceFailureReasonDesc);
+            Add(c, "$cc", r.CountCompiles); Add(c, "$let", (object?)r.LastExecutionTime);
+            Add(c, "$path", (object?)r.SqlplanPath); Add(c, "$pw", r.PlanWritten);
+            c.ExecuteNonQuery();
+        }
+        tx.Commit();
+    }
 }
