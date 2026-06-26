@@ -161,4 +161,39 @@ public class EventExportServiceTests
             if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
         }
     }
+
+    [Fact]
+    public void Ingest_off_then_export_round_trips_blocking_xml_to_file()
+    {
+        var path = TempDb();
+        var outDir = TempDir();
+        const string xml =
+            "<blocked-process-report monitorLoop=\"1\">" +
+            "<blocked-process><process spid=\"201\" waitresource=\"OBJECT: 5:99:0\" waittime=\"5000\">" +
+            "<inputbuf>update dbo.Y set a=1 where id=2</inputbuf></process></blocked-process>" +
+            "<blocking-process><process spid=\"118\"><inputbuf>select 1</inputbuf></process></blocking-process>" +
+            "</blocked-process-report>";
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            var ev = new FakeEvent("blocked_process_report", new DateTime(2026, 2, 24),
+                new Dictionary<string, object?> { ["blocked_process"] = xml },
+                new Dictionary<string, object?>());
+            new SqlFerret.Core.Ingestion.IngestionService(db,
+                    new SqlFerret.Core.Ingestion.IngestionOptions(SqlFerret.Core.Parameters.RedactionMode.Off, []))
+                .Ingest("logs/", [((SqlFerret.Core.Ingestion.IXeEventData)ev, "s.xel", 0L)]);
+
+            var res = new EventExportService(db.Connection).Export(new EventExportOptions(
+                outDir, EventKind.Blocking, new QueryStoreWindow(null, null), null, null, 100));
+
+            Assert.Equal(1, res.BlockingWritten);
+            var file = Assert.Single(Directory.GetFiles(outDir, "blocking_*.xml"));
+            Assert.Equal(xml, File.ReadAllText(file));
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+            if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
+        }
+    }
 }
