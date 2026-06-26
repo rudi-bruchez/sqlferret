@@ -21,6 +21,6 @@ public static class ImportRunner
         var tracker = new ImportProgressTracker(sizes, bytesTotal, new EventCountEstimator(), progress);
         var events = new XelReader().Read(files, tracker.OnRead, tracker.OnFileComplete);
         var svc = new IngestionService(project, options);
-        return svc.Ingest(path, events, tracker);   // tracker is the IProgress<IngestionProgress>
+        return svc.Ingest(path, events, files.Count, bytesTotal, tracker);   // tracker is the IProgress<IngestionProgress>
     }
 }

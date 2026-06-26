@@ -14,9 +14,10 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
 
     public IngestionResult Ingest(string sourcePath,
         IEnumerable<(IXeEventData ev, string fileName, long offset)> events,
+        int filesCount = 1, long bytesTotal = 0,
         IProgress<IngestionProgress>? progress = null)
     {
-        long runId = project.BeginRun(sourcePath, filesCount: 1, bytesTotal: 0,
+        long runId = project.BeginRun(sourcePath, filesCount, bytesTotal,
             redactionPolicy: options.Redaction.ToString().ToLowerInvariant());
 
         long read = 0, mapped = 0, unmapped = 0, cleaned = 0, tokenizeFailures = 0;
@@ -37,7 +38,9 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
                     var xml = EventMapper.ExtractBlockingXml(ev);
                     var rep = xml is null ? null : BlockingReportParser.Parse(xml, ev.Timestamp);
                     if (rep is null) { blockingParseFailures++; continue; }
-                    project.InsertBlockingBatch(runId, [Prepare(rep)]);
+                    // Mirror deadlock gating: keep the raw XML only when nothing is redacted.
+                    var rawXml = options.Redaction == RedactionMode.Off ? xml : null;
+                    project.InsertBlockingBatch(runId, [Prepare(rep, rawXml)]);
                     blocking++;
                 }
                 else
@@ -74,9 +77,9 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
         return new IngestionResult(runId, read, mapped, unmapped, cleaned, tokenizeFailures, blocking, deadlocks, blockingParseFailures);
     }
 
-    private PreparedBlockingReport Prepare(BlockingReport rep)
+    private PreparedBlockingReport Prepare(BlockingReport rep, string? rawXml)
     {
-        return new PreparedBlockingReport(rep, PrepareProc(rep.Blocked), PrepareProc(rep.Blocking));
+        return new PreparedBlockingReport(rep, PrepareProc(rep.Blocked), PrepareProc(rep.Blocking), rawXml);
     }
 
     private const string FallbackRedactedPlaceholder = "(unparseable inputbuf; redacted)";

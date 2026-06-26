@@ -39,7 +39,7 @@ AuditProject? OpenProject()
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: import <path> --project <dir> | top-slow --project <dir> | export-blocking --project <dir> [...] | query-store-import --project <dir> [--conn <s>] [--database <db>] [--no-plans] [--from <dt> --to <dt> | --last <N>{h|d}]");
+    Console.Error.WriteLine("usage: import <path> --project <dir> | top-slow --project <dir> | export-blocking --project <dir> [...] | query-store-import --project <dir> [--conn <s>] [--database <db>] [--no-plans] [--from <dt> --to <dt> | --last <N>{h|d}] | export-events --project <dir> --out <dir> [--kind blocking|deadlock|both] [--from <dt> --to <dt> | --last <N>{h|d}] [--fingerprint <hash>] [--database <id>] [--limit <n>]");
     return 1;
 }
 
@@ -192,6 +192,61 @@ switch (args[0])
                 $"qds run {result.RunId}: queries={result.QueriesCount} queryText={result.QueryTextCount} " +
                 $"plans={result.PlansCount} runtimeRows={result.RuntimeStatRows} waitRows={result.WaitStatRows} " +
                 $"plansWritten={result.PlanFilesWritten} planFailures={result.PlanWriteFailures}");
+            return 0;
+        }
+    case "export-events":
+        {
+            var project = OpenProject();
+            if (project is null) return 1;
+
+            var outDir = Arg("--out");
+            if (string.IsNullOrWhiteSpace(outDir))
+            { Console.Error.WriteLine("export-events: --out <dir> is required"); return 1; }
+            if (SqlFerret.Cli.BlockingDigestMarkdown.HasTraversal(outDir))
+            { Console.Error.WriteLine("export-events: invalid --out path"); return 1; }
+
+            var kindStr = Arg("--kind", "both");
+            if (!Enum.TryParse<EventKind>(kindStr, ignoreCase: true, out var kind))
+            { Console.Error.WriteLine($"export-events: invalid --kind '{kindStr}'. Valid: blocking, deadlock, both"); return 1; }
+
+            QueryStoreWindow window;
+            try
+            {
+                window = QueryStoreWindow.Parse(
+                    NullIfEmpty(Arg("--from", "")), NullIfEmpty(Arg("--to", "")), NullIfEmpty(Arg("--last", "")),
+                    DateTime.UtcNow);
+            }
+            catch (ArgumentException ex) { Console.Error.WriteLine($"export-events: {ex.Message}"); return 1; }
+
+            int? dbId = int.TryParse(Arg("--database", ""), out var dv) ? dv : null;
+            var fingerprint = NullIfEmpty(Arg("--fingerprint", ""));
+            var limit = int.TryParse(Arg("--limit", "100"), out var lv) ? lv : 100;
+
+            if (kind == EventKind.Deadlock && (dbId is not null || fingerprint is not null))
+                Console.Error.WriteLine("export-events: --fingerprint/--database are ignored for deadlocks");
+
+            using var db = project.OpenDb();
+            var svc = new EventExportService(db.Connection);
+            var opts = new EventExportOptions(outDir, kind, window, fingerprint, dbId, limit);
+
+            EventExportResult result;
+            try { result = svc.Export(opts); }
+            catch (ArgumentException ex) { Console.Error.WriteLine($"export-events: {ex.Message}"); return 1; }
+
+            if (result.BlockingWritten == 0 && result.DeadlockWritten == 0 &&
+                (result.BlockingSkipped > 0 || result.DeadlockSkipped > 0))
+                Console.Error.WriteLine(
+                    "export-events: nothing written; matching runs were imported with redaction != off. " +
+                    "Re-import with --redaction off to export XML.");
+
+            var summary = new
+            {
+                outDir = result.OutDir,
+                indexPath = result.IndexPath,
+                blocking = new { written = result.BlockingWritten, skipped = result.BlockingSkipped },
+                deadlock = new { written = result.DeadlockWritten, skipped = result.DeadlockSkipped },
+            };
+            Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(summary));
             return 0;
         }
     default:

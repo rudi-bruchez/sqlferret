@@ -158,4 +158,55 @@ public class BlockingIngestionTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+
+    private const string SampleBlockedXml =
+        "<blocked-process-report monitorLoop=\"1\">" +
+        "<blocked-process><process spid=\"201\" waitresource=\"OBJECT: 5:99:0\" waittime=\"5000\">" +
+        "<inputbuf>update dbo.Y set a=1 where id=2</inputbuf></process></blocked-process>" +
+        "<blocking-process><process spid=\"118\"><inputbuf>select 1</inputbuf></process></blocking-process>" +
+        "</blocked-process-report>";
+
+    [Fact]
+    public void Ingest_stores_raw_blocking_xml_when_redaction_off()
+    {
+        var path = TempDb();
+        try
+        {
+            using var db = SqlFerret.Core.Storage.DuckDbProject.Open(path);
+            var ev = new FakeEvent("blocked_process_report", new DateTime(2026, 2, 24),
+                new Dictionary<string, object?> { ["blocked_process"] = SampleBlockedXml },
+                new Dictionary<string, object?>());
+
+            new SqlFerret.Core.Ingestion.IngestionService(db,
+                    new SqlFerret.Core.Ingestion.IngestionOptions(SqlFerret.Core.Parameters.RedactionMode.Off, []))
+                .Ingest("logs/", [((SqlFerret.Core.Ingestion.IXeEventData)ev, "s.xel", 0L)]);
+
+            using var c = db.Connection.CreateCommand();
+            c.CommandText = "SELECT raw_xml FROM blocking_reports";
+            Assert.Equal(SampleBlockedXml, (string)c.ExecuteScalar()!);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void Ingest_nulls_raw_blocking_xml_when_redaction_masked()
+    {
+        var path = TempDb();
+        try
+        {
+            using var db = SqlFerret.Core.Storage.DuckDbProject.Open(path);
+            var ev = new FakeEvent("blocked_process_report", new DateTime(2026, 2, 24),
+                new Dictionary<string, object?> { ["blocked_process"] = SampleBlockedXml },
+                new Dictionary<string, object?>());
+
+            new SqlFerret.Core.Ingestion.IngestionService(db,
+                    new SqlFerret.Core.Ingestion.IngestionOptions(SqlFerret.Core.Parameters.RedactionMode.Masked, []))
+                .Ingest("logs/", [((SqlFerret.Core.Ingestion.IXeEventData)ev, "s.xel", 0L)]);
+
+            using var c = db.Connection.CreateCommand();
+            c.CommandText = "SELECT raw_xml FROM blocking_reports";
+            Assert.True(c.ExecuteReader() is var r && r.Read() && r.IsDBNull(0));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
 }

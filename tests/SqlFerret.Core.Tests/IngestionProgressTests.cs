@@ -25,7 +25,7 @@ public class IngestionProgressTests
             var captured = new List<IngestionProgress>();
             IProgress<IngestionProgress> sync = new SyncProgress(captured.Add);
 
-            var result = svc.Ingest("logs/", Enumerable.Range(1, 5).Select(Batch), sync);
+            var result = svc.Ingest("logs/", Enumerable.Range(1, 5).Select(Batch), progress: sync);
 
             Assert.Equal(5, result.Read);
             Assert.Equal(5, result.Mapped);

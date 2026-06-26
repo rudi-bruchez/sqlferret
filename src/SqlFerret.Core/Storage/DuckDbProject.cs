@@ -51,7 +51,7 @@ public sealed partial class DuckDbProject : IDisposable
 
         CREATE TABLE IF NOT EXISTS blocking_reports (
           report_id BIGINT PRIMARY KEY, run_id BIGINT, captured_at TIMESTAMP,
-          monitor_loop INTEGER, database_id INTEGER);
+          monitor_loop INTEGER, database_id INTEGER, raw_xml TEXT);
 
         CREATE TABLE IF NOT EXISTS blocking_processes (
           report_id BIGINT, role TEXT, spid INTEGER, ecid INTEGER, status TEXT,
@@ -65,6 +65,13 @@ public sealed partial class DuckDbProject : IDisposable
           victim_spids TEXT, participant_spids TEXT, graph_xml TEXT);
         """;
         cmd.ExecuteNonQuery();
+        using (var migrate = conn.CreateCommand())
+        {
+            // Existing projects were created before raw_xml existed; CREATE TABLE IF NOT EXISTS
+            // is a no-op for them, so add the column here. No-op when already present.
+            migrate.CommandText = "ALTER TABLE blocking_reports ADD COLUMN IF NOT EXISTS raw_xml TEXT;";
+            migrate.ExecuteNonQuery();
+        }
         CreateQdsSchema(conn);
     }
 
@@ -207,9 +214,10 @@ public sealed partial class DuckDbProject : IDisposable
             using (var c = Connection.CreateCommand())
             {
                 c.Transaction = tx;
-                c.CommandText = "INSERT INTO blocking_reports VALUES ($id,$run,$ts,$loop,$db)";
+                c.CommandText = "INSERT INTO blocking_reports VALUES ($id,$run,$ts,$loop,$db,$raw)";
                 Add(c, "$id", id); Add(c, "$run", runId); Add(c, "$ts", pr.Report.CapturedAt);
                 Add(c, "$loop", (object?)pr.Report.MonitorLoop); Add(c, "$db", (object?)pr.Report.DatabaseId);
+                Add(c, "$raw", (object?)pr.RawXml);
                 c.ExecuteNonQuery();
             }
             InsertBlockingProcess(tx, id, "blocked", pr.Blocked, pr.Report.CapturedAt);

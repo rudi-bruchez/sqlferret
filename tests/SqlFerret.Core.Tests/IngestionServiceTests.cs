@@ -43,6 +43,27 @@ public class IngestionServiceTests
     }
 
     [Fact]
+    public void Ingest_records_files_count_and_bytes_total()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"sf_{Guid.NewGuid():N}.duckdb");
+        try
+        {
+            using var project = DuckDbProject.Open(path);
+            var svc = new IngestionService(project, new IngestionOptions(RedactionMode.Full, []));
+
+            var result = svc.Ingest("logs/", [Batch("SELECT 1", 0)], filesCount: 4, bytesTotal: 972_000_000L);
+
+            using var c = project.Connection.CreateCommand();
+            c.CommandText = "SELECT files_count, bytes_total FROM ingestion_runs WHERE run_id = " + result.RunId;
+            using var r = c.ExecuteReader();
+            Assert.True(r.Read());
+            Assert.Equal(4, r.GetInt32(0));
+            Assert.Equal(972_000_000L, r.GetInt64(1));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
     public void Ingest_filter_drops_and_counts_cleaned()
     {
         var path = Path.Combine(Path.GetTempPath(), $"sf_{Guid.NewGuid():N}.duckdb");
