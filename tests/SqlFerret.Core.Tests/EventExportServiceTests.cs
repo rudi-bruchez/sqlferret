@@ -87,4 +87,78 @@ public class EventExportServiceTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+
+    [Fact]
+    public void Export_writes_blocking_xml_and_skips_null_raw()
+    {
+        var path = TempDb();
+        var outDir = TempDir();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            Exec(db, "INSERT INTO blocking_reports VALUES (1,1, TIMESTAMP '2026-06-01 10:00:00', 1, 7, '<blocked-process-report>A</blocked-process-report>')");
+            Exec(db, "INSERT INTO blocking_reports VALUES (2,1, TIMESTAMP '2026-06-02 10:00:00', 1, 8, NULL)");
+
+            var svc = new EventExportService(db.Connection);
+            var res = svc.Export(new EventExportOptions(
+                outDir, EventKind.Blocking, new QueryStoreWindow(null, null), null, null, 100));
+
+            Assert.Equal(1, res.BlockingWritten);
+            Assert.Equal(1, res.BlockingSkipped);
+
+            var files = Directory.GetFiles(outDir, "blocking_*.xml");
+            Assert.Equal("<blocked-process-report>A</blocked-process-report>", File.ReadAllText(Assert.Single(files)));
+
+            var index = File.ReadAllText(Path.Combine(outDir, "index.json"));
+            Assert.Contains("\"kind\": \"blocking\"", index);
+            Assert.Contains("\"database_id\": 7", index);
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+            if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
+        }
+    }
+
+    [Fact]
+    public void Export_filters_blocking_by_database_and_fingerprint_and_limit()
+    {
+        var path = TempDb();
+        var outDir = TempDir();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            // Two reports in db 7, one in db 9. Report 1 has fingerprint abc; report 2 has fingerprint xyz.
+            Exec(db, "INSERT INTO blocking_reports VALUES (1,1, TIMESTAMP '2026-06-01 10:00:00', 1, 7, '<r>one</r>')");
+            Exec(db, "INSERT INTO blocking_reports VALUES (2,1, TIMESTAMP '2026-06-02 10:00:00', 1, 7, '<r>two</r>')");
+            Exec(db, "INSERT INTO blocking_reports VALUES (3,1, TIMESTAMP '2026-06-03 10:00:00', 1, 9, '<r>three</r>')");
+            Exec(db, "INSERT INTO blocking_processes VALUES (1,'blocking',118,NULL,NULL,NULL,'Other',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'abc')");
+            Exec(db, "INSERT INTO blocking_processes VALUES (2,'blocking',119,NULL,NULL,NULL,'Other',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'xyz')");
+
+            var svc = new EventExportService(db.Connection);
+
+            // database filter: only db 7 => reports 1 and 2
+            var byDb = svc.Export(new EventExportOptions(
+                outDir, EventKind.Blocking, new QueryStoreWindow(null, null), null, 7, 100));
+            Assert.Equal(2, byDb.BlockingWritten);
+            Directory.Delete(outDir, true);
+
+            // fingerprint filter: only report 1
+            var byFp = svc.Export(new EventExportOptions(
+                outDir, EventKind.Blocking, new QueryStoreWindow(null, null), "abc", null, 100));
+            Assert.Equal(1, byFp.BlockingWritten);
+            Assert.Equal("<r>one</r>", File.ReadAllText(Assert.Single(Directory.GetFiles(outDir, "blocking_*.xml"))));
+            Directory.Delete(outDir, true);
+
+            // limit caps files written (3 eligible, limit 2)
+            var limited = svc.Export(new EventExportOptions(
+                outDir, EventKind.Blocking, new QueryStoreWindow(null, null), null, null, 2));
+            Assert.Equal(2, limited.BlockingWritten);
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+            if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
+        }
+    }
 }

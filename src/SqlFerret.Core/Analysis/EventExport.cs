@@ -48,6 +48,9 @@ public sealed class EventExportService(DuckDBConnection conn)
         var manifest = new List<EventExportManifestEntry>();
         int bWritten = 0, bSkipped = 0, dWritten = 0, dSkipped = 0;
 
+        if (opts.Kind is EventKind.Blocking or EventKind.Both)
+            (bWritten, bSkipped) = ExportBlocking(opts, manifest, progress);
+
         if (opts.Kind is EventKind.Deadlock or EventKind.Both)
             (dWritten, dSkipped) = ExportDeadlock(opts, manifest, progress);
 
@@ -55,6 +58,60 @@ public sealed class EventExportService(DuckDBConnection conn)
         File.WriteAllText(indexPath, JsonSerializer.Serialize(manifest, ManifestJson));
 
         return new EventExportResult(bWritten, bSkipped, dWritten, dSkipped, opts.OutDir, indexPath);
+    }
+
+    private (int written, int skipped) ExportBlocking(
+        EventExportOptions opts, List<EventExportManifestEntry> manifest, IProgress<string>? progress)
+    {
+        var (where, binds) = BuildWindowWhere(opts.Window, "r.captured_at");
+        var extra = "";
+        if (opts.DatabaseId is { } db) { extra += " AND r.database_id = $db"; binds.Add(("$db", db)); }
+        if (!string.IsNullOrWhiteSpace(opts.Fingerprint))
+        {
+            extra += " AND EXISTS (SELECT 1 FROM blocking_processes bp " +
+                     "WHERE bp.report_id = r.report_id AND bp.inputbuf_fingerprint = $fp)";
+            binds.Add(("$fp", opts.Fingerprint!));   // non-null inside the guard
+        }
+
+        int written = 0;
+        using (var c = conn.CreateCommand())
+        {
+            c.CommandText = $"""
+              SELECT r.report_id, r.captured_at, r.database_id, r.raw_xml
+              FROM blocking_reports r
+              WHERE {where}{extra} AND r.raw_xml IS NOT NULL
+              ORDER BY r.captured_at LIMIT $limit
+              """;
+            foreach (var (n, v) in binds) Bind(c, n, v);
+            Bind(c, "$limit", opts.Limit);
+            using var rd = c.ExecuteReader();
+            while (rd.Read())
+            {
+                long id = rd.GetInt64(0);
+                DateTime ts = rd.GetDateTime(1);
+                int? dbid = rd.IsDBNull(2) ? null : rd.GetInt32(2);
+                string xml = rd.GetString(3);
+                string file = $"blocking_{FileStamp(ts)}_{id}.xml";
+                File.WriteAllText(Path.Combine(opts.OutDir, file), xml);
+                manifest.Add(new EventExportManifestEntry(id, "blocking", IsoStamp(ts), file, DatabaseId: dbid));
+                written++;
+                // NOTE: increment OUTSIDE the null-conditional (see Task 3 note) — `{++written}`
+                // inside progress?.Report(...) is skipped entirely when progress is null.
+                progress?.Report($"blocking {written}");
+            }
+        }
+
+        int skipped;
+        using (var c = conn.CreateCommand())
+        {
+            c.CommandText = $"""
+              SELECT count(*) FROM blocking_reports r
+              WHERE {where}{extra} AND r.raw_xml IS NULL
+              """;
+            foreach (var (n, v) in binds) Bind(c, n, v);
+            skipped = (int)Convert.ToInt64(c.ExecuteScalar());
+        }
+        return (written, skipped);
     }
 
     private (int written, int skipped) ExportDeadlock(
