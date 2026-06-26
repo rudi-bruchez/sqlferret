@@ -214,9 +214,10 @@ public sealed partial class DuckDbProject : IDisposable
             using (var c = Connection.CreateCommand())
             {
                 c.Transaction = tx;
-                c.CommandText = "INSERT INTO blocking_reports VALUES ($id,$run,$ts,$loop,$db)";
+                c.CommandText = "INSERT INTO blocking_reports VALUES ($id,$run,$ts,$loop,$db,$raw)";
                 Add(c, "$id", id); Add(c, "$run", runId); Add(c, "$ts", pr.Report.CapturedAt);
                 Add(c, "$loop", (object?)pr.Report.MonitorLoop); Add(c, "$db", (object?)pr.Report.DatabaseId);
+                Add(c, "$raw", (object?)pr.RawXml);
                 c.ExecuteNonQuery();
             }
             InsertBlockingProcess(tx, id, "blocked", pr.Blocked, pr.Report.CapturedAt);
