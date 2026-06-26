@@ -475,7 +475,10 @@ public sealed class EventExportService(DuckDBConnection conn)
                 File.WriteAllText(Path.Combine(opts.OutDir, file), xml);
                 manifest.Add(new EventExportManifestEntry(
                     id, "deadlock", IsoStamp(ts), file, VictimSpids: victim, ParticipantSpids: parts));
-                progress?.Report($"deadlock {++written}");
+                written++;
+                // NOTE: increment OUTSIDE the null-conditional. `progress?.Report($"... {++written}")`
+                // short-circuits the whole expression when progress is null, so ++written never runs.
+                progress?.Report($"deadlock {written}");
             }
         }
 
@@ -681,7 +684,10 @@ Add this method to `EventExportService` (next to `ExportDeadlock`):
                 string file = $"blocking_{FileStamp(ts)}_{id}.xml";
                 File.WriteAllText(Path.Combine(opts.OutDir, file), xml);
                 manifest.Add(new EventExportManifestEntry(id, "blocking", IsoStamp(ts), file, DatabaseId: dbid));
-                progress?.Report($"blocking {++written}");
+                written++;
+                // NOTE: increment OUTSIDE the null-conditional (see Task 3 note) — `{++written}`
+                // inside progress?.Report(...) is skipped entirely when progress is null.
+                progress?.Report($"blocking {written}");
             }
         }
 
