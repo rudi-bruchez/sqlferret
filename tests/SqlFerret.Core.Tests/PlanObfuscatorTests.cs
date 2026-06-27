@@ -138,11 +138,17 @@ public class PlanObfuscatorTests
             <Object Database="[Sales]" Schema="[dbo]" Table="[Customers]" Index="[PK_Customers]" />
             <Object Schema="[sys]" Table="[indexes]" />
             <Object Table="[Worktable]" />
+            <Object Server="[SecretSrv]" Database="[Sales]" Schema="[dbo]" Table="[AuxTbl]" />
             <ColumnReference Database="[Sales]" Schema="[dbo]" Table="[Customers]" Column="SSN" />
             <RemoteQuery RemoteSource="[LinkedSrv]" RemoteObject="[Customers]"
                          RemoteQuery="SELECT SSN FROM Customers WHERE SSN='123-45-6789'" />
+            <Fetch CursorName="[SecretCursor]" />
+            <PlanGuideInfo PlanGuideName="[SecretGuide]" PlanGuideDB="[SecretGuideDb]" />
+            <TemplatePlanGuideInfo TemplatePlanGuideName="[SecretTmpl]" TemplatePlanGuideDB="[SecretTmplDb]" />
             <StoredProc ProcName="[Sales].[dbo].[GetCustomer]" />
-            <UDF FunctionName="[Sales].[dbo].[FmtSSN]" />
+            <StoredProc ProcName="[SecretSrv2].[Sales].[dbo].[GetCustomer]" />
+            <UDF Assembly="[SecretAsm]" Method="[SecretMethod]" FunctionName="[Sales].[dbo].[FmtSSN]" />
+            <UDX UDXName="[SecretUdx]" />
             <Predicate>
               <ScalarOperator ScalarString="[Customers].[SSN]='123-45-6789'">
                 <Const ConstValue="N'123-45-6789'" />
@@ -172,6 +178,16 @@ public class PlanObfuscatorTests
         Assert.DoesNotContain("GetCustomer", xml);
         Assert.DoesNotContain("FmtSSN", xml);
         Assert.DoesNotContain("123-45-6789", xml);
+        Assert.DoesNotContain("SecretSrv", xml);
+        Assert.DoesNotContain("SecretCursor", xml);
+        Assert.DoesNotContain("SecretGuide", xml);
+        Assert.DoesNotContain("SecretGuideDb", xml);
+        Assert.DoesNotContain("SecretTmpl", xml);
+        Assert.DoesNotContain("SecretTmplDb", xml);
+        Assert.DoesNotContain("SecretAsm", xml);
+        Assert.DoesNotContain("SecretMethod", xml);
+        Assert.DoesNotContain("SecretUdx", xml);
+        Assert.DoesNotContain("SecretSrv2", xml);
         // Whitelisted system/internal objects must survive intact.
         Assert.Contains("[sys]", xml);
         Assert.Contains("indexes", xml);
