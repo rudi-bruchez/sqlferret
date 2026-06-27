@@ -164,10 +164,11 @@ Aucune chaîne d'origine sensible (nom mappé ou valeur littérale) ne doit appa
 
 ## Limites connues v1 (documentées)
 
-- Un identifiant présent seulement dans le texte SQL et jamais dans l'arbre d'opérateurs (alias local défini en SQL, `@variable`) n'est pas mappé : il est laissé verbatim. Risque faible (pas de PII), réécriture fine déférée.
+- Le nom de l'objet défini par un `CREATE`/`ALTER PROC`/`FUNCTION`/`VIEW`/`TRIGGER`/`TABLE`/`SYNONYM`/`SEQUENCE`/`TYPE` est désormais récolté depuis le `StatementText` (AST ScriptDom, plus repli regex pour le texte tronqué par SQL Server) puis mappé. Vérifié sur corpus réel : 7/7 plans DDL voient leur nom d'objet anonymisé.
+- Reste non mappé : un identifiant présent uniquement dans le texte SQL sans contrepartie structurée, notamment un alias de colonne défini dans la liste du `SELECT` (`... AS MonAlias`) ou un alias local. Risque modéré (sémantique métier possible), réécriture déférée.
+- Tables temporaires utilisateur (`#temp`) : leur nom survit parce que la base `tempdb` est whitelistée (intention initiale : préserver les objets internes `Worktable`/`Workfile`). Or les `#temp` utilisateur portent souvent un nom métier. Limite connue, candidate à un correctif de suivi (whitelister `Worktable`/`Workfile` par nom plutôt que toute la base `tempdb`, en corrélant le nom mutilé de l'arbre d'opérateurs et le nom propre du texte SQL).
 - Pas de validation contre le XSD showplan officiel ; on se limite à « bien formé » plus contrôle de structure léger.
-- Un nom multi-parties à quatre composants (`serveur.base.schéma.objet` dans `ProcName`/`FunctionName`) voit son segment serveur retiré (jamais émis, donc pas de fuite) plutôt que mappé : la fidélité de round-trip sur ce segment n'est pas garantie.
-- Une colonne portée par une référence en base `tempdb` (table temporaire `#temp`) est whitelistée avec l'élément, donc non mappée (comportement hérité de la règle whitelist par élément).
+- Un nom multi-parties à quatre composants (`serveur.base.schéma.objet`) voit son segment serveur retiré (jamais émis, donc pas de fuite) plutôt que mappé : la fidélité de round-trip sur ce segment n'est pas garantie.
 
 ## Fichiers touchés (indicatif)
 

@@ -62,3 +62,8 @@ sample/
 *.duckdb
 # Root-anchored: the estimated-plan output folder only — must NOT match docs/superpowers/plans/
 /plans/
+
+# Real production execution plans (PII) — never commit
+exemples-plans/
+*.sqlplan
+*.SQLPlan

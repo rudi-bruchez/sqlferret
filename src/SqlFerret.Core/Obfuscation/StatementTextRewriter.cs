@@ -72,7 +72,8 @@ public static class StatementTextRewriter
         s = Regex.Replace(s, @"--[^\n]*", " ");                              // line comments
         s = Regex.Replace(s, @"(?<![A-Za-z_@#$0-9.])\d+(\.\d+)?", "?");       // numeric literals
         foreach (var kv in lookup.OrderByDescending(kv => kv.Key.Length))     // longest-first to avoid substrings
-            s = Regex.Replace(s, @"(?i)\[?\b" + Regex.Escape(kv.Key) + @"\b\]?", kv.Value);
+            s = Regex.Replace(s, @"(?i)(\[?)\b" + Regex.Escape(kv.Key) + @"\b\]?",
+                m => m.Groups[1].Length > 0 ? "[" + kv.Value + "]" : kv.Value);
         return s;
     }
 }
