@@ -73,6 +73,7 @@ public sealed partial class DuckDbProject : IDisposable
             migrate.ExecuteNonQuery();
         }
         CreateQdsSchema(conn);
+        CreateObfuscationSchema(conn);
     }
 
     private long Scalar(string sql)

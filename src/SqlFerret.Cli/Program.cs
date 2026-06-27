@@ -39,7 +39,7 @@ AuditProject? OpenProject()
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: import <path> --project <dir> | top-slow --project <dir> | export-blocking --project <dir> [...] | query-store-import --project <dir> [--conn <s>] [--database <db>] [--no-plans] [--from <dt> --to <dt> | --last <N>{h|d}] | export-events --project <dir> --out <dir> [--kind blocking|deadlock|both] [--from <dt> --to <dt> | --last <N>{h|d}] [--fingerprint <hash>] [--database <id>] [--limit <n>]");
+    Console.Error.WriteLine("usage: import <path> --project <dir> | top-slow --project <dir> | export-blocking --project <dir> [...] | query-store-import --project <dir> [--conn <s>] [--database <db>] [--no-plans] [--from <dt> --to <dt> | --last <N>{h|d}] | export-events --project <dir> --out <dir> [--kind blocking|deadlock|both] [--from <dt> --to <dt> | --last <N>{h|d}] [--fingerprint <hash>] [--database <id>] [--limit <n>] | obfuscate-plan (--in <file> --out <file> | --project <dir> --plan-id <id>)");
     return 1;
 }
 
@@ -259,6 +259,52 @@ switch (args[0])
                 deadlock = new { written = result.DeadlockWritten, skipped = result.DeadlockSkipped, matched = result.DeadlockMatched },
             };
             Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(summary));
+            return 0;
+        }
+    case "obfuscate-plan":
+        {
+            var inPath = Arg("--in");
+            if (!string.IsNullOrWhiteSpace(inPath))
+            {
+                var outPath = Arg("--out");
+                if (string.IsNullOrWhiteSpace(outPath))
+                {
+                    Console.Error.WriteLine("obfuscate-plan: --out <file> is required with --in");
+                    return 1;
+                }
+                if (!File.Exists(inPath))
+                {
+                    Console.Error.WriteLine($"obfuscate-plan: input not found: {inPath}");
+                    return 1;
+                }
+                var r = SqlFerret.Core.Obfuscation.ObfuscationRunner.RunStandalone(inPath, outPath);
+                Console.WriteLine($"obfuscated -> {r.AnonPath} ({r.NamesMapped} names, map: {r.MapPath})");
+                return 0;
+            }
+
+            var planId = Arg("--plan-id");
+            if (string.IsNullOrWhiteSpace(planId)
+                || planId.Contains('/') || planId.Contains('\\') || planId.Contains("..")
+                || Path.GetFileName(planId) != planId)
+            {
+                Console.Error.WriteLine("obfuscate-plan: provide --in <file> --out <file>, or --project <dir> --plan-id <bare-id>");
+                return 1;
+            }
+            var project = OpenProject();
+            if (project is null) return 1;
+
+            var srcPlan = Path.Combine(project.PlansFolder, $"{planId}.sqlplan");
+            if (!File.Exists(srcPlan))
+            {
+                Console.Error.WriteLine($"obfuscate-plan: plan not found: {srcPlan}");
+                return 1;
+            }
+
+            using (var db = project.OpenDb())
+            {
+                var r = SqlFerret.Core.Obfuscation.ObfuscationRunner.RunProject(db, project.PlansFolder, planId);
+                Console.WriteLine($"obfuscated -> {r.AnonPath} (project map: {r.NamesMapped} names total, map: {r.MapPath})");
+            }
             return 0;
         }
     default:
