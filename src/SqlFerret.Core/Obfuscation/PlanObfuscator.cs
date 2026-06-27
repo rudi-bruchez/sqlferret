@@ -14,6 +14,14 @@ public static class PlanObfuscator
     // Matches bracketed segments in multi-part names like [Sales].[dbo].[GetCustomer].
     private static readonly Regex BracketSegment = new(@"\[([^\]]*)\]", RegexOptions.Compiled);
 
+    // Matches the leading DDL define clause in a (possibly truncated) StatementText.
+    // Captures the multi-part object name immediately after CREATE/ALTER PROC/PROCEDURE/FUNCTION/VIEW/TRIGGER.
+    // Used as a regex fallback when ScriptDom cannot parse a truncated statement body.
+    private static readonly Regex DdlLeadClause = new(
+        @"(?:CREATE|ALTER)\s+(?:OR\s+ALTER\s+)?(?:PROC(?:EDURE)?|FUNCTION|VIEW|TRIGGER)\s+" +
+        @"((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_@#$]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_@#$]*))*)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     public static (string AnonXml, ObfuscationMap Map) Obfuscate(string showplanXml, ObfuscationMap map)
     {
         var doc = XDocument.Parse(showplanXml, LoadOptions.PreserveWhitespace);
@@ -150,6 +158,10 @@ public static class PlanObfuscator
     // Iterates every StatementText attribute in the plan XML and parses each value with ScriptDom
     // to extract the name(s) of any DDL-defined object (CREATE/ALTER PROC/FUNCTION/VIEW/TRIGGER).
     // Those names are added to the map before Pass 2 so the StatementTextRewriter can substitute them.
+    // Belt-and-suspenders: the regex fallback always runs in addition to the AST path. SQL Server
+    // truncates StatementText for large procs, leaving an incomplete statement that ScriptDom cannot
+    // parse — the regex catches the defined name from the leading CREATE/ALTER clause regardless.
+    // Mapping is idempotent so running both paths on a well-formed statement is safe.
     private static void CollectDdlObjectNames(XDocument doc, ObfuscationMap map)
     {
         var parser = new TSql160Parser(initialQuotedIdentifiers: true);
@@ -161,11 +173,43 @@ public static class PlanObfuscator
             {
                 using var reader = new StringReader(attr.Value);
                 var fragment = parser.Parse(reader, out IList<ParseError> errors);
-                if (errors.Count > 0 || fragment is null) continue;
-                fragment.Accept(visitor);
+                if (errors.Count == 0 && fragment is not null)
+                    fragment.Accept(visitor);
             }
             catch { }
+            // Regex fallback: always run to capture DDL names from truncated StatementText
+            // that ScriptDom cannot parse (only the leading clause survives truncation).
+            var m = DdlLeadClause.Match(attr.Value);
+            if (m.Success) MapDdlMultiPartName(m.Groups[1].Value, map);
         }
+    }
+
+    // Parses a raw multi-part DDL object name (e.g. "dbo.SecretProc" or "[dbo].[SecretProc]")
+    // and pre-populates the obfuscation map with the appropriate token for each name part.
+    // Mirrors the by-position logic in SetMultiPart; no attribute is written here.
+    private static void MapDdlMultiPartName(string rawName, ObfuscationMap map)
+    {
+        List<string> segments;
+        var matches = BracketSegment.Matches(rawName);
+        if (matches.Count > 0)
+            segments = [.. matches.Select(m => m.Groups[1].Value)];
+        else
+            segments = [.. rawName.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+
+        if (segments.Count == 0) return;
+        // Skip system schemas for consistency with the AST path.
+        if (segments.Count >= 2 && SystemSchemas.Contains(segments[segments.Count - 2])) return;
+
+        NameKind[] kinds = segments.Count switch
+        {
+            >= 3 => [NameKind.Database, NameKind.Schema, NameKind.Table],
+            2 => [NameKind.Schema, NameKind.Table],
+            _ => [NameKind.Table],
+        };
+        // For >= 3 segments take only the last 3 (covers 4-part server.db.schema.obj names).
+        var used = segments.TakeLast(kinds.Length).ToList();
+        foreach (var (seg, kind) in used.Zip(kinds))
+            map.Token(kind, seg);
     }
 
     private sealed class DdlNameVisitor(ObfuscationMap map) : TSqlFragmentVisitor

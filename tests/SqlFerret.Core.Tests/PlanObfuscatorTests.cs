@@ -281,4 +281,27 @@ public class PlanObfuscatorTests
         var ex = Record.Exception((Action)(() => System.Xml.Linq.XDocument.Parse(xml)));
         Assert.Null(ex);
     }
+
+    // Regression: SQL Server TRUNCATES StatementText for large procs (cut off mid-body).
+    // ScriptDom cannot parse the incomplete statement, so the AST collector silently skips it.
+    // The regex fallback must extract the defined name from the leading CREATE clause anyway.
+    [Fact]
+    public void Ddl_truncated_StatementText_schema_qualified_name_does_not_leak()
+    {
+        // No closing END — ScriptDom will fail to parse this; only the regex fallback saves it.
+        var xml = PlanObfuscator.Obfuscate(
+            DdlPlan("CREATE Proc dbo.SecretTruncProc ( @p char(9) , @q char ) As Begin DECLARE @x int IF @@TRANCOUNT = 0"),
+            new ObfuscationMap()).AnonXml;
+        Assert.DoesNotContain("SecretTruncProc", xml);
+    }
+
+    [Fact]
+    public void Ddl_truncated_StatementText_bare_name_does_not_leak()
+    {
+        // No schema, no brackets, truncated body — regex fallback must still catch the bare name.
+        var xml = PlanObfuscator.Obfuscate(
+            DdlPlan("CREATE PROC SecretBare ( @a char(11) ) AS BEGIN IF @@TRANCOUNT = 0"),
+            new ObfuscationMap()).AnonXml;
+        Assert.DoesNotContain("SecretBare", xml);
+    }
 }
