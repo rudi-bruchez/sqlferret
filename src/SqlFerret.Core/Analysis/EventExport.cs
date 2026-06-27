@@ -17,8 +17,8 @@ public sealed record EventExportOptions(
     int Limit);
 
 public sealed record EventExportResult(
-    int BlockingWritten, int BlockingSkipped,
-    int DeadlockWritten, int DeadlockSkipped,
+    int BlockingWritten, int BlockingSkipped, int BlockingMatched,
+    int DeadlockWritten, int DeadlockSkipped, int DeadlockMatched,
     string OutDir, string IndexPath);
 
 internal sealed record EventExportManifestEntry(
@@ -46,21 +46,22 @@ public sealed class EventExportService(DuckDBConnection conn)
 
         Directory.CreateDirectory(opts.OutDir);
         var manifest = new List<EventExportManifestEntry>();
-        int bWritten = 0, bSkipped = 0, dWritten = 0, dSkipped = 0;
+        int bWritten = 0, bSkipped = 0, bMatched = 0, dWritten = 0, dSkipped = 0, dMatched = 0;
 
         if (opts.Kind is EventKind.Blocking or EventKind.Both)
-            (bWritten, bSkipped) = ExportBlocking(opts, manifest, progress);
+            (bWritten, bSkipped, bMatched) = ExportBlocking(opts, manifest, progress);
 
         if (opts.Kind is EventKind.Deadlock or EventKind.Both)
-            (dWritten, dSkipped) = ExportDeadlock(opts, manifest, progress);
+            (dWritten, dSkipped, dMatched) = ExportDeadlock(opts, manifest, progress);
 
         var indexPath = Path.Combine(opts.OutDir, "index.json");
         File.WriteAllText(indexPath, JsonSerializer.Serialize(manifest, ManifestJson));
 
-        return new EventExportResult(bWritten, bSkipped, dWritten, dSkipped, opts.OutDir, indexPath);
+        return new EventExportResult(
+            bWritten, bSkipped, bMatched, dWritten, dSkipped, dMatched, opts.OutDir, indexPath);
     }
 
-    private (int written, int skipped) ExportBlocking(
+    private (int written, int skipped, int matched) ExportBlocking(
         EventExportOptions opts, List<EventExportManifestEntry> manifest, IProgress<string>? progress)
     {
         var (where, binds) = BuildWindowWhere(opts.Window, "r.captured_at");
@@ -73,6 +74,11 @@ public sealed class EventExportService(DuckDBConnection conn)
             binds.Add(("$fp", opts.Fingerprint!));   // non-null inside the guard
         }
 
+        // One pass for both counts: matched = exportable rows (ignores --limit, so it exposes
+        // truncation); skipped = redacted/absent. The reader below is the only LIMIT-capped query.
+        var (matched, skipped) = CountMatchedSkipped(
+            "blocking_reports r", $"{where}{extra}", "r.raw_xml IS NOT NULL", "r.raw_xml IS NULL", binds);
+
         int written = 0;
         using (var c = conn.CreateCommand())
         {
@@ -80,7 +86,7 @@ public sealed class EventExportService(DuckDBConnection conn)
               SELECT r.report_id, r.captured_at, r.database_id, r.raw_xml
               FROM blocking_reports r
               WHERE {where}{extra} AND r.raw_xml IS NOT NULL
-              ORDER BY r.captured_at LIMIT $limit
+              ORDER BY r.captured_at, r.report_id LIMIT $limit
               """;
             foreach (var (n, v) in binds) Bind(c, n, v);
             Bind(c, "$limit", opts.Limit);
@@ -100,24 +106,20 @@ public sealed class EventExportService(DuckDBConnection conn)
                 progress?.Report($"blocking {written}");
             }
         }
-
-        int skipped;
-        using (var c = conn.CreateCommand())
-        {
-            c.CommandText = $"""
-              SELECT count(*) FROM blocking_reports r
-              WHERE {where}{extra} AND r.raw_xml IS NULL
-              """;
-            foreach (var (n, v) in binds) Bind(c, n, v);
-            skipped = (int)Convert.ToInt64(c.ExecuteScalar());
-        }
-        return (written, skipped);
+        return (written, skipped, matched);
     }
 
-    private (int written, int skipped) ExportDeadlock(
+    // A deadlock graph is exportable when present and not the redaction placeholder.
+    private const string DeadlockExportable = "graph_xml IS NOT NULL AND graph_xml <> '<redacted/>'";
+    private const string DeadlockRedacted = "graph_xml IS NULL OR graph_xml = '<redacted/>'";
+
+    private (int written, int skipped, int matched) ExportDeadlock(
         EventExportOptions opts, List<EventExportManifestEntry> manifest, IProgress<string>? progress)
     {
         var (where, binds) = BuildWindowWhere(opts.Window, "captured_at");
+
+        var (matched, skipped) = CountMatchedSkipped(
+            "deadlock_reports", where, DeadlockExportable, DeadlockRedacted, binds);
 
         int written = 0;
         using (var c = conn.CreateCommand())
@@ -125,8 +127,8 @@ public sealed class EventExportService(DuckDBConnection conn)
             c.CommandText = $"""
               SELECT report_id, captured_at, victim_spids, participant_spids, graph_xml
               FROM deadlock_reports
-              WHERE {where} AND graph_xml IS NOT NULL AND graph_xml <> '<redacted/>'
-              ORDER BY captured_at LIMIT $limit
+              WHERE {where} AND {DeadlockExportable}
+              ORDER BY captured_at, report_id LIMIT $limit
               """;
             foreach (var (n, v) in binds) Bind(c, n, v);
             Bind(c, "$limit", opts.Limit);
@@ -148,18 +150,26 @@ public sealed class EventExportService(DuckDBConnection conn)
                 progress?.Report($"deadlock {written}");
             }
         }
+        return (written, skipped, matched);
+    }
 
-        int skipped;
-        using (var c = conn.CreateCommand())
-        {
-            c.CommandText = $"""
-              SELECT count(*) FROM deadlock_reports
-              WHERE {where} AND (graph_xml IS NULL OR graph_xml = '<redacted/>')
-              """;
-            foreach (var (n, v) in binds) Bind(c, n, v);
-            skipped = (int)Convert.ToInt64(c.ExecuteScalar());
-        }
-        return (written, skipped);
+    // Single-pass count of exportable (matched, ignores --limit so callers can detect truncation)
+    // and redacted/absent (skipped) rows. The predicate fragments are fixed, code-controlled SQL
+    // (never user input); the window/optional filters in `where` carry their values as bound params.
+    private (int matched, int skipped) CountMatchedSkipped(
+        string fromClause, string where, string matchedPredicate, string skippedPredicate,
+        List<(string name, object value)> binds)
+    {
+        using var c = conn.CreateCommand();
+        c.CommandText = $"""
+          SELECT count(*) FILTER (WHERE {matchedPredicate}), count(*) FILTER (WHERE {skippedPredicate})
+          FROM {fromClause}
+          WHERE {where}
+          """;
+        foreach (var (n, v) in binds) Bind(c, n, v);
+        using var r = c.ExecuteReader();
+        r.Read();
+        return ((int)r.GetInt64(0), (int)r.GetInt64(1));
     }
 
     // Builds a WHERE fragment for the optional time window. `col` is a fixed identifier supplied by

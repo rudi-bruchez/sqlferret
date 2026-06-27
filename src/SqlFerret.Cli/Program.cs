@@ -221,9 +221,12 @@ switch (args[0])
             int? dbId = int.TryParse(Arg("--database", ""), out var dv) ? dv : null;
             var fingerprint = NullIfEmpty(Arg("--fingerprint", ""));
             var limit = int.TryParse(Arg("--limit", "100"), out var lv) ? lv : 100;
+            if (limit <= 0)
+            { Console.Error.WriteLine("export-events: --limit must be a positive integer"); return 1; }
 
-            if (kind == EventKind.Deadlock && (dbId is not null || fingerprint is not null))
-                Console.Error.WriteLine("export-events: --fingerprint/--database are ignored for deadlocks");
+            // --fingerprint/--database apply to blocking only; warn whenever the deadlock half is in scope.
+            if (kind is EventKind.Deadlock or EventKind.Both && (dbId is not null || fingerprint is not null))
+                Console.Error.WriteLine("export-events: --fingerprint/--database apply to blocking only; ignored for deadlock events");
 
             using var db = project.OpenDb();
             var svc = new EventExportService(db.Connection);
@@ -231,20 +234,29 @@ switch (args[0])
 
             EventExportResult result;
             try { result = svc.Export(opts); }
-            catch (ArgumentException ex) { Console.Error.WriteLine($"export-events: {ex.Message}"); return 1; }
+            catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or DuckDB.NET.Data.DuckDBException)
+            { Console.Error.WriteLine($"export-events: {ex.Message}"); return 1; }
 
-            if (result.BlockingWritten == 0 && result.DeadlockWritten == 0 &&
-                (result.BlockingSkipped > 0 || result.DeadlockSkipped > 0))
-                Console.Error.WriteLine(
-                    "export-events: nothing written; matching runs were imported with redaction != off. " +
-                    "Re-import with --redaction off to export XML.");
+            // Per-kind redaction hint: a requested kind that produced no files but skipped some was
+            // imported with redaction != off. Reported per kind so an all-redacted half is not masked
+            // by the other half having written files.
+            if (result.BlockingWritten == 0 && result.BlockingSkipped > 0)
+                Console.Error.WriteLine("export-events: no blocking XML written; those runs were imported with redaction != off. Re-import with --redaction off.");
+            if (result.DeadlockWritten == 0 && result.DeadlockSkipped > 0)
+                Console.Error.WriteLine("export-events: no deadlock XML written; those runs were imported with redaction != off. Re-import with --redaction off.");
+
+            // Truncation hint: more events matched than were written because --limit capped the output.
+            if (result.BlockingWritten < result.BlockingMatched)
+                Console.Error.WriteLine($"export-events: {result.BlockingMatched - result.BlockingWritten} more blocking events matched but were capped by --limit {limit}");
+            if (result.DeadlockWritten < result.DeadlockMatched)
+                Console.Error.WriteLine($"export-events: {result.DeadlockMatched - result.DeadlockWritten} more deadlock events matched but were capped by --limit {limit}");
 
             var summary = new
             {
                 outDir = result.OutDir,
                 indexPath = result.IndexPath,
-                blocking = new { written = result.BlockingWritten, skipped = result.BlockingSkipped },
-                deadlock = new { written = result.DeadlockWritten, skipped = result.DeadlockSkipped },
+                blocking = new { written = result.BlockingWritten, skipped = result.BlockingSkipped, matched = result.BlockingMatched },
+                deadlock = new { written = result.DeadlockWritten, skipped = result.DeadlockSkipped, matched = result.DeadlockMatched },
             };
             Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(summary));
             return 0;
