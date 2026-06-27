@@ -452,4 +452,30 @@ public class PlanObfuscatorTests
         var (twice, _) = PlanObfuscator.Obfuscate(once, new ObfuscationMap());
         Assert.Equal(once, twice);
     }
+
+    // Regression: ScalarString predicate fragments are NOT valid SQL statements,
+    // so StatementTextRewriter always hits Fallback for them. The old \b boundary
+    // failed before '#' (non-word char), letting #Secret leak verbatim.
+    [Fact]
+    public void TempTable_scalarstring_predicate_does_not_leak_in_fallback()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <RelOp>
+            <Object Database="[tempdb]" Schema="[dbo]" Table="[#Secret]" />
+            <ColumnReference Database="[tempdb]" Schema="[dbo]" Table="[#Secret]" Column="ColX" />
+            <Predicate>
+              <ScalarOperator ScalarString="[tempdb].[dbo].[#Secret].[ColX]='v'">
+              </ScalarOperator>
+            </Predicate>
+          </RelOp>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        // Primary bug: #Secret must be gone from the ScalarString fallback rewrite.
+        Assert.DoesNotContain("#Secret", xml);
+        // Column name from the map must also be gone.
+        Assert.DoesNotContain("ColX", xml);
+        Assert.Contains("#Temp1", xml);
+    }
 }

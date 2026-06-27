@@ -51,4 +51,38 @@ public class StatementTextRewriterTests
         Assert.DoesNotContain("42", outSql);
         Assert.Contains("Table1", outSql);
     }
+
+    // ─── Fallback boundary fix: #temp and @param identifiers ────────────────
+
+    [Fact]
+    public void Fallback_temp_table_identifier_is_scrubbed()
+    {
+        // #Secret starts with '#' (non-word char): \b boundaries fail there.
+        // The identifier-aware lookaround fix must catch it both bare and bracketed.
+        // A predicate fragment like "[tempdb].[dbo].[#Secret].[Col]='v'" is NOT a valid
+        // SQL statement, so ScriptDom.Parse always returns errors → Fallback runs.
+        var m = MapWith((NameKind.TempTable, "#Secret"));
+        var outSql = StatementTextRewriter.Rewrite("[tempdb].[dbo].[#Secret].[Col]='v'", m);
+        Assert.DoesNotContain("#Secret", outSql);
+        Assert.Contains("#Temp1", outSql);
+    }
+
+    [Fact]
+    public void Fallback_at_parameter_identifier_is_scrubbed()
+    {
+        // @IdArticles starts with '@' (non-word char): \b boundaries fail there.
+        var m = MapWith((NameKind.Parameter, "@IdArticles"));
+        var outSql = StatementTextRewriter.Rewrite("@IdArticles > 0 @@@", m);
+        Assert.DoesNotContain("IdArticles", outSql);
+    }
+
+    [Fact]
+    public void Fallback_no_partial_match_in_longer_identifier()
+    {
+        // Mapping only "Foo" must not corrupt "FooBar" in the fallback path.
+        var m = MapWith((NameKind.Table, "Foo"));
+        var outSql = StatementTextRewriter.Rewrite("FooBar @@@", m);
+        Assert.Contains("FooBar", outSql);
+        Assert.DoesNotContain("Table1Bar", outSql);
+    }
 }

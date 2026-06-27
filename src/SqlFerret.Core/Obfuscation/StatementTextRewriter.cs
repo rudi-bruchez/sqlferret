@@ -72,8 +72,19 @@ public static class StatementTextRewriter
         s = Regex.Replace(s, @"--[^\n]*", " ");                              // line comments
         s = Regex.Replace(s, @"(?<![A-Za-z_@#$0-9.])\d+(\.\d+)?", "?");       // numeric literals
         foreach (var kv in lookup.OrderByDescending(kv => kv.Key.Length))     // longest-first to avoid substrings
-            s = Regex.Replace(s, @"(?i)(\[?)\b" + Regex.Escape(kv.Key) + @"\b\]?",
+        {
+            // Keys that start with a non-word char (# for temp tables, @ for parameters, $ for rare forms)
+            // need identifier-aware lookarounds: \b does not fire before a non-word char so bare
+            // '#Foo' or '@Bar' would never be matched. Word-char-starting keys keep the original \b
+            // approach so that e.g. the inner name "Foo" (stored without its leading #) is still
+            // matched inside "#Foo" in DDL text (word boundary exists between '#' and 'F').
+            bool startsNonWord = kv.Key.Length > 0 && kv.Key[0] is '#' or '@' or '$';
+            var pat = startsNonWord
+                ? @"(?i)(?<![A-Za-z0-9_@#$])(\[?)" + Regex.Escape(kv.Key) + @"\]?(?![A-Za-z0-9_@#$])"
+                : @"(?i)(\[?)\b" + Regex.Escape(kv.Key) + @"\b\]?";
+            s = Regex.Replace(s, pat,
                 m => m.Groups[1].Length > 0 ? "[" + kv.Value + "]" : kv.Value);
+        }
         return s;
     }
 }
