@@ -365,4 +365,163 @@ public class PlanObfuscatorTests
         var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
         Assert.DoesNotContain("SecretQuoted", xml);
     }
+
+    // ─── Temp-table obfuscation tests ────────────────────────────────────────
+
+    // Fixture: one mangled form + one clean form of the same temp table, plus a column ref and SQL text.
+    private static string TempTablePlan() => $"""
+    <ShowPlanXML xmlns="{Ns}">
+      <StmtSimple StatementText="SELECT Sensitive FROM #Secret">
+        <RelOp>
+          <Object Database="[tempdb]" Schema="[dbo]" Table="[#Secret_______________________________0000ABCD]" />
+          <Object Database="[tempdb]" Schema="[dbo]" Table="[#Secret]" />
+          <ColumnReference Database="[tempdb]" Schema="[dbo]" Table="[#Secret]" Column="Sensitive" />
+        </RelOp>
+      </StmtSimple>
+    </ShowPlanXML>
+    """;
+
+    [Fact]
+    public void TempTable_mangled_and_clean_collapse_to_one_token()
+    {
+        var (xml, _) = PlanObfuscator.Obfuscate(TempTablePlan(), new ObfuscationMap());
+        // Sensitive names must not leak.
+        Assert.DoesNotContain("Secret", xml);
+        Assert.DoesNotContain("Sensitive", xml);
+        // One shared token covers mangled + clean operator-tree refs.
+        Assert.Contains("#Temp1", xml);
+        Assert.Contains("Table=\"[#Temp1]\"", xml);
+        // The same token must appear in the rewritten StatementText.
+        var doc = System.Xml.Linq.XDocument.Parse(xml);
+        var stmtText = doc.Descendants()
+            .First(e => e.Attribute("StatementText") != null)
+            .Attribute("StatementText")!.Value;
+        Assert.Contains("#Temp1", stmtText);
+    }
+
+    [Fact]
+    public void TempTable_global_temp_name_is_obfuscated()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <RelOp>
+            <Object Table="[##GlobalSecret]" />
+          </RelOp>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.DoesNotContain("GlobalSecret", xml);
+        Assert.Contains("#Temp1", xml);
+    }
+
+    [Fact]
+    public void TempTable_worktable_is_preserved()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <RelOp>
+            <Object Database="[tempdb]" Table="[Worktable]" />
+          </RelOp>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.Contains("Worktable", xml);
+    }
+
+    [Fact]
+    public void TempTable_single_underscore_name_not_over_stripped()
+    {
+        // #keep_me_raw_name has underscores but not 4+ consecutive trailing ones —
+        // NormalizeTempName must not strip any part of it. The whole name maps to a token.
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <RelOp>
+            <Object Table="[#keep_me_raw_name]" />
+          </RelOp>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.DoesNotContain("keep_me_raw_name", xml);
+        Assert.Contains("#Temp1", xml);
+    }
+
+    [Fact]
+    public void TempTable_obfuscation_is_idempotent()
+    {
+        var (once, _) = PlanObfuscator.Obfuscate(TempTablePlan(), new ObfuscationMap());
+        var (twice, _) = PlanObfuscator.Obfuscate(once, new ObfuscationMap());
+        Assert.Equal(once, twice);
+    }
+
+    // Regression: ScalarString predicate fragments are NOT valid SQL statements,
+    // so StatementTextRewriter always hits Fallback for them. The old \b boundary
+    // failed before '#' (non-word char), letting #Secret leak verbatim.
+    [Fact]
+    public void TempTable_scalarstring_predicate_does_not_leak_in_fallback()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <RelOp>
+            <Object Database="[tempdb]" Schema="[dbo]" Table="[#Secret]" />
+            <ColumnReference Database="[tempdb]" Schema="[dbo]" Table="[#Secret]" Column="ColX" />
+            <Predicate>
+              <ScalarOperator ScalarString="[tempdb].[dbo].[#Secret].[ColX]='v'">
+              </ScalarOperator>
+            </Predicate>
+          </RelOp>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        // Primary bug: #Secret must be gone from the ScalarString fallback rewrite.
+        Assert.DoesNotContain("#Secret", xml);
+        // Column name from the map must also be gone.
+        Assert.DoesNotContain("ColX", xml);
+        Assert.Contains("#Temp1", xml);
+    }
+
+    // ─── DDL-only temp-table leak regression tests ───────────────────────────
+
+    // Bug: CREATE TABLE #x (...) with NO operator-tree Object element leaked #x verbatim.
+    // MapDdlMultiPartName stripped the '#' and stored the name as NameKind.Table with key "x".
+    // The rewriter keyed '#x' (Strip does not remove '#'), so the lookup missed and '#x' was emitted.
+    [Fact]
+    public void Ddl_CreateTable_LocalTemp_DDL_only_does_not_leak()
+    {
+        // No operator-tree Object element names this table — DDL path only.
+        var xml = PlanObfuscator.Obfuscate(
+            DdlPlan("CREATE TABLE #SecretProbe (CustomerSsn int)"),
+            new ObfuscationMap()).AnonXml;
+        Assert.DoesNotContain("#SecretProbe", xml);
+        Assert.DoesNotContain("SecretProbe", xml);
+    }
+
+    [Fact]
+    public void Ddl_CreateTable_LocalTemp_shares_token_with_operator_tree()
+    {
+        // #Shared appears in both the StatementText DDL and the operator-tree Object.
+        // Both paths must produce the same single #Temp1 token (not two separate tokens).
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <StmtSimple StatementText="CREATE TABLE #Shared (col int)">
+            <RelOp>
+              <Object Database="[tempdb]" Schema="[dbo]" Table="[#Shared]" />
+            </RelOp>
+          </StmtSimple>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.DoesNotContain("#Shared", xml);
+        Assert.Contains("#Temp1", xml);
+        Assert.DoesNotContain("#Temp2", xml); // one name → one token, not two
+    }
+
+    [Fact]
+    public void Ddl_CreateTable_GlobalTemp_does_not_leak()
+    {
+        // Global temp table (##) in DDL-only StatementText must also be obfuscated.
+        var xml = PlanObfuscator.Obfuscate(
+            DdlPlan("CREATE TABLE ##GShared (id int)"),
+            new ObfuscationMap()).AnonXml;
+        Assert.DoesNotContain("GShared", xml);
+    }
 }

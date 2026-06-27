@@ -4,7 +4,7 @@ using System.Text.Json.Nodes;
 
 namespace SqlFerret.Core.Obfuscation;
 
-public enum NameKind { Database, Schema, Table, Column, Index, Statistics, Parameter, Alias }
+public enum NameKind { Database, Schema, Table, TempTable, Column, Index, Statistics, Parameter, Alias }
 
 public sealed class ObfuscationMap
 {
@@ -13,6 +13,7 @@ public sealed class ObfuscationMap
         [NameKind.Database] = "Db",
         [NameKind.Schema] = "Schema",
         [NameKind.Table] = "Table",
+        [NameKind.TempTable] = "#Temp",   // '#' is part of the prefix so every token is a valid temp identifier
         [NameKind.Column] = "Col",
         [NameKind.Index] = "Idx",
         [NameKind.Statistics] = "Stat",
@@ -22,7 +23,7 @@ public sealed class ObfuscationMap
 
     // Precedence for the flat text lookup when one name exists under several kinds.
     private static readonly NameKind[] TextPrecedence =
-        [NameKind.Table, NameKind.Alias, NameKind.Column, NameKind.Index,
+        [NameKind.Table, NameKind.TempTable, NameKind.Alias, NameKind.Column, NameKind.Index,
          NameKind.Statistics, NameKind.Schema, NameKind.Database, NameKind.Parameter];
 
     // kind -> (lowercased stripped key -> (original stripped, token))
