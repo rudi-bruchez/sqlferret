@@ -52,14 +52,26 @@ public class PlanObfuscatorTests
     <ShowPlanXML xmlns="{Ns}">
       <StmtSimple StatementText="SELECT SSN FROM Customers WHERE SSN = '123-45-6789'">
         <QueryPlan>
+          <MissingIndexes>
+            <MissingIndexGroup Impact="78.5432">
+              <MissingIndex Database="[Sales]" Schema="[dbo]" Table="[Customers]">
+                <ColumnGroup Usage="EQUALITY">
+                  <Column Name="[SSN]" ColumnId="3" />
+                </ColumnGroup>
+              </MissingIndex>
+            </MissingIndexGroup>
+          </MissingIndexes>
           <RelOp>
             <Filter>
               <Predicate>
-                <ScalarOperator ScalarString="[Customers].[SSN]='123-45-6789'" />
+                <ScalarOperator ScalarString="[Customers].[SSN]='123-45-6789'">
+                  <Const ConstValue="N'123-45-6789'" />
+                </ScalarOperator>
               </Predicate>
               <Object Database="[Sales]" Schema="[dbo]" Table="[Customers]" />
               <ColumnReference Database="[Sales]" Schema="[dbo]" Table="[Customers]" Column="SSN" />
             </Filter>
+            <RemoteQuery RemoteObject="[LINKED_SERVER]" RemoteQueryText="SELECT SSN FROM Customers WHERE SSN = '123-45-6789'" />
           </RelOp>
           <ParameterList>
             <ColumnReference Column="@P1"

@@ -13,19 +13,42 @@ public static class PlanObfuscator
     {
         var doc = XDocument.Parse(showplanXml, LoadOptions.PreserveWhitespace);
 
-        // Pass 1: collect + rename names on Object and ColumnReference nodes.
+        // Pass 1: collect + rename names on Object, ColumnReference, MissingIndex,
+        //         Column (MissingIndexes/ColumnGroup), and RemoteQuery nodes.
         foreach (var el in doc.Descendants())
-            if (el.Name.LocalName is "Object" or "ColumnReference")
-                RenameNode(el, map);
+        {
+            switch (el.Name.LocalName)
+            {
+                case "Object":
+                case "ColumnReference":
+                case "MissingIndex":
+                    RenameNode(el, map);
+                    break;
+                case "Column":
+                    // <Column Name="[SSN]"> in MissingIndexes/ColumnGroup.
+                    // Ordinary <ColumnReference> uses Column=, not Name=, so no overlap.
+                    Set(el, "Name", NameKind.Column, map);
+                    break;
+                case "RemoteQuery":
+                    // Linked-server operator: rename source identifier; SQL text rewritten in Pass 2.
+                    Set(el, "RemoteObject", NameKind.Database, map);
+                    break;
+            }
+        }
 
-        // Pass 2: rewrite embedded T-SQL and scrub parameter values (map is now complete).
+        // Pass 2: rewrite embedded T-SQL and scrub parameter / literal values (map is now complete).
         foreach (var attr in doc.Descendants().Attributes())
         {
             switch (attr.Name.LocalName)
             {
                 case "StatementText":
                 case "ScalarString":
+                case "RemoteQueryText":  // linked-server remote SQL text
                     attr.Value = StatementTextRewriter.Rewrite(attr.Value, map);
+                    break;
+                case "ConstValue":
+                    // Inline constants (e.g. N'123-45-6789') must never survive verbatim.
+                    attr.Value = "?";
                     break;
                 case "ParameterCompiledValue":
                 case "ParameterRuntimeValue":
