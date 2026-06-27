@@ -8,7 +8,9 @@ namespace SqlFerret.Core.Obfuscation;
 public static class PlanObfuscator
 {
     private static readonly HashSet<string> SystemSchemas = new(StringComparer.OrdinalIgnoreCase) { "sys", "INFORMATION_SCHEMA" };
-    private static readonly HashSet<string> SystemDatabases = new(StringComparer.OrdinalIgnoreCase) { "tempdb" };
+    // tempdb is intentionally NOT whitelisted here — user objects inside tempdb (temp tables) must be
+    // mapped. The engine-internal Worktable/Workfile are preserved via InternalTables (by table name).
+    private static readonly HashSet<string> SystemDatabases = new(StringComparer.OrdinalIgnoreCase);
     private static readonly HashSet<string> InternalTables = new(StringComparer.OrdinalIgnoreCase) { "Worktable", "Workfile" };
 
     // Matches bracketed segments in multi-part names like [Sales].[dbo].[GetCustomer].
@@ -17,6 +19,16 @@ public static class PlanObfuscator
     // Comment-stripping patterns (same as StatementTextRewriter.Fallback) used before the DDL regex.
     private static readonly Regex BlockComment = new(@"/\*.*?\*/", RegexOptions.Singleline | RegexOptions.Compiled);
     private static readonly Regex LineComment = new(@"--[^\n]*", RegexOptions.Compiled);
+
+    // Strips the SQL Server tempdb uniqueness suffix from a stripped temp-table name.
+    // SQL Server mangles local temp names: #Foo becomes #Foo_______________________________0000ABCD
+    // (4+ trailing underscores + optional hex). Both forms must share the same map key.
+    private static readonly Regex TempNameMangle = new(@"_{4,}[0-9A-Fa-f]*$", RegexOptions.Compiled);
+
+    // Returns the canonical de-mangled form of a bracket/quote-stripped temp table name.
+    // Only names starting with '#' are processed; others are returned unchanged.
+    private static string NormalizeTempName(string stripped) =>
+        stripped.StartsWith('#') ? TempNameMangle.Replace(stripped, "") : stripped;
 
     // Matches one name-part in any of three quoting forms:
     //   bracketed  [Name]           — extract inner via part[1..^1]
@@ -86,7 +98,7 @@ public static class PlanObfuscator
         // Standard single-component name attributes.
         Set(el, "Database", NameKind.Database, map);
         Set(el, "Schema", NameKind.Schema, map);
-        Set(el, "Table", NameKind.Table, map);
+        SetTable(el, map); // temp tables use NameKind.TempTable; regular tables use NameKind.Table
         Set(el, "Index", NameKind.Index, map);
         Set(el, "Statistics", NameKind.Statistics, map);
         Set(el, "Alias", NameKind.Alias, map);
@@ -156,6 +168,27 @@ public static class PlanObfuscator
     {
         var a = el.Attribute(attrName);
         if (a is not null && !string.IsNullOrEmpty(a.Value)) Rename(a, kind, map);
+    }
+
+    // Maps the Table= attribute, routing temp-table names (#/##) to NameKind.TempTable so they
+    // share the same token kind (and prefix) across the operator tree and SQL text. The mangled
+    // form (#Foo_____…hex) and the clean form (#Foo) collapse to the same map key via
+    // NormalizeTempName. Regular table names are handled by the normal NameKind.Table path.
+    private static void SetTable(XElement el, ObfuscationMap map)
+    {
+        var a = el.Attribute("Table");
+        if (a is null || string.IsNullOrEmpty(a.Value)) return;
+        var stripped = ObfuscationMap.Strip(a.Value);
+        if (stripped.StartsWith('#'))
+        {
+            var hadBrackets = a.Value.StartsWith('[');
+            var token = map.Token(NameKind.TempTable, NormalizeTempName(stripped));
+            a.Value = hadBrackets ? "[" + token + "]" : token;
+        }
+        else
+        {
+            Rename(a, NameKind.Table, map);
+        }
     }
 
     private static void Rename(XAttribute a, NameKind kind, ObfuscationMap map)

@@ -365,4 +365,91 @@ public class PlanObfuscatorTests
         var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
         Assert.DoesNotContain("SecretQuoted", xml);
     }
+
+    // ─── Temp-table obfuscation tests ────────────────────────────────────────
+
+    // Fixture: one mangled form + one clean form of the same temp table, plus a column ref and SQL text.
+    private static string TempTablePlan() => $"""
+    <ShowPlanXML xmlns="{Ns}">
+      <StmtSimple StatementText="SELECT Sensitive FROM #Secret">
+        <RelOp>
+          <Object Database="[tempdb]" Schema="[dbo]" Table="[#Secret_______________________________0000ABCD]" />
+          <Object Database="[tempdb]" Schema="[dbo]" Table="[#Secret]" />
+          <ColumnReference Database="[tempdb]" Schema="[dbo]" Table="[#Secret]" Column="Sensitive" />
+        </RelOp>
+      </StmtSimple>
+    </ShowPlanXML>
+    """;
+
+    [Fact]
+    public void TempTable_mangled_and_clean_collapse_to_one_token()
+    {
+        var (xml, _) = PlanObfuscator.Obfuscate(TempTablePlan(), new ObfuscationMap());
+        // Sensitive names must not leak.
+        Assert.DoesNotContain("Secret", xml);
+        Assert.DoesNotContain("Sensitive", xml);
+        // One shared token covers mangled + clean operator-tree refs.
+        Assert.Contains("#Temp1", xml);
+        Assert.Contains("Table=\"[#Temp1]\"", xml);
+        // The same token must appear in the rewritten StatementText.
+        var doc = System.Xml.Linq.XDocument.Parse(xml);
+        var stmtText = doc.Descendants()
+            .First(e => e.Attribute("StatementText") != null)
+            .Attribute("StatementText")!.Value;
+        Assert.Contains("#Temp1", stmtText);
+    }
+
+    [Fact]
+    public void TempTable_global_temp_name_is_obfuscated()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <RelOp>
+            <Object Table="[##GlobalSecret]" />
+          </RelOp>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.DoesNotContain("GlobalSecret", xml);
+        Assert.Contains("#Temp1", xml);
+    }
+
+    [Fact]
+    public void TempTable_worktable_is_preserved()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <RelOp>
+            <Object Database="[tempdb]" Table="[Worktable]" />
+          </RelOp>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.Contains("Worktable", xml);
+    }
+
+    [Fact]
+    public void TempTable_single_underscore_name_not_over_stripped()
+    {
+        // #keep_me_raw_name has underscores but not 4+ consecutive trailing ones —
+        // NormalizeTempName must not strip any part of it. The whole name maps to a token.
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <RelOp>
+            <Object Table="[#keep_me_raw_name]" />
+          </RelOp>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.DoesNotContain("keep_me_raw_name", xml);
+        Assert.Contains("#Temp1", xml);
+    }
+
+    [Fact]
+    public void TempTable_obfuscation_is_idempotent()
+    {
+        var (once, _) = PlanObfuscator.Obfuscate(TempTablePlan(), new ObfuscationMap());
+        var (twice, _) = PlanObfuscator.Obfuscate(once, new ObfuscationMap());
+        Assert.Equal(once, twice);
+    }
 }
