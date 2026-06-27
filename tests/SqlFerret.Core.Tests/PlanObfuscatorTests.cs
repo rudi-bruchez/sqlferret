@@ -99,5 +99,7 @@ public class PlanObfuscatorTests
         var (b, _) = PlanObfuscator.Obfuscate(planB, map);
         Assert.Contains("Table1", a);
         Assert.Contains("Table1", b); // Customers -> Table1 in both via the shared map
+        Assert.Contains("@Param2", b);     // proves the shared map's parameter counter advanced (not a fresh map)
+        Assert.DoesNotContain("@Param1", b);
     }
 }
