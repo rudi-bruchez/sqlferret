@@ -478,4 +478,50 @@ public class PlanObfuscatorTests
         Assert.DoesNotContain("ColX", xml);
         Assert.Contains("#Temp1", xml);
     }
+
+    // ─── DDL-only temp-table leak regression tests ───────────────────────────
+
+    // Bug: CREATE TABLE #x (...) with NO operator-tree Object element leaked #x verbatim.
+    // MapDdlMultiPartName stripped the '#' and stored the name as NameKind.Table with key "x".
+    // The rewriter keyed '#x' (Strip does not remove '#'), so the lookup missed and '#x' was emitted.
+    [Fact]
+    public void Ddl_CreateTable_LocalTemp_DDL_only_does_not_leak()
+    {
+        // No operator-tree Object element names this table — DDL path only.
+        var xml = PlanObfuscator.Obfuscate(
+            DdlPlan("CREATE TABLE #SecretProbe (CustomerSsn int)"),
+            new ObfuscationMap()).AnonXml;
+        Assert.DoesNotContain("#SecretProbe", xml);
+        Assert.DoesNotContain("SecretProbe", xml);
+    }
+
+    [Fact]
+    public void Ddl_CreateTable_LocalTemp_shares_token_with_operator_tree()
+    {
+        // #Shared appears in both the StatementText DDL and the operator-tree Object.
+        // Both paths must produce the same single #Temp1 token (not two separate tokens).
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <StmtSimple StatementText="CREATE TABLE #Shared (col int)">
+            <RelOp>
+              <Object Database="[tempdb]" Schema="[dbo]" Table="[#Shared]" />
+            </RelOp>
+          </StmtSimple>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.DoesNotContain("#Shared", xml);
+        Assert.Contains("#Temp1", xml);
+        Assert.DoesNotContain("#Temp2", xml); // one name → one token, not two
+    }
+
+    [Fact]
+    public void Ddl_CreateTable_GlobalTemp_does_not_leak()
+    {
+        // Global temp table (##) in DDL-only StatementText must also be obfuscated.
+        var xml = PlanObfuscator.Obfuscate(
+            DdlPlan("CREATE TABLE ##GShared (id int)"),
+            new ObfuscationMap()).AnonXml;
+        Assert.DoesNotContain("GShared", xml);
+    }
 }
