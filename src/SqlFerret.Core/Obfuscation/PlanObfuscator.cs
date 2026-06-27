@@ -1,6 +1,7 @@
 // src/SqlFerret.Core/Obfuscation/PlanObfuscator.cs
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
+using Microsoft.SqlServer.TransactSql.ScriptDom;
 
 namespace SqlFerret.Core.Obfuscation;
 
@@ -23,6 +24,10 @@ public static class PlanObfuscator
         // This auto-covers StatisticsInfo, StoredProc, UDF, and any future schema-version element.
         foreach (var el in doc.Descendants())
             RenameNode(el, map);
+
+        // Between Pass 1 and Pass 2: harvest DDL-defined object names from StatementText
+        // so the rewriter (Pass 2) can substitute them like any other mapped name.
+        CollectDdlObjectNames(doc, map);
 
         // Pass 2: rewrite embedded T-SQL and scrub parameter / literal values (map is now complete).
         foreach (var attr in doc.Descendants().Attributes())
@@ -140,5 +145,66 @@ public static class PlanObfuscator
         var hadAt = a.Value.StartsWith('@');
         var token = map.Token(kind, a.Value);
         a.Value = hadBrackets ? "[" + token + "]" : hadAt ? "@" + token : token;
+    }
+
+    // Iterates every StatementText attribute in the plan XML and parses each value with ScriptDom
+    // to extract the name(s) of any DDL-defined object (CREATE/ALTER PROC/FUNCTION/VIEW/TRIGGER).
+    // Those names are added to the map before Pass 2 so the StatementTextRewriter can substitute them.
+    private static void CollectDdlObjectNames(XDocument doc, ObfuscationMap map)
+    {
+        var parser = new TSql160Parser(initialQuotedIdentifiers: true);
+        var visitor = new DdlNameVisitor(map);
+        foreach (var attr in doc.Descendants().Attributes("StatementText"))
+        {
+            if (string.IsNullOrWhiteSpace(attr.Value)) continue;
+            try
+            {
+                using var reader = new StringReader(attr.Value);
+                var fragment = parser.Parse(reader, out IList<ParseError> errors);
+                if (errors.Count > 0 || fragment is null) continue;
+                fragment.Accept(visitor);
+            }
+            catch { }
+        }
+    }
+
+    private sealed class DdlNameVisitor(ObfuscationMap map) : TSqlFragmentVisitor
+    {
+        public override void Visit(CreateProcedureStatement node) =>
+            CollectName(node.ProcedureReference?.Name);
+        public override void Visit(AlterProcedureStatement node) =>
+            CollectName(node.ProcedureReference?.Name);
+        public override void Visit(CreateFunctionStatement node) =>
+            CollectName(node.Name);
+        public override void Visit(AlterFunctionStatement node) =>
+            CollectName(node.Name);
+        public override void Visit(CreateViewStatement node) =>
+            CollectName(node.SchemaObjectName);
+        public override void Visit(AlterViewStatement node) =>
+            CollectName(node.SchemaObjectName);
+        public override void Visit(CreateTriggerStatement node)
+        {
+            CollectName(node.Name);
+            CollectName(node.TriggerObject?.Name);
+        }
+        public override void Visit(AlterTriggerStatement node)
+        {
+            CollectName(node.Name);
+            CollectName(node.TriggerObject?.Name);
+        }
+
+        private void CollectName(SchemaObjectName? obj)
+        {
+            if (obj is null) return;
+            var ids = obj.Identifiers;
+            if (ids.Count == 0) return;
+            // Skip system schemas (defensive whitelist consistency).
+            if (ids.Count >= 2 && SystemSchemas.Contains(ids[ids.Count - 2].Value)) return;
+            // Map identifier parts by position from the right, sharing tokens with operator-tree refs.
+            map.Token(NameKind.Table, ids[ids.Count - 1].Value);
+            if (ids.Count >= 2) map.Token(NameKind.Schema, ids[ids.Count - 2].Value);
+            if (ids.Count >= 3) map.Token(NameKind.Database, ids[ids.Count - 3].Value);
+            // Further-left (server) parts are intentionally ignored.
+        }
     }
 }

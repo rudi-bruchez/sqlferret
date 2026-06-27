@@ -218,4 +218,67 @@ public class PlanObfuscatorTests
         Assert.DoesNotContain("Sales", xml);
         Assert.DoesNotContain("Customers", xml);
     }
+
+    // DDL-defined name leak tests (no operator-tree element names the defined object).
+    private static string DdlPlan(string statementText) => $"""
+    <ShowPlanXML xmlns="{Ns}">
+      <StmtSimple StatementText="{statementText}">
+      </StmtSimple>
+    </ShowPlanXML>
+    """;
+
+    [Fact]
+    public void Ddl_CreateProc_name_does_not_leak()
+    {
+        var xml = PlanObfuscator.Obfuscate(
+            DdlPlan("CREATE PROC [dbo].[SecretProc](@p int) AS SELECT 1"),
+            new ObfuscationMap()).AnonXml;
+        Assert.DoesNotContain("SecretProc", xml);
+    }
+
+    [Fact]
+    public void Ddl_CreateView_name_does_not_leak()
+    {
+        var xml = PlanObfuscator.Obfuscate(
+            DdlPlan("CREATE VIEW [dbo].[SecretView] AS SELECT 1"),
+            new ObfuscationMap()).AnonXml;
+        Assert.DoesNotContain("SecretView", xml);
+    }
+
+    [Fact]
+    public void Ddl_CreateFunction_name_does_not_leak()
+    {
+        var xml = PlanObfuscator.Obfuscate(
+            DdlPlan("CREATE FUNCTION [dbo].[SecretFn]() RETURNS int AS BEGIN RETURN 1 END"),
+            new ObfuscationMap()).AnonXml;
+        Assert.DoesNotContain("SecretFn", xml);
+    }
+
+    [Fact]
+    public void Ddl_AlterProcedure_name_does_not_leak()
+    {
+        var xml = PlanObfuscator.Obfuscate(
+            DdlPlan("ALTER PROCEDURE [dbo].[SecretProc2] AS SELECT 1"),
+            new ObfuscationMap()).AnonXml;
+        Assert.DoesNotContain("SecretProc2", xml);
+    }
+
+    [Fact]
+    public void Ddl_idempotency_preserved()
+    {
+        var input = DdlPlan("CREATE PROC [dbo].[SecretProc](@p int) AS SELECT 1");
+        var (once, _) = PlanObfuscator.Obfuscate(input, new ObfuscationMap());
+        var (twice, _) = PlanObfuscator.Obfuscate(once, new ObfuscationMap());
+        Assert.Equal(once, twice);
+    }
+
+    [Fact]
+    public void Ddl_output_is_well_formed_xml()
+    {
+        var (xml, _) = PlanObfuscator.Obfuscate(
+            DdlPlan("CREATE PROC [dbo].[SecretProc](@p int) AS SELECT 1"),
+            new ObfuscationMap());
+        var ex = Record.Exception((Action)(() => System.Xml.Linq.XDocument.Parse(xml)));
+        Assert.Null(ex);
+    }
 }
