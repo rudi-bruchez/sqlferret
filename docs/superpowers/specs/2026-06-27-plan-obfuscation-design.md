@@ -128,8 +128,12 @@ CREATE TABLE IF NOT EXISTS obfuscation_map (
 
 ## Données neutralisées, détail
 
-- Attributs d'objets : `Database`, `Schema`, `Table`, `Index`, `Statistics`, `Column`, `Alias`, noms de paramètres.
-- Valeurs : `ParameterCompiledValue`, `ParameterRuntimeValue` -> `?` ; littéraux dans `ScalarString` et `StatementText` -> `?`.
+Couverture élargie à l'implémentation (la revue finale a montré que l'énumération par élément était fragile selon la version du schéma showplan ; `RenameNode` est désormais appliqué à chaque élément, le mappage est piloté par nom d'attribut, et la whitelist reste évaluée par élément).
+
+- Noms (mappés en jetons) : `Database`, `Schema`, `Table`, `Server`, `Index`, `Statistics`, `Alias`, `Column` (préfixe `@` -> paramètre), `Name` (uniquement sur `<Column>` des MissingIndexes), `RemoteObject`, `RemoteSource`, `CursorName`, `PlanGuideName`, `PlanGuideDB`, `TemplatePlanGuideName`, `TemplatePlanGuideDB`, `Assembly`, `Method`, `UDXName`, et les noms multi-parties `ProcName` / `FunctionName` (découpés par segment, jetons partagés avec les références d'objets).
+- Texte T-SQL réécrit via `StatementTextRewriter` : `StatementText`, `ScalarString`, `RemoteQuery`, `ParameterizedText`, `Expression`.
+- Valeurs littérales -> `?` : `ConstValue`, `ParameterCompiledValue`, `ParameterRuntimeValue`.
+- Préservés (non sensibles) : coûts, compteurs, opérateurs (`PhysicalOp`/`LogicalOp`), `DataType`, `StatementType`, hachages (`QueryHash`/`QueryPlanHash`), `Build`/`Version`, énumérations.
 
 ## Whitelist objets système
 
@@ -162,6 +166,8 @@ Aucune chaîne d'origine sensible (nom mappé ou valeur littérale) ne doit appa
 
 - Un identifiant présent seulement dans le texte SQL et jamais dans l'arbre d'opérateurs (alias local défini en SQL, `@variable`) n'est pas mappé : il est laissé verbatim. Risque faible (pas de PII), réécriture fine déférée.
 - Pas de validation contre le XSD showplan officiel ; on se limite à « bien formé » plus contrôle de structure léger.
+- Un nom multi-parties à quatre composants (`serveur.base.schéma.objet` dans `ProcName`/`FunctionName`) voit son segment serveur retiré (jamais émis, donc pas de fuite) plutôt que mappé : la fidélité de round-trip sur ce segment n'est pas garantie.
+- Une colonne portée par une référence en base `tempdb` (table temporaire `#temp`) est whitelistée avec l'élément, donc non mappée (comportement hérité de la règle whitelist par élément).
 
 ## Fichiers touchés (indicatif)
 
