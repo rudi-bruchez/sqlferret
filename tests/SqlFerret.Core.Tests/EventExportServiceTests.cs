@@ -196,4 +196,64 @@ public class EventExportServiceTests
             if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
         }
     }
+
+    [Fact]
+    public void Export_reports_matched_count_so_limit_truncation_is_visible()
+    {
+        var path = TempDb();
+        var outDir = TempDir();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            // 5 exportable blocking reports + 2 redacted (raw_xml NULL).
+            for (int i = 1; i <= 5; i++)
+                Exec(db, $"INSERT INTO blocking_reports VALUES ({i},1, TIMESTAMP '2026-06-0{i} 10:00:00', 1, 7, '<r>{i}</r>')");
+            Exec(db, "INSERT INTO blocking_reports VALUES (6,1, TIMESTAMP '2026-06-06 10:00:00', 1, 7, NULL)");
+            Exec(db, "INSERT INTO blocking_reports VALUES (7,1, TIMESTAMP '2026-06-07 10:00:00', 1, 7, NULL)");
+
+            var res = new EventExportService(db.Connection).Export(new EventExportOptions(
+                outDir, EventKind.Blocking, new QueryStoreWindow(null, null), null, null, 3));
+
+            Assert.Equal(3, res.BlockingWritten);   // capped by limit
+            Assert.Equal(5, res.BlockingMatched);   // total exportable, ignoring the limit
+            Assert.Equal(2, res.BlockingSkipped);   // redacted/absent
+            Assert.True(res.BlockingWritten < res.BlockingMatched, "truncation must be visible via Matched");
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+            if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
+        }
+    }
+
+    [Fact]
+    public void Export_limit_is_deterministic_when_timestamps_tie()
+    {
+        var path = TempDb();
+        var outDir = TempDir();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            // Three deadlocks at the SAME captured_at, inserted out of report_id order.
+            Exec(db, "INSERT INTO deadlock_reports VALUES (3,1, TIMESTAMP '2026-06-01 10:00:00', 'v3', 'p3', '<d>3</d>')");
+            Exec(db, "INSERT INTO deadlock_reports VALUES (1,1, TIMESTAMP '2026-06-01 10:00:00', 'v1', 'p1', '<d>1</d>')");
+            Exec(db, "INSERT INTO deadlock_reports VALUES (2,1, TIMESTAMP '2026-06-01 10:00:00', 'v2', 'p2', '<d>2</d>')");
+
+            var res = new EventExportService(db.Connection).Export(new EventExportOptions(
+                outDir, EventKind.Deadlock, new QueryStoreWindow(null, null), null, null, 2));
+
+            Assert.Equal(2, res.DeadlockWritten);
+            Assert.Equal(3, res.DeadlockMatched);
+            // Tiebreaker is report_id ASC, so ids 1 and 2 are exported deterministically, never 3.
+            var ids = Directory.GetFiles(outDir, "deadlock_*.xdl")
+                .Select(f => Path.GetFileNameWithoutExtension(f).Split('_').Last())
+                .OrderBy(s => s).ToArray();
+            Assert.Equal(["1", "2"], ids);
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+            if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
+        }
+    }
 }
