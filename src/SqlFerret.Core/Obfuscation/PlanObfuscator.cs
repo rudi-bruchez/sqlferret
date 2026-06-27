@@ -30,8 +30,9 @@ public static class PlanObfuscator
                     Set(el, "Name", NameKind.Column, map);
                     break;
                 case "RemoteQuery":
-                    // Linked-server operator: rename source identifier; SQL text rewritten in Pass 2.
+                    // Linked-server operator: rename source identifiers; SQL text rewritten in Pass 2.
                     Set(el, "RemoteObject", NameKind.Database, map);
+                    Set(el, "RemoteSource", NameKind.Database, map);
                     break;
             }
         }
@@ -43,7 +44,7 @@ public static class PlanObfuscator
             {
                 case "StatementText":
                 case "ScalarString":
-                case "RemoteQueryText":  // linked-server remote SQL text
+                case "RemoteQuery":  // linked-server remote SQL text (XSD: RemoteQueryType/@RemoteQuery)
                     attr.Value = StatementTextRewriter.Rewrite(attr.Value, map);
                     break;
                 case "ConstValue":

@@ -71,7 +71,7 @@ public class PlanObfuscatorTests
               <Object Database="[Sales]" Schema="[dbo]" Table="[Customers]" />
               <ColumnReference Database="[Sales]" Schema="[dbo]" Table="[Customers]" Column="SSN" />
             </Filter>
-            <RemoteQuery RemoteObject="[LINKED_SERVER]" RemoteQueryText="SELECT SSN FROM Customers WHERE SSN = '123-45-6789'" />
+            <RemoteQuery RemoteSource="[LinkedSrv]" RemoteObject="[Customers]" RemoteQuery="SELECT SSN FROM Customers WHERE SSN = '123-45-6789'" />
           </RelOp>
           <ParameterList>
             <ColumnReference Column="@P1"
@@ -89,6 +89,7 @@ public class PlanObfuscatorTests
         Assert.DoesNotContain("123-45-6789", xml);  // literal gone everywhere
         Assert.DoesNotContain("Customers", xml);     // name gone in text + attributes
         Assert.DoesNotContain("SSN", xml);
+        Assert.DoesNotContain("LinkedSrv", xml);     // remote server name gone
         Assert.Contains("Table1", xml);
         Assert.Contains("Col1", xml);
         Assert.Contains("Param1", xml);
