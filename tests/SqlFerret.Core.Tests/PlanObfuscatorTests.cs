@@ -115,4 +115,91 @@ public class PlanObfuscatorTests
         Assert.Contains("@Param2", b);     // proves the shared map's parameter counter advanced (not a fresh map)
         Assert.DoesNotContain("@Param1", b);
     }
+
+    // Kitchen-sink fixture covering every name-bearing and literal-bearing element
+    // identified as a leak vector: StatisticsInfo, StoredProc, UDF, ParameterizedText,
+    // Expression (PlanAffectingConvert), plus the previously-covered elements.
+    private static string KitchenSinkPlan() => $"""
+    <ShowPlanXML xmlns="{Ns}">
+      <StmtSimple StatementText="SELECT SSN FROM Customers WHERE SSN='123-45-6789'"
+                  ParameterizedText="SELECT SSN FROM Customers WHERE SSN=@1">
+        <QueryPlan>
+          <MissingIndexes>
+            <MissingIndexGroup Impact="78.5432">
+              <MissingIndex Database="[Sales]" Schema="[dbo]" Table="[Customers]">
+                <ColumnGroup Usage="EQUALITY">
+                  <Column Name="[SSN]" ColumnId="3" />
+                </ColumnGroup>
+              </MissingIndex>
+            </MissingIndexGroup>
+          </MissingIndexes>
+          <StatisticsInfo Database="[Sales]" Schema="[dbo]" Table="[Customers]" Statistics="[SSN_idx]" />
+          <RelOp>
+            <Object Database="[Sales]" Schema="[dbo]" Table="[Customers]" Index="[PK_Customers]" />
+            <Object Schema="[sys]" Table="[indexes]" />
+            <Object Table="[Worktable]" />
+            <ColumnReference Database="[Sales]" Schema="[dbo]" Table="[Customers]" Column="SSN" />
+            <RemoteQuery RemoteSource="[LinkedSrv]" RemoteObject="[Customers]"
+                         RemoteQuery="SELECT SSN FROM Customers WHERE SSN='123-45-6789'" />
+            <StoredProc ProcName="[Sales].[dbo].[GetCustomer]" />
+            <UDF FunctionName="[Sales].[dbo].[FmtSSN]" />
+            <Predicate>
+              <ScalarOperator ScalarString="[Customers].[SSN]='123-45-6789'">
+                <Const ConstValue="N'123-45-6789'" />
+              </ScalarOperator>
+            </Predicate>
+            <PlanAffectingConvert Expression="CONVERT(int,[Sales].[dbo].[Customers].[SSN],0)" />
+          </RelOp>
+          <ParameterList>
+            <ColumnReference Column="@P1"
+              ParameterCompiledValue="'123-45-6789'" ParameterRuntimeValue="'123-45-6789'" />
+          </ParameterList>
+        </QueryPlan>
+      </StmtSimple>
+    </ShowPlanXML>
+    """;
+
+    [Fact]
+    public void KitchenSink_no_sensitive_token_leaks()
+    {
+        var (xml, _) = PlanObfuscator.Obfuscate(KitchenSinkPlan(), new ObfuscationMap());
+        // Every original sensitive token must be gone.
+        Assert.DoesNotContain("Sales", xml);
+        Assert.DoesNotContain("dbo", xml);
+        Assert.DoesNotContain("Customers", xml);
+        Assert.DoesNotContain("SSN", xml);
+        Assert.DoesNotContain("LinkedSrv", xml);
+        Assert.DoesNotContain("GetCustomer", xml);
+        Assert.DoesNotContain("FmtSSN", xml);
+        Assert.DoesNotContain("123-45-6789", xml);
+        // Whitelisted system/internal objects must survive intact.
+        Assert.Contains("[sys]", xml);
+        Assert.Contains("indexes", xml);
+        Assert.Contains("Worktable", xml);
+        // Output must remain well-formed XML (SSMS-openable).
+        var ex = Record.Exception((Action)(() => System.Xml.Linq.XDocument.Parse(xml)));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void Cost_and_hash_attributes_are_not_modified()
+    {
+        // Non-sensitive attributes (costs, cardinalities, op names, hashes) must not be touched.
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <RelOp PhysicalOp="Index Seek" LogicalOp="Index Seek" EstimateRows="1.5"
+                 QueryHash="0xABCD1234" QueryPlanHash="0xDEADBEEF" StatementType="SELECT">
+            <Object Database="[Sales]" Schema="[dbo]" Table="[Customers]" />
+          </RelOp>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.Contains("PhysicalOp=\"Index Seek\"", xml);
+        Assert.Contains("EstimateRows=\"1.5\"", xml);
+        Assert.Contains("QueryHash=\"0xABCD1234\"", xml);
+        Assert.Contains("StatementType=\"SELECT\"", xml);
+        // Names are obfuscated.
+        Assert.DoesNotContain("Sales", xml);
+        Assert.DoesNotContain("Customers", xml);
+    }
 }
