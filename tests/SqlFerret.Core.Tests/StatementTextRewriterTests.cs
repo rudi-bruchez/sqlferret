@@ -39,4 +39,16 @@ public class StatementTextRewriterTests
         var outSql = StatementTextRewriter.Rewrite("SELECT 1 FROM Customers /* ssn 123-45-6789 */", m);
         Assert.DoesNotContain("123-45-6789", outSql);
     }
+
+    [Fact]
+    public void Fallback_on_unparsable_sql_still_scrubs_names_and_literals()
+    {
+        var m = MapWith((NameKind.Table, "Customers"));
+        // Deliberately broken so ScriptDom.Parse reports errors and the fallback runs.
+        var outSql = StatementTextRewriter.Rewrite("@@@ not sql (( Customers 'secret' 42", m);
+        Assert.DoesNotContain("Customers", outSql);
+        Assert.DoesNotContain("secret", outSql);
+        Assert.DoesNotContain("42", outSql);
+        Assert.Contains("Table1", outSql);
+    }
 }
