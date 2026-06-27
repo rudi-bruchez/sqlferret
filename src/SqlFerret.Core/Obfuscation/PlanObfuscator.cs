@@ -74,7 +74,10 @@ public static class PlanObfuscator
     private static void Rename(XAttribute a, NameKind kind, ObfuscationMap map)
     {
         var hadBrackets = a.Value.StartsWith('[');
+        // Preserve the '@' prefix so parameter tokens remain detectable as parameters
+        // on subsequent obfuscation passes (idempotency invariant).
+        var hadAt = !hadBrackets && a.Value.StartsWith('@');
         var token = map.Token(kind, a.Value);
-        a.Value = hadBrackets ? "[" + token + "]" : token;
+        a.Value = hadBrackets ? "[" + token + "]" : hadAt ? "@" + token : token;
     }
 }
