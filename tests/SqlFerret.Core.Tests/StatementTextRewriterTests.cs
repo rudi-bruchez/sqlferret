@@ -19,6 +19,7 @@ public class StatementTextRewriterTests
         Assert.Contains("Table1", outSql);
         Assert.Contains("?", outSql);
         Assert.DoesNotContain("Customers", outSql);
+        Assert.DoesNotContain("SSN", outSql);
         Assert.DoesNotContain("123-45-6789", outSql);
     }
 

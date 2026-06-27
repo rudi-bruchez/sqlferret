@@ -21,6 +21,8 @@ public static class StatementTextRewriter
         try
         {
             var parser = new TSql160Parser(initialQuotedIdentifiers: true);
+            // Use Parse() to detect semantically invalid SQL — GetTokenStream() is lenient
+            // and returns no errors even for input like "@@@ not sql ((".
             using (var pr = new StringReader(sqlFragment))
             {
                 parser.Parse(pr, out IList<ParseError> perr);
