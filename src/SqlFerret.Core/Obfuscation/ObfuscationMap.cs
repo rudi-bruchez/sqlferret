@@ -29,7 +29,9 @@ public sealed class ObfuscationMap
     private readonly Dictionary<NameKind, Dictionary<string, (string Original, string Token)>> _maps = new();
     private readonly Dictionary<NameKind, int> _counters = new();
 
-    public static string Strip(string name) => name.Trim().Trim('[', ']');
+    // Strips surrounding quoting characters so [Name], "Name", and bare Name all key identically.
+    // FIX 4: also trims '"' so double-quoted identifiers resolve to the same token as bare/bracketed ones.
+    public static string Strip(string name) => name.Trim().Trim('[', ']', '"');
 
     public string Token(NameKind kind, string originalName)
     {

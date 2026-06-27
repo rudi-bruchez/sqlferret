@@ -14,12 +14,25 @@ public static class PlanObfuscator
     // Matches bracketed segments in multi-part names like [Sales].[dbo].[GetCustomer].
     private static readonly Regex BracketSegment = new(@"\[([^\]]*)\]", RegexOptions.Compiled);
 
+    // Comment-stripping patterns (same as StatementTextRewriter.Fallback) used before the DDL regex.
+    private static readonly Regex BlockComment = new(@"/\*.*?\*/", RegexOptions.Singleline | RegexOptions.Compiled);
+    private static readonly Regex LineComment = new(@"--[^\n]*", RegexOptions.Compiled);
+
+    // Matches one name-part in any of three quoting forms:
+    //   bracketed  [Name]           — extract inner via part[1..^1]
+    //   double-quoted "Name"        — extract inner via part[1..^1]  (FIX 4: Strip also trims ")
+    //   bare / temp   ##Name #Name  — strip leading '#' chars to get the base name
+    private static readonly Regex NamePartSegment = new(
+        """(?:\[[^\]]+\]|"[^"]+"|#{0,2}[A-Za-z_][A-Za-z0-9_@#$]*)""",
+        RegexOptions.Compiled);
+
     // Matches the leading DDL define clause in a (possibly truncated) StatementText.
-    // Captures the multi-part object name immediately after CREATE/ALTER PROC/PROCEDURE/FUNCTION/VIEW/TRIGGER.
-    // Used as a regex fallback when ScriptDom cannot parse a truncated statement body.
+    // Captures the multi-part object name immediately after CREATE/ALTER <type>.
+    // Extended (FIX 2) to cover TABLE, SYNONYM, SEQUENCE, TYPE in addition to PROC/FUNCTION/VIEW/TRIGGER.
+    // Extended (FIX 3) to capture bracketed, double-quoted, and temp-prefixed name parts.
+    // Run AFTER comment stripping so banner comments don't shadow the real clause (FIX 1).
     private static readonly Regex DdlLeadClause = new(
-        @"(?:CREATE|ALTER)\s+(?:OR\s+ALTER\s+)?(?:PROC(?:EDURE)?|FUNCTION|VIEW|TRIGGER)\s+" +
-        @"((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_@#$]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_@#$]*))*)",
+        """(?:CREATE|ALTER)\s+(?:OR\s+ALTER\s+)?(?:PROC(?:EDURE)?|FUNCTION|VIEW|TRIGGER|TABLE|SYNONYM|SEQUENCE|TYPE)\s+((?:\[[^\]]+\]|"[^"]+"|#{0,2}[A-Za-z_][A-Za-z0-9_@#$]*)(?:\s*\.\s*(?:\[[^\]]+\]|"[^"]+"|#{0,2}[A-Za-z_][A-Za-z0-9_@#$]*))*)""",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public static (string AnonXml, ObfuscationMap Map) Obfuscate(string showplanXml, ObfuscationMap map)
@@ -177,25 +190,46 @@ public static class PlanObfuscator
                     fragment.Accept(visitor);
             }
             catch { }
-            // Regex fallback: always run to capture DDL names from truncated StatementText
-            // that ScriptDom cannot parse (only the leading clause survives truncation).
-            var m = DdlLeadClause.Match(attr.Value);
-            if (m.Success) MapDdlMultiPartName(m.Groups[1].Value, map);
+            // Regex fallback: strip comments first (FIX 1) then map EVERY clause match (FIX 1/belt-and-suspenders).
+            // Stripping comments prevents a banner like /* CREATE PROC dbo.FakeName */ from shadowing
+            // the real defined name in the clause that follows.
+            // Iterating Matches (not just Match) handles multiple statements and is belt-and-suspenders.
+            var stripped = StripComments(attr.Value);
+            foreach (Match m in DdlLeadClause.Matches(stripped))
+                MapDdlMultiPartName(m.Groups[1].Value, map);
         }
     }
 
-    // Parses a raw multi-part DDL object name (e.g. "dbo.SecretProc" or "[dbo].[SecretProc]")
-    // and pre-populates the obfuscation map with the appropriate token for each name part.
-    // Mirrors the by-position logic in SetMultiPart; no attribute is written here.
+    // Strips SQL block comments (/* ... */) and line comments (-- ...) from a SQL fragment.
+    // Used before the DDL regex so banner comments don't shadow the real CREATE/ALTER clause.
+    private static string StripComments(string sql)
+    {
+        var s = BlockComment.Replace(sql, " ");
+        return LineComment.Replace(s, " ");
+    }
+
+    // Extracts the inner (unquoted) name from a single name-part match.
+    //   [Name]   -> Name  (strip outer brackets)
+    //   "Name"   -> Name  (strip outer double-quotes; FIX 3/4)
+    //   #Name    -> Name  (strip leading temp-table marker; FIX 3)
+    //   ##Name   -> Name
+    //   Name     -> Name  (bare — no change)
+    private static string ExtractInnerName(string part) =>
+        part.StartsWith('[') ? part[1..^1] :
+        part.StartsWith('"') ? part[1..^1] :
+        part.TrimStart('#');
+
+    // Parses a raw multi-part DDL object name (e.g. "dbo.SecretProc", "[dbo].[SecretProc]",
+    // "dbo.\"SecretQuoted\"", "#SecretTemp") and pre-populates the obfuscation map with the
+    // appropriate token for each name part.
+    // Uses NamePartSegment to handle bracketed, double-quoted, and bare/temp-prefixed forms.
+    // Mirrors the by-position kind logic in SetMultiPart; no attribute is written here.
     private static void MapDdlMultiPartName(string rawName, ObfuscationMap map)
     {
-        List<string> segments;
-        var matches = BracketSegment.Matches(rawName);
-        if (matches.Count > 0)
-            segments = [.. matches.Select(m => m.Groups[1].Value)];
-        else
-            segments = [.. rawName.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+        var parts = NamePartSegment.Matches(rawName);
+        if (parts.Count == 0) return;
 
+        var segments = parts.Select(m => ExtractInnerName(m.Value)).ToList();
         if (segments.Count == 0) return;
         // Skip system schemas for consistency with the AST path.
         if (segments.Count >= 2 && SystemSchemas.Contains(segments[segments.Count - 2])) return;

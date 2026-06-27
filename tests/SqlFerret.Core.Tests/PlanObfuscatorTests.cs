@@ -304,4 +304,65 @@ public class PlanObfuscatorTests
             new ObfuscationMap()).AnonXml;
         Assert.DoesNotContain("SecretBare", xml);
     }
+
+    // FIX 1: comment-before-real-clause leak.
+    // A banner comment may itself contain a CREATE PROC clause (e.g. a template header).
+    // Without comment stripping the regex maps the name inside the comment (FakeName) and
+    // misses the real defined name (RealSecret) which then leaks.
+    [Fact]
+    public void Ddl_comment_before_real_clause_RealSecret_does_not_leak()
+    {
+        // The comment mentions FakeName in a CREATE PROC clause; the real defined name follows after.
+        // ScriptDom cannot parse the truncated body; the regex fallback must strip comments first.
+        const string stmtText =
+            "/* CREATE PROC dbo.FakeName ... banner ... */ CREATE PROC dbo.RealSecret ( @p char(9) ) AS BEGIN IF @@TRANCOUNT = 0";
+        var xml = PlanObfuscator.Obfuscate(DdlPlan(stmtText), new ObfuscationMap()).AnonXml;
+        Assert.DoesNotContain("RealSecret", xml);
+    }
+
+    // FIX 2: TABLE, SYNONYM, SEQUENCE, TYPE not covered by original regex.
+    [Fact]
+    public void Ddl_CreateTable_truncated_name_does_not_leak()
+    {
+        // Truncated CREATE TABLE: ScriptDom cannot parse; regex fallback must catch TABLE.
+        var xml = PlanObfuscator.Obfuscate(
+            DdlPlan("CREATE TABLE dbo.SecretTable ("),
+            new ObfuscationMap()).AnonXml;
+        Assert.DoesNotContain("SecretTable", xml);
+    }
+
+    [Fact]
+    public void Ddl_CreateSynonym_name_does_not_leak()
+    {
+        // SYNONYM: DdlNameVisitor has no handler; regex fallback is the only safety net.
+        var xml = PlanObfuscator.Obfuscate(
+            DdlPlan("CREATE SYNONYM dbo.SecretSyn FOR dbo.RealTable"),
+            new ObfuscationMap()).AnonXml;
+        Assert.DoesNotContain("SecretSyn", xml);
+    }
+
+    // FIX 3: temp-table (#) and double-quoted identifier name forms.
+    [Fact]
+    public void Ddl_truncated_TempProc_name_does_not_leak()
+    {
+        // #-prefixed temp object in a truncated (unparseable) DDL statement.
+        var xml = PlanObfuscator.Obfuscate(
+            DdlPlan("CREATE PROC #SecretTemp ( @p int ) AS BEGIN IF @@TRANCOUNT = 0"),
+            new ObfuscationMap()).AnonXml;
+        Assert.DoesNotContain("SecretTemp", xml);
+    }
+
+    [Fact]
+    public void Ddl_truncated_DoubleQuotedProc_name_does_not_leak()
+    {
+        // Double-quoted identifier: &quot; in the XML attribute decodes to " in the value.
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <StmtSimple StatementText="CREATE PROC dbo.&quot;SecretQuoted&quot; ( @p int ) AS BEGIN IF @@TRANCOUNT = 0">
+          </StmtSimple>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.DoesNotContain("SecretQuoted", xml);
+    }
 }
