@@ -109,6 +109,18 @@ obfuscate-plan --in foo.sqlplan --out foo.anon.sqlplan
 - Map initialisée vide en mémoire.
 - Écrit le `.anon.sqlplan` et un `foo.map.json` à côté de `--out`.
 
+### Mode dossier
+
+```
+obfuscate-plan --in-dir plans/ --out-dir anon/
+```
+
+- Anonymise tous les `.sqlplan` (insensible à la casse) trouvés récursivement sous `--in-dir`.
+- Une seule `ObfuscationMap` partagée pour tout le lot : un même objet reçoit le même jeton dans tous les plans (utile pour comparer des plans). Ordre des fichiers déterministe (tri ordinal du chemin) pour une numérotation de jetons stable d'un run à l'autre.
+- Recrée l'arborescence d'entrée sous `--out-dir`, chaque fichier en `*.anon.sqlplan`. Une seule clé combinée `<out-dir>/_folder.map.json`.
+- Un plan illisible (XML invalide) ou inaccessible est consigné et ignoré sans interrompre le lot ; le code de sortie est non nul s'il y a eu au moins un échec. `RunFolder` retourne `FilesFound`/`FilesProcessed`/`FilesFailed` pour distinguer dossier vide et échecs.
+- Attention : `_folder.map.json` contient les noms d'origine (clé de dé-anonymisation). Ne pas partager le dossier de sortie tel quel ; ne diffuser que les `.anon.sqlplan`.
+
 ## Stockage de la map projet
 
 Table DuckDB dans le fichier projet :
