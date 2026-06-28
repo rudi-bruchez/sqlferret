@@ -92,7 +92,7 @@ public class PlanObfuscatorTests
         Assert.DoesNotContain("LinkedSrv", xml);     // remote server name gone
         Assert.Contains("Table1", xml);
         Assert.Contains("Col1", xml);
-        Assert.Contains("Param1", xml);
+        Assert.Contains("@Param1", xml);  // token carries the '@' sigil (prefix "@Param")
     }
 
     [Fact]
@@ -523,5 +523,112 @@ public class PlanObfuscatorTests
             DdlPlan("CREATE TABLE ##GShared (id int)"),
             new ObfuscationMap()).AnonXml;
         Assert.DoesNotContain("GShared", xml);
+    }
+
+    // ─── @parameter / @local-variable obfuscation tests ─────────────────────
+
+    // @NUMCLT appears in both the operator tree (Column attr) and a parseable StatementText.
+    // Both must map to the same @Param1 token.
+    [Fact]
+    public void Parameter_in_tree_and_parseable_StatementText_are_consistently_mapped()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <StmtSimple StatementText="SELECT 1 WHERE x=@NUMCLT">
+            <RelOp>
+              <ColumnReference Column="@NUMCLT" />
+            </RelOp>
+          </StmtSimple>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.DoesNotContain("NUMCLT", xml);
+        var doc = System.Xml.Linq.XDocument.Parse(xml);
+        var colToken = doc.Descendants()
+            .First(e => e.Attribute("Column") != null)
+            .Attribute("Column")!.Value;
+        var stmtText = doc.Descendants()
+            .First(e => e.Attribute("StatementText") != null)
+            .Attribute("StatementText")!.Value;
+        Assert.StartsWith("@Param", colToken);
+        Assert.Contains(colToken, stmtText);  // same token in both
+    }
+
+    // @ErrCode only in parseable StatementText (DECLARE + SET), not in operator tree.
+    [Fact]
+    public void Local_variable_in_parseable_StatementText_is_scrubbed()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <StmtSimple StatementText="DECLARE @ErrCode int SET @ErrCode=0">
+          </StmtSimple>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.DoesNotContain("ErrCode", xml);
+    }
+
+    // @@TRANCOUNT and @@ERROR are T-SQL system globals and must survive obfuscation intact.
+    [Fact]
+    public void System_globals_are_preserved_in_StatementText()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <StmtSimple StatementText="IF @@TRANCOUNT &gt; 0 PRINT @@ERROR">
+          </StmtSimple>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        var doc = System.Xml.Linq.XDocument.Parse(xml);
+        var stmtText = doc.Descendants()
+            .First(e => e.Attribute("StatementText") != null)
+            .Attribute("StatementText")!.Value;
+        Assert.Contains("@@TRANCOUNT", stmtText);
+        Assert.Contains("@@ERROR", stmtText);
+    }
+
+    // @NUMLME in a ScalarString predicate fragment (not parseable as a statement) —
+    // the fallback path must scrub it.
+    [Fact]
+    public void Parameter_in_unparseable_ScalarString_is_scrubbed()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <RelOp>
+            <Predicate>
+              <ScalarOperator ScalarString="[a]=@NUMLME @@@">
+              </ScalarOperator>
+            </Predicate>
+          </RelOp>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        var doc = System.Xml.Linq.XDocument.Parse(xml);
+        var scalarStr = doc.Descendants()
+            .First(e => e.Attribute("ScalarString") != null)
+            .Attribute("ScalarString")!.Value;
+        Assert.DoesNotContain("NUMLME", scalarStr);
+    }
+
+    // @@ROWCOUNT in an unparseable ScalarString — fallback must leave it verbatim.
+    [Fact]
+    public void System_global_in_unparseable_ScalarString_is_preserved()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <RelOp>
+            <Predicate>
+              <ScalarOperator ScalarString="@@ROWCOUNT @@@">
+              </ScalarOperator>
+            </Predicate>
+          </RelOp>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        var doc = System.Xml.Linq.XDocument.Parse(xml);
+        var scalarStr = doc.Descendants()
+            .First(e => e.Attribute("ScalarString") != null)
+            .Attribute("ScalarString")!.Value;
+        Assert.Contains("@@ROWCOUNT", scalarStr);
     }
 }
