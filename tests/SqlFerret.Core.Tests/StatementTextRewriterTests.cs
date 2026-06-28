@@ -126,4 +126,16 @@ public class StatementTextRewriterTests
         Assert.Contains("@@ROWCOUNT", outSql);
         Assert.Contains("@@ERROR", outSql);
     }
+
+    // ─── Review fix #3: hex literals must be scrubbed on the fallback path ─────
+
+    [Fact]
+    public void Fallback_scrubs_hex_literals()
+    {
+        var m = MapWith((NameKind.Column, "Data"));
+        // Trailing @@@ forces the fallback path; the hex payload must not survive.
+        var outSql = StatementTextRewriter.Rewrite("[Data] = 0xDEADBEEF @@@", m);
+        Assert.DoesNotContain("DEADBEEF", outSql);
+        Assert.DoesNotContain("0xDEAD", outSql);
+    }
 }

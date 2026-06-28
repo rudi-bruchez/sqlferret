@@ -304,9 +304,17 @@ switch (args[0])
                     Console.Error.WriteLine($"obfuscate-plan: input not found: {inPath}");
                     return 1;
                 }
-                var r = SqlFerret.Core.Obfuscation.ObfuscationRunner.RunStandalone(inPath, outPath);
-                Console.WriteLine($"obfuscated -> {r.AnonPath} ({r.NamesMapped} names, map: {r.MapPath})");
-                return 0;
+                try
+                {
+                    var r = SqlFerret.Core.Obfuscation.ObfuscationRunner.RunStandalone(inPath, outPath);
+                    Console.WriteLine($"obfuscated -> {r.AnonPath} ({r.NamesMapped} names, map: {r.MapPath})");
+                    return 0;
+                }
+                catch (Exception ex) when (ex is System.Xml.XmlException or IOException)
+                {
+                    Console.Error.WriteLine($"obfuscate-plan: {ex.Message}");
+                    return 1;
+                }
             }
 
             var planId = Arg("--plan-id");
@@ -327,10 +335,16 @@ switch (args[0])
                 return 1;
             }
 
-            using (var db = project.OpenDb())
+            try
             {
+                using var db = project.OpenDb();
                 var r = SqlFerret.Core.Obfuscation.ObfuscationRunner.RunProject(db, project.PlansFolder, planId);
                 Console.WriteLine($"obfuscated -> {r.AnonPath} (project map: {r.NamesMapped} names total, map: {r.MapPath})");
+            }
+            catch (Exception ex) when (ex is System.Xml.XmlException or IOException)
+            {
+                Console.Error.WriteLine($"obfuscate-plan: {ex.Message}");
+                return 1;
             }
             return 0;
         }

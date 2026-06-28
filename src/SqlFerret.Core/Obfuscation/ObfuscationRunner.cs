@@ -23,6 +23,8 @@ public static class ObfuscationRunner
     {
         if (!File.Exists(inPath)) throw new FileNotFoundException("input plan not found", inPath);
         var (anon, map) = PlanObfuscator.Obfuscate(File.ReadAllText(inPath), new ObfuscationMap());
+        var outDir = Path.GetDirectoryName(outPath);
+        if (!string.IsNullOrEmpty(outDir)) Directory.CreateDirectory(outDir); // review fix #7
         File.WriteAllText(outPath, anon);
         var mapPath = MapJsonPath(outPath);
         File.WriteAllText(mapPath, map.ToJson());
@@ -31,6 +33,13 @@ public static class ObfuscationRunner
 
     public static ObfuscationResult RunProject(DuckDbProject db, string plansFolder, string planId)
     {
+        // planId must be a bare file-name component — reject path traversal in Core, not just at the
+        // CLI boundary, since Core is host-agnostic (review fix #6; mirrors EstimatedPlanService.Save).
+        if (string.IsNullOrEmpty(planId)
+            || planId.Contains('/') || planId.Contains('\\') || planId.Contains("..")
+            || Path.GetFileName(planId) != planId)
+            throw new ArgumentException("Invalid planId: must be a bare file name component", nameof(planId));
+
         var src = Path.Combine(plansFolder, $"{planId}.sqlplan");
         if (!File.Exists(src)) throw new FileNotFoundException("plan not found", src);
 

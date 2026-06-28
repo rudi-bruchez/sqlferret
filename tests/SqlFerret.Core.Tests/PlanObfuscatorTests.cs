@@ -655,4 +655,120 @@ public class PlanObfuscatorTests
         Assert.DoesNotContain("RealParam", xml);
         Assert.Contains("@Param1", xml);
     }
+
+    // ─── Review fix #1: built-in <Intrinsic> FunctionName must not be tokenized ──
+
+    [Fact]
+    public void Intrinsic_builtin_function_name_is_preserved()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <RelOp>
+            <ComputeScalar>
+              <ScalarOperator><Intrinsic FunctionName="isnull" /></ScalarOperator>
+              <Object Database="[Sales]" Schema="[dbo]" Table="[Customers]" />
+            </ComputeScalar>
+          </RelOp>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.Contains("FunctionName=\"isnull\"", xml); // built-in name kept verbatim
+        Assert.DoesNotContain("Customers", xml);
+    }
+
+    [Fact]
+    public void UserDefinedFunction_name_is_still_mapped()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <RelOp><UserDefinedFunction FunctionName="[dbo].[GetSecret]" /></RelOp>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.DoesNotContain("GetSecret", xml); // UDF names are still sensitive
+    }
+
+    // ─── Review fix #2: user database name leaked via whitelisted system object ──
+
+    [Fact]
+    public void Whitelisted_system_object_still_maps_user_database()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <RelOp><Object Database="[SensitiveDb]" Schema="[sys]" Table="[indexes]" /></RelOp>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.DoesNotContain("SensitiveDb", xml); // user DB name is sensitive
+        Assert.Contains("[sys]", xml);             // system schema preserved
+        Assert.Contains("indexes", xml);           // system table preserved
+        Assert.Contains("Db1", xml);               // DB mapped to a token
+    }
+
+    // ─── Review fix #4: CREATE INDEX/STATISTICS/SCHEMA defined names leaked ──
+
+    [Fact]
+    public void Ddl_create_index_name_is_obfuscated()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <StmtSimple StatementText="CREATE NONCLUSTERED INDEX [IX_SecretIndex] ON [dbo].[Customers]([Col1])" />
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.DoesNotContain("IX_SecretIndex", xml);
+        Assert.Contains("Idx1", xml);
+    }
+
+    [Fact]
+    public void Ddl_create_statistics_name_is_obfuscated()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <StmtSimple StatementText="CREATE STATISTICS [ST_SecretStat] ON [dbo].[Customers]([Col1])" />
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.DoesNotContain("ST_SecretStat", xml);
+        Assert.Contains("Stat1", xml);
+    }
+
+    [Fact]
+    public void Ddl_create_schema_name_is_obfuscated()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <StmtSimple StatementText="CREATE SCHEMA [SecretSchema]" />
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.DoesNotContain("SecretSchema", xml);
+        Assert.Contains("Schema1", xml);
+    }
+
+    [Fact]
+    public void Ddl_create_index_name_is_obfuscated_when_statement_text_is_truncated()
+    {
+        // SQL Server truncates large StatementText; ScriptDom cannot parse the fragment,
+        // so the regex fallback must still catch the defined index name.
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <StmtSimple StatementText="CREATE NONCLUSTERED INDEX [IX_SecretIndex] ON [dbo].[Customers]([Col1], [Col2], [Col" />
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.DoesNotContain("IX_SecretIndex", xml);
+    }
+
+    // ─── Review fix #8: XML declaration preserved, encoding normalized to utf-8 ──
+
+    [Fact]
+    public void Preserves_xml_declaration_normalized_to_utf8()
+    {
+        var plan = "<?xml version=\"1.0\" encoding=\"utf-16\"?>" + System.Environment.NewLine + Plan();
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.Contains("<?xml", xml);                 // declaration is no longer dropped
+        Assert.Contains("encoding=\"utf-8\"", xml);    // normalized to match the bytes we write
+        Assert.Null(Record.Exception((Action)(() => System.Xml.Linq.XDocument.Parse(xml))));
+    }
 }

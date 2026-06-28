@@ -33,14 +33,19 @@ public sealed partial class DuckDbProject
 
     public void SaveObfuscationMap(ObfuscationMap map)
     {
+        // One transaction for the whole batch so a crash mid-save cannot persist a partial map
+        // (which would diverge token numbering on the next run). Mirrors InsertBatch / QDS inserts
+        // (review fix #5).
+        using var tx = Connection.BeginTransaction();
         foreach (var (kind, original, token) in map.Entries())
         {
-            using var c = Connection.CreateCommand();
+            using var c = Connection.CreateCommand(); c.Transaction = tx;
             c.CommandText = "INSERT INTO obfuscation_map(kind, original_name, token) VALUES ($k,$o,$t) ON CONFLICT DO NOTHING";
             Add(c, "$k", kind.ToString().ToLowerInvariant());
             Add(c, "$o", original);
             Add(c, "$t", token);
             c.ExecuteNonQuery();
         }
+        tx.Commit();
     }
 }

@@ -263,4 +263,45 @@ public class ObfuscationRunnerTests
         }
         finally { Directory.Delete(baseDir, recursive: true); }
     }
+
+    // ─── Review fix #6: RunProject must reject planId path traversal (Core invariant) ──
+
+    [Theory]
+    [InlineData("../evil")]
+    [InlineData("a/b")]
+    [InlineData("a\\b")]
+    [InlineData("..")]
+    public void RunProject_rejects_planId_path_traversal(string planId)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"obftrav_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var dbPath = Path.Combine(dir, "wl.duckdb");
+        try
+        {
+            using var db = DuckDbProject.Open(dbPath);
+            Assert.Throws<ArgumentException>(() => ObfuscationRunner.RunProject(db, dir, planId));
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
+
+    // ─── Review fix #7 (Core part): RunStandalone must create a missing output directory ──
+
+    [Fact]
+    public void RunStandalone_creates_missing_output_directory()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"obfmk_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var inPath = Path.Combine(dir, "p.sqlplan");
+            File.WriteAllText(inPath, Plan("Customers"));
+            var outPath = Path.Combine(dir, "nested", "sub", "p.anon.sqlplan");
+
+            var result = ObfuscationRunner.RunStandalone(inPath, outPath);
+
+            Assert.True(File.Exists(outPath));
+            Assert.True(File.Exists(result.MapPath));
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
 }
