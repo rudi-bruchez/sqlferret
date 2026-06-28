@@ -631,4 +631,28 @@ public class PlanObfuscatorTests
             .Attribute("ScalarString")!.Value;
         Assert.Contains("@@ROWCOUNT", scalarStr);
     }
+
+    // @@ROWCOUNT in a ColumnReference Column= attribute must be preserved verbatim.
+    // Before Fix 1, the code routed any '@'-prefixed Column value to NameKind.Parameter,
+    // including @@-prefixed system globals — an invariant violation.
+    // The sibling @RealParam column ref IS a user parameter and must still be mapped.
+    [Fact]
+    public void System_global_in_ColumnReference_Column_attribute_is_preserved()
+    {
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <RelOp>
+            <Object Database="[d]" Schema="[s]" Table="[t]" />
+            <ColumnReference Database="[d]" Schema="[s]" Table="[t]" Column="@@ROWCOUNT" />
+            <ColumnReference Database="[d]" Schema="[s]" Table="[t]" Column="@RealParam" />
+          </RelOp>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        // @@ROWCOUNT must survive intact — it is a system global, not a user parameter.
+        Assert.Contains("@@ROWCOUNT", xml);
+        // @RealParam must be mapped to a @Param token — it is a user parameter.
+        Assert.DoesNotContain("RealParam", xml);
+        Assert.Contains("@Param1", xml);
+    }
 }

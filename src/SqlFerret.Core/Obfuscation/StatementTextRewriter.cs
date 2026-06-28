@@ -46,7 +46,7 @@ public static class StatementTextRewriter
                     case TSqlTokenType.Variable:
                         // @@system globals (@@TRANCOUNT, @@ERROR, …) are preserved verbatim.
                         // Single-@ user variables (@foo) and local DECLARE'd variables are mapped.
-                        if (t.Text.StartsWith("@@"))
+                        if (t.Text.StartsWith("@@", StringComparison.Ordinal))
                             sb.Append(t.Text);
                         else
                             sb.Append(map.Token(NameKind.Parameter, t.Text));

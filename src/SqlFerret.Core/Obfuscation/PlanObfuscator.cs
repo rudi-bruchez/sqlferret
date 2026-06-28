@@ -105,8 +105,13 @@ public static class PlanObfuscator
         var col = el.Attribute("Column");
         if (col is not null && !string.IsNullOrEmpty(col.Value))
         {
-            var kind = col.Value.TrimStart('[').StartsWith('@') ? NameKind.Parameter : NameKind.Column;
-            Rename(col, kind, map);
+            var trimmed = col.Value.TrimStart('[');
+            if (!trimmed.StartsWith("@@", StringComparison.Ordinal))
+            {
+                var kind = trimmed.StartsWith('@') ? NameKind.Parameter : NameKind.Column;
+                Rename(col, kind, map);
+            }
+            // @@-globals: leave the Column attribute untouched (preserved)
         }
 
         // Name= attribute: only for <Column> elements (MissingIndexes/ColumnGroup).
