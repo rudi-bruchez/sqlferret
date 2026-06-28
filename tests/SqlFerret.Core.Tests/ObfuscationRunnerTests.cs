@@ -96,8 +96,13 @@ public class ObfuscationRunnerTests
             Assert.True(File.Exists(Path.Combine(outDir, "a.anon.sqlplan")));
             Assert.True(File.Exists(Path.Combine(outDir, "b.anon.sqlplan")));
             Assert.True(File.Exists(Path.Combine(outDir, "sub", "c.anon.sqlplan")));
-            Assert.True(File.Exists(Path.Combine(outDir, "_folder.map.json")));
-            Assert.Equal(result.MapPath, Path.Combine(outDir, "_folder.map.json"));
+
+            // Map must be OUTSIDE out-dir (sibling), not inside it.
+            var expectedMapPath = ObfuscationRunner.DefaultFolderMapPath(outDir);
+            Assert.True(File.Exists(expectedMapPath));
+            Assert.Equal(expectedMapPath, result.MapPath);
+            Assert.False(File.Exists(Path.Combine(outDir, "_folder.map.json")));
+            Assert.False(result.MapPath.StartsWith(Path.GetFullPath(outDir) + Path.DirectorySeparatorChar));
 
             var a = File.ReadAllText(Path.Combine(outDir, "a.anon.sqlplan"));
             var b = File.ReadAllText(Path.Combine(outDir, "b.anon.sqlplan"));
@@ -139,8 +144,9 @@ public class ObfuscationRunnerTests
             Assert.Equal(0, result.FilesProcessed);
             Assert.Equal(2, result.FilesFailed);
             Assert.Equal(2, result.Failures.Count);
-            // Map file is still written (empty map is valid output).
-            Assert.True(File.Exists(Path.Combine(outDir, "_folder.map.json")));
+            // Map file is still written (empty map is valid output) — outside out-dir.
+            var expectedMapPath = ObfuscationRunner.DefaultFolderMapPath(outDir);
+            Assert.True(File.Exists(expectedMapPath));
         }
         finally { Directory.Delete(baseDir, recursive: true); }
     }
@@ -173,6 +179,28 @@ public class ObfuscationRunnerTests
     {
         var missing = Path.Combine(Path.GetTempPath(), $"obfmissdir_{Guid.NewGuid():N}");
         Assert.Throws<DirectoryNotFoundException>(() => ObfuscationRunner.RunFolder(missing, Path.GetTempPath()));
+    }
+
+    [Fact]
+    public void RunFolder_map_override_writes_to_custom_path()
+    {
+        var baseDir = Path.Combine(Path.GetTempPath(), $"obfoverride_{Guid.NewGuid():N}");
+        var inDir = Path.Combine(baseDir, "in");
+        var outDir = Path.Combine(baseDir, "out");
+        var customMapPath = Path.Combine(baseDir, "custom.map.json");
+        Directory.CreateDirectory(inDir);
+        try
+        {
+            File.WriteAllText(Path.Combine(inDir, "a.sqlplan"), Plan("Customers"));
+
+            var result = ObfuscationRunner.RunFolder(inDir, outDir, customMapPath);
+
+            Assert.True(File.Exists(customMapPath));
+            Assert.Equal(customMapPath, result.MapPath);
+            Assert.False(File.Exists(Path.Combine(outDir, "_folder.map.json")));
+            Assert.False(File.Exists(ObfuscationRunner.DefaultFolderMapPath(outDir)));
+        }
+        finally { Directory.Delete(baseDir, recursive: true); }
     }
 
     [Fact]
