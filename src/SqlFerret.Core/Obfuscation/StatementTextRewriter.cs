@@ -17,7 +17,6 @@ public static class StatementTextRewriter
     public static string Rewrite(string sqlFragment, ObfuscationMap map)
     {
         if (string.IsNullOrWhiteSpace(sqlFragment)) return sqlFragment ?? string.Empty;
-        var lookup = map.BuildTextLookup();
         try
         {
             var parser = new TSql160Parser(initialQuotedIdentifiers: true);
@@ -26,12 +25,13 @@ public static class StatementTextRewriter
             using (var pr = new StringReader(sqlFragment))
             {
                 parser.Parse(pr, out IList<ParseError> perr);
-                if (perr.Count > 0) return Fallback(sqlFragment, lookup);
+                if (perr.Count > 0) return Fallback(sqlFragment, map);
             }
             using var r = new StringReader(sqlFragment);
             IList<TSqlParserToken> tokens = parser.GetTokenStream(r, out IList<ParseError> err);
-            if (err.Count > 0) return Fallback(sqlFragment, lookup);
+            if (err.Count > 0) return Fallback(sqlFragment, map);
 
+            var lookup = map.BuildTextLookup();
             var sb = new StringBuilder();
             foreach (var t in tokens)
             {
@@ -43,14 +43,31 @@ public static class StatementTextRewriter
                     case TSqlTokenType.MultilineComment:
                         sb.Append(' '); // drop comment bodies (may carry literals)
                         continue;
+                    case TSqlTokenType.Variable:
+                        // @@system globals (@@TRANCOUNT, @@ERROR, …) are preserved verbatim.
+                        // Single-@ user variables (@foo) and local DECLARE'd variables are mapped.
+                        if (t.Text.StartsWith("@@", StringComparison.Ordinal))
+                            sb.Append(t.Text);
+                        else
+                            sb.Append(map.Token(NameKind.Parameter, t.Text));
+                        continue;
                 }
                 if (Literals.Contains(t.TokenType)) { sb.Append('?'); continue; }
                 if (t.TokenType is TSqlTokenType.Identifier or TSqlTokenType.QuotedIdentifier)
                 {
-                    var key = ObfuscationMap.Strip(t.Text).ToLowerInvariant();
-                    if (lookup.TryGetValue(key, out var tok))
+                    var stripped = ObfuscationMap.Strip(t.Text);
+                    // On-the-fly temp table mapping: #/## names may appear only in SQL text
+                    // (DDL-only path) without a prior operator-tree registration.
+                    if (stripped.StartsWith('#'))
                     {
+                        var tok = map.Token(NameKind.TempTable, ObfuscationMap.NormalizeTempName(stripped));
                         sb.Append(t.TokenType == TSqlTokenType.QuotedIdentifier ? "[" + tok + "]" : tok);
+                        continue;
+                    }
+                    var key = stripped.ToLowerInvariant();
+                    if (lookup.TryGetValue(key, out var tok2))
+                    {
+                        sb.Append(t.TokenType == TSqlTokenType.QuotedIdentifier ? "[" + tok2 + "]" : tok2);
                         continue;
                     }
                 }
@@ -60,13 +77,27 @@ public static class StatementTextRewriter
         }
         catch
         {
-            return Fallback(sqlFragment, lookup);
+            return Fallback(sqlFragment, map);
         }
     }
 
     // Safety net: never let an original name or literal escape, even if parsing failed.
-    private static string Fallback(string raw, IReadOnlyDictionary<string, string> lookup)
+    // Pre-scans the fragment to register any user @variables and #temp names not already in the map,
+    // then rebuilds the lookup so the replacement loop covers them.
+    private static string Fallback(string raw, ObfuscationMap map)
     {
+        // Strip strings + comments before scanning so '@literal' or '-- @x' don't produce false entries.
+        var scanText = Regex.Replace(raw, @"'(?:[^']|'')*'", " ");
+        scanText = Regex.Replace(scanText, @"/\*.*?\*/", " ", RegexOptions.Singleline);
+        scanText = Regex.Replace(scanText, @"--[^\n]*", " ");
+        // Single-@ user variables: (?<!@) ensures we skip the second '@' of @@system globals.
+        foreach (Match m in Regex.Matches(scanText, @"(?<!@)@(?!@)[A-Za-z_][A-Za-z0-9_$#]*"))
+            map.Token(NameKind.Parameter, m.Value);
+        // Temp table names (local # or global ##).
+        foreach (Match m in Regex.Matches(scanText, @"#{1,2}[A-Za-z_][A-Za-z0-9_$#]*"))
+            map.Token(NameKind.TempTable, ObfuscationMap.NormalizeTempName(m.Value));
+
+        var lookup = map.BuildTextLookup();
         var s = Regex.Replace(raw, @"'(?:[^']|'')*'", "?");                  // string literals
         s = Regex.Replace(s, @"/\*.*?\*/", " ", RegexOptions.Singleline);     // block comments
         s = Regex.Replace(s, @"--[^\n]*", " ");                              // line comments

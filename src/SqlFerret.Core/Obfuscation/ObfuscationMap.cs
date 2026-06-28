@@ -1,6 +1,7 @@
 // src/SqlFerret.Core/Obfuscation/ObfuscationMap.cs
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace SqlFerret.Core.Obfuscation;
 
@@ -17,7 +18,7 @@ public sealed class ObfuscationMap
         [NameKind.Column] = "Col",
         [NameKind.Index] = "Idx",
         [NameKind.Statistics] = "Stat",
-        [NameKind.Parameter] = "Param",
+        [NameKind.Parameter] = "@Param",  // '@' is part of the prefix so tokens are @Param1, @Param2, … (mirrors #Temp)
         [NameKind.Alias] = "Alias",
     };
 
@@ -29,6 +30,16 @@ public sealed class ObfuscationMap
     // kind -> (lowercased stripped key -> (original stripped, token))
     private readonly Dictionary<NameKind, Dictionary<string, (string Original, string Token)>> _maps = new();
     private readonly Dictionary<NameKind, int> _counters = new();
+
+    // Strips the SQL Server tempdb uniqueness suffix from a stripped temp-table name.
+    // SQL Server mangles local temp names: #Foo → #Foo_______________________________0000ABCD
+    // (4+ trailing underscores + optional hex). Both forms must share the same map key.
+    private static readonly Regex TempNameMangle = new(@"_{4,}[0-9A-Fa-f]*$", RegexOptions.Compiled);
+
+    // Returns the canonical de-mangled form of a bracket/quote-stripped temp table name.
+    // Only names starting with '#' are processed; others are returned unchanged.
+    public static string NormalizeTempName(string stripped) =>
+        stripped.StartsWith('#') ? TempNameMangle.Replace(stripped, "") : stripped;
 
     // Strips surrounding quoting characters so [Name], "Name", and bare Name all key identically.
     // FIX 4: also trims '"' so double-quoted identifiers resolve to the same token as bare/bracketed ones.

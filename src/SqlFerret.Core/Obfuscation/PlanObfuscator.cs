@@ -19,16 +19,6 @@ public static class PlanObfuscator
     private static readonly Regex BlockComment = new(@"/\*.*?\*/", RegexOptions.Singleline | RegexOptions.Compiled);
     private static readonly Regex LineComment = new(@"--[^\n]*", RegexOptions.Compiled);
 
-    // Strips the SQL Server tempdb uniqueness suffix from a stripped temp-table name.
-    // SQL Server mangles local temp names: #Foo becomes #Foo_______________________________0000ABCD
-    // (4+ trailing underscores + optional hex). Both forms must share the same map key.
-    private static readonly Regex TempNameMangle = new(@"_{4,}[0-9A-Fa-f]*$", RegexOptions.Compiled);
-
-    // Returns the canonical de-mangled form of a bracket/quote-stripped temp table name.
-    // Only names starting with '#' are processed; others are returned unchanged.
-    private static string NormalizeTempName(string stripped) =>
-        stripped.StartsWith('#') ? TempNameMangle.Replace(stripped, "") : stripped;
-
     // Matches one name-part in any of three quoting forms:
     //   bracketed  [Name]           — extract inner via part[1..^1]
     //   double-quoted "Name"        — extract inner via part[1..^1]  (FIX 4: Strip also trims ")
@@ -115,8 +105,13 @@ public static class PlanObfuscator
         var col = el.Attribute("Column");
         if (col is not null && !string.IsNullOrEmpty(col.Value))
         {
-            var kind = col.Value.TrimStart('[').StartsWith('@') ? NameKind.Parameter : NameKind.Column;
-            Rename(col, kind, map);
+            var trimmed = col.Value.TrimStart('[');
+            if (!trimmed.StartsWith("@@", StringComparison.Ordinal))
+            {
+                var kind = trimmed.StartsWith('@') ? NameKind.Parameter : NameKind.Column;
+                Rename(col, kind, map);
+            }
+            // @@-globals: leave the Column attribute untouched (preserved)
         }
 
         // Name= attribute: only for <Column> elements (MissingIndexes/ColumnGroup).
@@ -179,7 +174,7 @@ public static class PlanObfuscator
         if (stripped.StartsWith('#'))
         {
             var hadBrackets = a.Value.StartsWith('[');
-            var token = map.Token(NameKind.TempTable, NormalizeTempName(stripped));
+            var token = map.Token(NameKind.TempTable, ObfuscationMap.NormalizeTempName(stripped));
             a.Value = hadBrackets ? "[" + token + "]" : token;
         }
         else
@@ -191,11 +186,9 @@ public static class PlanObfuscator
     private static void Rename(XAttribute a, NameKind kind, ObfuscationMap map)
     {
         var hadBrackets = a.Value.StartsWith('[');
-        // Preserve the '@' prefix so parameter tokens remain detectable as parameters
-        // on subsequent obfuscation passes (idempotency invariant).
-        var hadAt = a.Value.StartsWith('@');
         var token = map.Token(kind, a.Value);
-        a.Value = hadBrackets ? "[" + token + "]" : hadAt ? "@" + token : token;
+        // Parameter tokens carry the '@' sigil (prefix "@Param"), so emit verbatim everywhere — no re-prepend needed.
+        a.Value = hadBrackets ? "[" + token + "]" : token;
     }
 
     // Iterates every StatementText attribute in the plan XML and parses each value with ScriptDom
@@ -295,7 +288,7 @@ public static class PlanObfuscator
                                  : null;
                 if (nameWithHash is not null)
                 {
-                    map.Token(NameKind.TempTable, NormalizeTempName(nameWithHash));
+                    map.Token(NameKind.TempTable, ObfuscationMap.NormalizeTempName(nameWithHash));
                     continue;
                 }
             }

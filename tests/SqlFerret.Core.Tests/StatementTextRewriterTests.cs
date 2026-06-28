@@ -85,4 +85,45 @@ public class StatementTextRewriterTests
         Assert.Contains("FooBar", outSql);
         Assert.DoesNotContain("Table1Bar", outSql);
     }
+
+    // ─── @parameter / @@system-global handling ───────────────────────────────
+
+    [Fact]
+    public void Variable_token_in_parseable_SQL_is_mapped()
+    {
+        // @NUMCLT as a Variable token in valid SQL must become @Param1, not leak.
+        var m = new ObfuscationMap();
+        var outSql = StatementTextRewriter.Rewrite("SELECT @NUMCLT WHERE 1=1", m);
+        Assert.DoesNotContain("NUMCLT", outSql);
+        Assert.Contains("@Param1", outSql);
+    }
+
+    [Fact]
+    public void System_global_variable_is_preserved_in_parseable_SQL()
+    {
+        // @@TRANCOUNT is a system global; it must not be obfuscated.
+        var m = new ObfuscationMap();
+        var outSql = StatementTextRewriter.Rewrite("IF @@TRANCOUNT > 0 ROLLBACK", m);
+        Assert.Contains("@@TRANCOUNT", outSql);
+    }
+
+    [Fact]
+    public void Fallback_user_variable_not_pre_registered_is_scrubbed()
+    {
+        // @NUMLME is not pre-registered; the fallback pre-scan must discover and map it.
+        var m = new ObfuscationMap();
+        var outSql = StatementTextRewriter.Rewrite("[a]=@NUMLME @@@", m);
+        Assert.DoesNotContain("NUMLME", outSql);
+        Assert.Contains("@Param", outSql);
+    }
+
+    [Fact]
+    public void Fallback_system_global_is_preserved()
+    {
+        // @@@ forces fallback; @@ROWCOUNT and @@ERROR must survive it intact.
+        var m = new ObfuscationMap();
+        var outSql = StatementTextRewriter.Rewrite("@@ROWCOUNT > @@ERROR @@@", m);
+        Assert.Contains("@@ROWCOUNT", outSql);
+        Assert.Contains("@@ERROR", outSql);
+    }
 }
