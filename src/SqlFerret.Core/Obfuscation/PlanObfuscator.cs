@@ -164,12 +164,12 @@ public static class PlanObfuscator
         var a = el.Attribute(attrName);
         if (a is null || string.IsNullOrEmpty(a.Value)) return;
 
-        List<string> segments;
-        var matches = BracketSegment.Matches(a.Value);
-        if (matches.Count > 0)
-            segments = [.. matches.Select(m => m.Groups[1].Value)];
-        else
-            segments = [.. a.Value.Split('.', StringSplitOptions.RemoveEmptyEntries)];
+        // Use NamePartSegment (not a bracket-only scan) so MIXED quoting like myschema.[Proc]
+        // keeps every part: a bare segment alongside a bracketed one is no longer dropped
+        // (review fix #13). Mirrors MapDdlMultiPartName.
+        var matches = NamePartSegment.Matches(a.Value);
+        if (matches.Count == 0) return;
+        var segments = matches.Select(m => ExtractInnerName(m.Value)).ToList();
 
         NameKind[] kinds = segments.Count switch
         {

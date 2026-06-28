@@ -113,8 +113,13 @@ public static class StatementTextRewriter
             // approach so that e.g. the inner name "Foo" (stored without its leading #) is still
             // matched inside "#Foo" in DDL text (word boundary exists between '#' and 'F').
             bool startsNonWord = kv.Key.Length > 0 && kv.Key[0] is '#' or '@' or '$';
+            // Temp keys are stored de-mangled (#secret), but the TEXT may still carry the SQL Server
+            // uniquifier suffix (#secret____…hex). Allow an optional suffix so the mangled occurrence
+            // is matched and replaced (review fix #9). Mirrors ObfuscationMap.TempNameMangle.
+            bool isTemp = kv.Key.Length > 0 && kv.Key[0] == '#';
+            var core = Regex.Escape(kv.Key) + (isTemp ? @"(?:_{4,}[0-9A-Fa-f]+)?" : "");
             var pat = startsNonWord
-                ? @"(?i)(?<![A-Za-z0-9_@#$])(\[?)" + Regex.Escape(kv.Key) + @"\]?(?![A-Za-z0-9_@#$])"
+                ? @"(?i)(?<![A-Za-z0-9_@#$])(\[?)" + core + @"\]?(?![A-Za-z0-9_@#$])"
                 : @"(?i)(\[?)\b" + Regex.Escape(kv.Key) + @"\b\]?";
             s = Regex.Replace(s, pat,
                 m => m.Groups[1].Length > 0 ? "[" + kv.Value + "]" : kv.Value);

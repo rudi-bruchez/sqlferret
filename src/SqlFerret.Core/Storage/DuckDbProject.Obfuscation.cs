@@ -27,7 +27,10 @@ public sealed partial class DuckDbProject
         c.CommandText = "SELECT kind, original_name, token FROM obfuscation_map";
         using var r = c.ExecuteReader();
         while (r.Read())
-            entries.Add((Enum.Parse<NameKind>(r.GetString(0), ignoreCase: true), r.GetString(1), r.GetString(2)));
+            // Skip rows whose 'kind' is not in the current enum (legacy/future schema) rather than
+            // throwing and making the whole project unopenable (review fix #11).
+            if (Enum.TryParse<NameKind>(r.GetString(0), ignoreCase: true, out var kind))
+                entries.Add((kind, r.GetString(1), r.GetString(2)));
         return ObfuscationMap.FromEntries(entries);
     }
 
