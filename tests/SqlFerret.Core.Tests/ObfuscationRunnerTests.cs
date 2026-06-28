@@ -221,4 +221,46 @@ public class ObfuscationRunnerTests
         }
         finally { Directory.Delete(baseDir, recursive: true); }
     }
+
+    [Fact]
+    public void RunFolder_trailing_separator_on_outDir_puts_map_outside_folder()
+    {
+        // Regression test: when outDir ends with a trailing directory separator
+        // (e.g. "share/"), Path.GetFullPath used to preserve it, causing
+        // Path.GetFileName to return "" and the map to land INSIDE the out-dir.
+        // After the fix, the map must always be a SIBLING of out-dir.
+        var baseDir = Path.Combine(Path.GetTempPath(), $"obftrail_{Guid.NewGuid():N}");
+        var inDir = Path.Combine(baseDir, "in");
+        var outDir = Path.Combine(baseDir, "out") + Path.DirectorySeparatorChar;
+        Directory.CreateDirectory(inDir);
+        try
+        {
+            File.WriteAllText(Path.Combine(inDir, "a.sqlplan"), Plan("Customers"));
+
+            var result = ObfuscationRunner.RunFolder(inDir, outDir);
+
+            // Normalized out-dir (without trailing slash) for assertions.
+            var normalizedOut = Path.TrimEndingDirectorySeparator(Path.GetFullPath(outDir));
+
+            // 1. Map must NOT be inside the out-dir.
+            Assert.False(
+                result.MapPath.StartsWith(normalizedOut + Path.DirectorySeparatorChar, StringComparison.Ordinal),
+                $"Map landed INSIDE out-dir: {result.MapPath}");
+
+            // 2. Map must NOT exist at the wrong inside location.
+            Assert.False(
+                File.Exists(Path.Combine(normalizedOut, "folder.map.json")),
+                "folder.map.json was incorrectly written inside the out-dir.");
+
+            // 3. The expected sibling path (same as DefaultFolderMapPath normalizes to) must exist.
+            var expectedMapPath = ObfuscationRunner.DefaultFolderMapPath(outDir);
+            Assert.True(
+                File.Exists(expectedMapPath),
+                $"Expected sibling map not found at: {expectedMapPath}");
+
+            // 4. result.MapPath must equal the normalized sibling path.
+            Assert.Equal(expectedMapPath, result.MapPath);
+        }
+        finally { Directory.Delete(baseDir, recursive: true); }
+    }
 }

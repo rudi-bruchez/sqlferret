@@ -98,7 +98,7 @@ public static class ObfuscationRunner
     /// </summary>
     public static string DefaultFolderMapPath(string outDir)
     {
-        var full = Path.GetFullPath(outDir);              // normalizes trailing separators
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(outDir));
         var parent = Path.GetDirectoryName(full);          // may be null only for a root path
         var name = Path.GetFileName(full);
         var mapName = (string.IsNullOrEmpty(name) ? "folder" : name) + ".map.json";
