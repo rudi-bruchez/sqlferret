@@ -93,7 +93,9 @@ public static class ObfuscationRunner
 
         var resolvedMapPath = mapPath ?? DefaultFolderMapPath(outDir);
         var mapDir = Path.GetDirectoryName(resolvedMapPath);
-        if (mapDir is not null) Directory.CreateDirectory(mapDir);
+        // GetDirectoryName returns "" (not null) for a bare filename; CreateDirectory("") throws
+        // (review fix #12). Only create a directory when there actually is one.
+        if (!string.IsNullOrEmpty(mapDir)) Directory.CreateDirectory(mapDir);
         Directory.CreateDirectory(outDir);
         File.WriteAllText(resolvedMapPath, map.ToJson());
 

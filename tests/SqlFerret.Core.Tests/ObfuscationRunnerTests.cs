@@ -304,4 +304,55 @@ public class ObfuscationRunnerTests
         }
         finally { Directory.Delete(dir, recursive: true); }
     }
+
+    // ─── Review fix #12: a bare --map filename (no directory) must not crash ──
+
+    [Fact]
+    public void RunFolder_accepts_bare_map_filename()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"obfbare_{Guid.NewGuid():N}");
+        var inDir = Path.Combine(dir, "in");
+        var outDir = Path.Combine(dir, "out");
+        Directory.CreateDirectory(inDir);
+        // A bare filename: Path.GetDirectoryName returns "" (not null) → CreateDirectory("") used to throw.
+        var bareMap = $"obfmap_{Guid.NewGuid():N}.map.json";
+        try
+        {
+            File.WriteAllText(Path.Combine(inDir, "p.sqlplan"), Plan("Customers"));
+
+            var r = ObfuscationRunner.RunFolder(inDir, outDir, bareMap);
+
+            Assert.Equal(1, r.FilesProcessed);
+            Assert.True(File.Exists(bareMap));
+        }
+        finally
+        {
+            if (File.Exists(bareMap)) File.Delete(bareMap);
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // ─── Review fix #10: the supported re-run flow (re-obfuscate ORIGINALS) is idempotent ──
+
+    [Fact]
+    public void RunProject_rerun_on_originals_is_idempotent_and_does_not_grow_map()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"obfidem_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var dbPath = Path.Combine(dir, "wl.duckdb");
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "a.sqlplan"), Plan("Customers"));
+            using var db = DuckDbProject.Open(dbPath);
+
+            var r1 = ObfuscationRunner.RunProject(db, dir, "a");
+            var out1 = File.ReadAllText(Path.Combine(dir, "a.anon.sqlplan"));
+            var r2 = ObfuscationRunner.RunProject(db, dir, "a"); // re-run reads the ORIGINAL again
+            var out2 = File.ReadAllText(Path.Combine(dir, "a.anon.sqlplan"));
+
+            Assert.Equal(out1, out2);                  // stable output across re-runs
+            Assert.Equal(r1.NamesMapped, r2.NamesMapped); // shared map does not grow
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
 }

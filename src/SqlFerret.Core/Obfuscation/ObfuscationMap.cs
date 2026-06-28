@@ -33,8 +33,10 @@ public sealed class ObfuscationMap
 
     // Strips the SQL Server tempdb uniqueness suffix from a stripped temp-table name.
     // SQL Server mangles local temp names: #Foo → #Foo_______________________________0000ABCD
-    // (4+ trailing underscores + optional hex). Both forms must share the same map key.
-    private static readonly Regex TempNameMangle = new(@"_{4,}[0-9A-Fa-f]*$", RegexOptions.Compiled);
+    // (a long underscore run followed by hex). Both forms must share the same map key.
+    // The hex run is REQUIRED ([0-9A-Fa-f]+): a trailing underscore-only run (e.g. "#staging____")
+    // is a real, distinct name and must not be collapsed onto "#staging" (review fix #14).
+    private static readonly Regex TempNameMangle = new(@"_{4,}[0-9A-Fa-f]+$", RegexOptions.Compiled);
 
     // Returns the canonical de-mangled form of a bracket/quote-stripped temp table name.
     // Only names starting with '#' are processed; others are returned unchanged.
@@ -91,12 +93,16 @@ public sealed class ObfuscationMap
     public static ObfuscationMap FromJson(string json)
     {
         var map = new ObfuscationMap();
-        var root = JsonNode.Parse(json)!.AsObject();
+        // A null / array / scalar document (truncated or hand-edited file) yields an empty map
+        // rather than crashing; unknown sections (future NameKind) are skipped (review fix #15).
+        if (JsonNode.Parse(json) is not JsonObject root) return map;
         foreach (var (kindName, section) in root)
         {
-            var kind = Enum.Parse<NameKind>(kindName, ignoreCase: true);
-            foreach (var (original, tokenNode) in section!.AsObject())
-                map.Seed(kind, original, tokenNode!.GetValue<string>());
+            if (!Enum.TryParse<NameKind>(kindName, ignoreCase: true, out var kind)) continue;
+            if (section is not JsonObject sect) continue;
+            foreach (var (original, tokenNode) in sect)
+                if (tokenNode is not null)
+                    map.Seed(kind, original, tokenNode.GetValue<string>());
         }
         return map;
     }

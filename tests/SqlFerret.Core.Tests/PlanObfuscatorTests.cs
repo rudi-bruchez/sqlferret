@@ -760,6 +760,24 @@ public class PlanObfuscatorTests
         Assert.DoesNotContain("IX_SecretIndex", xml);
     }
 
+    // ─── Review fix #13: mixed-quoting multi-part name must not drop bare segments ──
+
+    [Fact]
+    public void Mixed_quoting_procname_maps_all_segments()
+    {
+        // "myschema.[GetCustomer]" mixes a bare and a bracketed segment. The bare "myschema"
+        // must be mapped (as Schema), not silently dropped.
+        var plan = $"""
+        <ShowPlanXML xmlns="{Ns}">
+          <RelOp><StoredProc ProcName="myschema.[GetCustomer]" /></RelOp>
+        </ShowPlanXML>
+        """;
+        var (xml, _) = PlanObfuscator.Obfuscate(plan, new ObfuscationMap());
+        Assert.DoesNotContain("myschema", xml);
+        Assert.DoesNotContain("GetCustomer", xml);
+        Assert.Contains("[Schema1].[Table1]", xml);
+    }
+
     // ─── Review fix #8: XML declaration preserved, encoding normalized to utf-8 ──
 
     [Fact]

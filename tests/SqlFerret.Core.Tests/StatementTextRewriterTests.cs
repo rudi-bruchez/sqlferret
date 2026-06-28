@@ -138,4 +138,19 @@ public class StatementTextRewriterTests
         Assert.DoesNotContain("DEADBEEF", outSql);
         Assert.DoesNotContain("0xDEAD", outSql);
     }
+
+    // ─── Review fix #9: mangled #temp name in an unparsable fragment must be scrubbed ──
+
+    [Fact]
+    public void Fallback_scrubs_mangled_temp_table_name()
+    {
+        // SQL Server mangles #temp names (long underscore run + hex). In an unparsable
+        // fragment (forced by @@@), the mangled occurrence must still be replaced — the
+        // normalized key "#secret" otherwise fails to match "#Secret____…hex" in the text.
+        var m = new ObfuscationMap();
+        var outSql = StatementTextRewriter.Rewrite("[#Secret_______________0000ABCD].[Col] = 1 @@@", m);
+        Assert.DoesNotContain("Secret", outSql);
+        Assert.DoesNotContain("0000ABCD", outSql);
+        Assert.Contains("#Temp1", outSql);
+    }
 }

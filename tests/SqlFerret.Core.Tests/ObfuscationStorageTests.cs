@@ -61,4 +61,31 @@ public class ObfuscationStorageTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+
+    // ─── Review fix #11: an unknown 'kind' row must not brick the project on load ──
+    [Fact]
+    public void Load_skips_unknown_kind_rows_instead_of_throwing()
+    {
+        var path = NewDb();
+        try
+        {
+            using (var p = DuckDbProject.Open(path))
+            {
+                var m = new ObfuscationMap();
+                m.Token(NameKind.Table, "Customers");
+                p.SaveObfuscationMap(m);
+                // Simulate a legacy/future schema row whose kind is not in the current enum.
+                using var c = p.Connection.CreateCommand();
+                c.CommandText = "INSERT INTO obfuscation_map VALUES ('futurekind','X','Z1')";
+                c.ExecuteNonQuery();
+            }
+            using (var p = DuckDbProject.Open(path))
+            {
+                var loaded = p.LoadObfuscationMap();           // must not throw
+                Assert.Equal("Table1", loaded.Token(NameKind.Table, "Customers"));
+                Assert.Single(loaded.Entries());               // the unknown row is skipped
+            }
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
 }
