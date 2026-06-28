@@ -117,9 +117,10 @@ obfuscate-plan --in-dir plans/ --out-dir anon/
 
 - Anonymise tous les `.sqlplan` (insensible à la casse) trouvés récursivement sous `--in-dir`.
 - Une seule `ObfuscationMap` partagée pour tout le lot : un même objet reçoit le même jeton dans tous les plans (utile pour comparer des plans). Ordre des fichiers déterministe (tri ordinal du chemin) pour une numérotation de jetons stable d'un run à l'autre.
-- Recrée l'arborescence d'entrée sous `--out-dir`, chaque fichier en `*.anon.sqlplan`. Une seule clé combinée `<out-dir>/_folder.map.json`.
+- Recrée l'arborescence d'entrée sous `--out-dir`, chaque fichier en `*.anon.sqlplan`. Le dossier de sortie ne contient donc que des plans partageables.
+- Une seule clé combinée, écrite par défaut en dehors de `--out-dir` : un fichier frère nommé d'après le dossier (`--out-dir anon` → `anon.map.json` à côté, pas dedans), pour que zipper/partager `--out-dir` ne fuite jamais la clé. `--map <chemin>` force l'emplacement. Les séparateurs de fin (`anon/`) sont normalisés pour que la clé reste toujours à l'extérieur.
 - Un plan illisible (XML invalide) ou inaccessible est consigné et ignoré sans interrompre le lot ; le code de sortie est non nul s'il y a eu au moins un échec. `RunFolder` retourne `FilesFound`/`FilesProcessed`/`FilesFailed` pour distinguer dossier vide et échecs.
-- Attention : `_folder.map.json` contient les noms d'origine (clé de dé-anonymisation). Ne pas partager le dossier de sortie tel quel ; ne diffuser que les `.anon.sqlplan`.
+- La clé (`*.map.json`) contient les noms d'origine (dé-anonymisation) : à garder en local, ne jamais diffuser.
 
 ## Stockage de la map projet
 
