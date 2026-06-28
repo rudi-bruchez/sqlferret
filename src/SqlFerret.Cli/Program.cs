@@ -39,7 +39,7 @@ AuditProject? OpenProject()
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: import <path> --project <dir> | top-slow --project <dir> | export-blocking --project <dir> [...] | query-store-import --project <dir> [--conn <s>] [--database <db>] [--no-plans] [--from <dt> --to <dt> | --last <N>{h|d}] | export-events --project <dir> --out <dir> [--kind blocking|deadlock|both] [--from <dt> --to <dt> | --last <N>{h|d}] [--fingerprint <hash>] [--database <id>] [--limit <n>] | obfuscate-plan (--in <file> --out <file> | --project <dir> --plan-id <id>)");
+    Console.Error.WriteLine("usage: import <path> --project <dir> | top-slow --project <dir> | export-blocking --project <dir> [...] | query-store-import --project <dir> [--conn <s>] [--database <db>] [--no-plans] [--from <dt> --to <dt> | --last <N>{h|d}] | export-events --project <dir> --out <dir> [--kind blocking|deadlock|both] [--from <dt> --to <dt> | --last <N>{h|d}] [--fingerprint <hash>] [--database <id>] [--limit <n>] | obfuscate-plan (--in <file> --out <file> | --in-dir <dir> --out-dir <dir> | --project <dir> --plan-id <id>)");
     return 1;
 }
 
@@ -263,6 +263,31 @@ switch (args[0])
         }
     case "obfuscate-plan":
         {
+            var inDir = Arg("--in-dir");
+            if (!string.IsNullOrWhiteSpace(inDir))
+            {
+                var outDir = Arg("--out-dir");
+                if (string.IsNullOrWhiteSpace(outDir))
+                {
+                    Console.Error.WriteLine("obfuscate-plan: --out-dir <dir> is required with --in-dir");
+                    return 1;
+                }
+                if (!Directory.Exists(inDir))
+                {
+                    Console.Error.WriteLine($"obfuscate-plan: input folder not found: {inDir}");
+                    return 1;
+                }
+                var fr = SqlFerret.Core.Obfuscation.ObfuscationRunner.RunFolder(inDir, outDir);
+                foreach (var fail in fr.Failures) Console.Error.WriteLine($"  skipped {fail}");
+                if (fr.FilesFound == 0)
+                {
+                    Console.Error.WriteLine($"obfuscate-plan: no .sqlplan files found under {inDir}");
+                    return 1;
+                }
+                Console.WriteLine($"obfuscated {fr.FilesProcessed} plan(s) -> {outDir} (shared map: {fr.NamesMapped} names, {fr.MapPath}; {fr.FilesFailed} skipped)");
+                return fr.FilesFailed > 0 ? 1 : 0;
+            }
+
             var inPath = Arg("--in");
             if (!string.IsNullOrWhiteSpace(inPath))
             {

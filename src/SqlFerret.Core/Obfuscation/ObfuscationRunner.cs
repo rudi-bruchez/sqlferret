@@ -9,6 +9,14 @@ namespace SqlFerret.Core.Obfuscation;
 /// </summary>
 public readonly record struct ObfuscationResult(string AnonPath, string MapPath, int NamesMapped);
 
+public readonly record struct FolderObfuscationResult(
+    int FilesFound,
+    int FilesProcessed,
+    int FilesFailed,
+    int NamesMapped,
+    string MapPath,
+    IReadOnlyList<string> Failures);
+
 public static class ObfuscationRunner
 {
     public static ObfuscationResult RunStandalone(string inPath, string outPath)
@@ -35,6 +43,50 @@ public static class ObfuscationRunner
         File.WriteAllText(mapPath, enriched.ToJson());
         db.SaveObfuscationMap(enriched);
         return new ObfuscationResult(anonPath, mapPath, enriched.Entries().Count());
+    }
+
+    public static FolderObfuscationResult RunFolder(string inDir, string outDir)
+    {
+        if (!Directory.Exists(inDir)) throw new DirectoryNotFoundException($"input folder not found: {inDir}");
+
+        var files = Directory.EnumerateFiles(inDir, "*", SearchOption.AllDirectories)
+            .Where(f => f.EndsWith(".sqlplan", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(f => f, StringComparer.Ordinal)
+            .ToList();
+
+        var filesFound = files.Count;
+        var map = new ObfuscationMap();
+        var filesProcessed = 0;
+        var filesFailed = 0;
+        var failures = new List<string>();
+
+        foreach (var file in files)
+        {
+            var rel = Path.GetRelativePath(inDir, file);
+            try
+            {
+                var text = File.ReadAllText(file);
+                var (anon, _) = PlanObfuscator.Obfuscate(text, map);
+                // Note: on a case-sensitive filesystem two inputs differing only in extension case
+                // (e.g. "a.sqlplan" vs "a.SQLPlan") produce the same output path — last write wins.
+                // Accepted edge case; `EnumerateFiles` on Linux can surface both.
+                var outFile = Path.Combine(outDir, Path.ChangeExtension(rel, null) + ".anon.sqlplan");
+                Directory.CreateDirectory(Path.GetDirectoryName(outFile)!);
+                File.WriteAllText(outFile, anon);
+                filesProcessed++;
+            }
+            catch (Exception ex) when (ex is System.Xml.XmlException or IOException)
+            {
+                failures.Add($"{rel}: {ex.Message}");
+                filesFailed++;
+            }
+        }
+
+        Directory.CreateDirectory(outDir);
+        var mapPath = Path.Combine(outDir, "_folder.map.json");
+        File.WriteAllText(mapPath, map.ToJson());
+
+        return new FolderObfuscationResult(filesFound, filesProcessed, filesFailed, map.Entries().Count(), mapPath, failures);
     }
 
     internal static string MapJsonPath(string outPath) =>
