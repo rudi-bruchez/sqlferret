@@ -45,7 +45,7 @@ public static class ObfuscationRunner
         return new ObfuscationResult(anonPath, mapPath, enriched.Entries().Count());
     }
 
-    public static FolderObfuscationResult RunFolder(string inDir, string outDir)
+    public static FolderObfuscationResult RunFolder(string inDir, string outDir, string? mapPath = null)
     {
         if (!Directory.Exists(inDir)) throw new DirectoryNotFoundException($"input folder not found: {inDir}");
 
@@ -82,11 +82,27 @@ public static class ObfuscationRunner
             }
         }
 
+        var resolvedMapPath = mapPath ?? DefaultFolderMapPath(outDir);
+        var mapDir = Path.GetDirectoryName(resolvedMapPath);
+        if (mapDir is not null) Directory.CreateDirectory(mapDir);
         Directory.CreateDirectory(outDir);
-        var mapPath = Path.Combine(outDir, "_folder.map.json");
-        File.WriteAllText(mapPath, map.ToJson());
+        File.WriteAllText(resolvedMapPath, map.ToJson());
 
-        return new FolderObfuscationResult(filesFound, filesProcessed, filesFailed, map.Entries().Count(), mapPath, failures);
+        return new FolderObfuscationResult(filesFound, filesProcessed, filesFailed, map.Entries().Count(), resolvedMapPath, failures);
+    }
+
+    /// <summary>
+    /// Returns the default map path for a folder obfuscation run: a sibling of <paramref name="outDir"/>
+    /// named <c>&lt;outDirName&gt;.map.json</c>, so the de-anonymization key is OUTSIDE the shareable
+    /// output folder.
+    /// </summary>
+    public static string DefaultFolderMapPath(string outDir)
+    {
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(outDir));
+        var parent = Path.GetDirectoryName(full);          // may be null only for a root path
+        var name = Path.GetFileName(full);
+        var mapName = (string.IsNullOrEmpty(name) ? "folder" : name) + ".map.json";
+        return parent is null ? Path.Combine(full, mapName) : Path.Combine(parent, mapName);
     }
 
     internal static string MapJsonPath(string outPath) =>

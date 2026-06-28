@@ -96,8 +96,13 @@ public class ObfuscationRunnerTests
             Assert.True(File.Exists(Path.Combine(outDir, "a.anon.sqlplan")));
             Assert.True(File.Exists(Path.Combine(outDir, "b.anon.sqlplan")));
             Assert.True(File.Exists(Path.Combine(outDir, "sub", "c.anon.sqlplan")));
-            Assert.True(File.Exists(Path.Combine(outDir, "_folder.map.json")));
-            Assert.Equal(result.MapPath, Path.Combine(outDir, "_folder.map.json"));
+
+            // Map must be OUTSIDE out-dir (sibling), not inside it.
+            var expectedMapPath = ObfuscationRunner.DefaultFolderMapPath(outDir);
+            Assert.True(File.Exists(expectedMapPath));
+            Assert.Equal(expectedMapPath, result.MapPath);
+            Assert.False(File.Exists(Path.Combine(outDir, "_folder.map.json")));
+            Assert.False(result.MapPath.StartsWith(Path.GetFullPath(outDir) + Path.DirectorySeparatorChar));
 
             var a = File.ReadAllText(Path.Combine(outDir, "a.anon.sqlplan"));
             var b = File.ReadAllText(Path.Combine(outDir, "b.anon.sqlplan"));
@@ -139,8 +144,9 @@ public class ObfuscationRunnerTests
             Assert.Equal(0, result.FilesProcessed);
             Assert.Equal(2, result.FilesFailed);
             Assert.Equal(2, result.Failures.Count);
-            // Map file is still written (empty map is valid output).
-            Assert.True(File.Exists(Path.Combine(outDir, "_folder.map.json")));
+            // Map file is still written (empty map is valid output) — outside out-dir.
+            var expectedMapPath = ObfuscationRunner.DefaultFolderMapPath(outDir);
+            Assert.True(File.Exists(expectedMapPath));
         }
         finally { Directory.Delete(baseDir, recursive: true); }
     }
@@ -176,6 +182,28 @@ public class ObfuscationRunnerTests
     }
 
     [Fact]
+    public void RunFolder_map_override_writes_to_custom_path()
+    {
+        var baseDir = Path.Combine(Path.GetTempPath(), $"obfoverride_{Guid.NewGuid():N}");
+        var inDir = Path.Combine(baseDir, "in");
+        var outDir = Path.Combine(baseDir, "out");
+        var customMapPath = Path.Combine(baseDir, "custom.map.json");
+        Directory.CreateDirectory(inDir);
+        try
+        {
+            File.WriteAllText(Path.Combine(inDir, "a.sqlplan"), Plan("Customers"));
+
+            var result = ObfuscationRunner.RunFolder(inDir, outDir, customMapPath);
+
+            Assert.True(File.Exists(customMapPath));
+            Assert.Equal(customMapPath, result.MapPath);
+            Assert.False(File.Exists(Path.Combine(outDir, "_folder.map.json")));
+            Assert.False(File.Exists(ObfuscationRunner.DefaultFolderMapPath(outDir)));
+        }
+        finally { Directory.Delete(baseDir, recursive: true); }
+    }
+
+    [Fact]
     public void RunFolder_matches_sqlplan_case_insensitively()
     {
         var baseDir = Path.Combine(Path.GetTempPath(), $"obfcase_{Guid.NewGuid():N}");
@@ -190,6 +218,48 @@ public class ObfuscationRunnerTests
 
             Assert.Equal(1, result.FilesProcessed);
             Assert.True(File.Exists(Path.Combine(outDir, "plan.anon.sqlplan")));
+        }
+        finally { Directory.Delete(baseDir, recursive: true); }
+    }
+
+    [Fact]
+    public void RunFolder_trailing_separator_on_outDir_puts_map_outside_folder()
+    {
+        // Regression test: when outDir ends with a trailing directory separator
+        // (e.g. "share/"), Path.GetFullPath used to preserve it, causing
+        // Path.GetFileName to return "" and the map to land INSIDE the out-dir.
+        // After the fix, the map must always be a SIBLING of out-dir.
+        var baseDir = Path.Combine(Path.GetTempPath(), $"obftrail_{Guid.NewGuid():N}");
+        var inDir = Path.Combine(baseDir, "in");
+        var outDir = Path.Combine(baseDir, "out") + Path.DirectorySeparatorChar;
+        Directory.CreateDirectory(inDir);
+        try
+        {
+            File.WriteAllText(Path.Combine(inDir, "a.sqlplan"), Plan("Customers"));
+
+            var result = ObfuscationRunner.RunFolder(inDir, outDir);
+
+            // Normalized out-dir (without trailing slash) for assertions.
+            var normalizedOut = Path.TrimEndingDirectorySeparator(Path.GetFullPath(outDir));
+
+            // 1. Map must NOT be inside the out-dir.
+            Assert.False(
+                result.MapPath.StartsWith(normalizedOut + Path.DirectorySeparatorChar, StringComparison.Ordinal),
+                $"Map landed INSIDE out-dir: {result.MapPath}");
+
+            // 2. Map must NOT exist at the wrong inside location.
+            Assert.False(
+                File.Exists(Path.Combine(normalizedOut, "folder.map.json")),
+                "folder.map.json was incorrectly written inside the out-dir.");
+
+            // 3. The expected sibling path (same as DefaultFolderMapPath normalizes to) must exist.
+            var expectedMapPath = ObfuscationRunner.DefaultFolderMapPath(outDir);
+            Assert.True(
+                File.Exists(expectedMapPath),
+                $"Expected sibling map not found at: {expectedMapPath}");
+
+            // 4. result.MapPath must equal the normalized sibling path.
+            Assert.Equal(expectedMapPath, result.MapPath);
         }
         finally { Directory.Delete(baseDir, recursive: true); }
     }
