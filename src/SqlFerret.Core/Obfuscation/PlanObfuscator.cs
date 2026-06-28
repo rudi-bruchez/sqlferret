@@ -36,6 +36,18 @@ public static class PlanObfuscator
         """(?:CREATE|ALTER)\s+(?:OR\s+ALTER\s+)?(?:PROC(?:EDURE)?|FUNCTION|VIEW|TRIGGER|TABLE|SYNONYM|SEQUENCE|TYPE)\s+((?:\[[^\]]+\]|"[^"]+"|#{0,2}[A-Za-z_][A-Za-z0-9_@#$]*)(?:\s*\.\s*(?:\[[^\]]+\]|"[^"]+"|#{0,2}[A-Za-z_][A-Za-z0-9_@#$]*))*)""",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    // DDL clauses whose defined name is a single identifier of a NON-Table kind, so they cannot go
+    // through DdlLeadClause (which assigns Database/Schema/Table by position). Regex fallbacks for the
+    // truncated-StatementText case; the AST visitor covers well-formed statements (review fix #4).
+    private const string OneNamePart = """(\[[^\]]+\]|"[^"]+"|[A-Za-z_][A-Za-z0-9_@#$]*)""";
+    private static readonly Regex DdlIndexClause = new(
+        """(?:CREATE|ALTER)\s+(?:UNIQUE\s+)?(?:(?:NON)?CLUSTERED\s+)?(?:COLUMNSTORE\s+)?INDEX\s+""" + OneNamePart,
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex DdlStatisticsClause = new(
+        """CREATE\s+STATISTICS\s+""" + OneNamePart, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex DdlSchemaClause = new(
+        """CREATE\s+SCHEMA\s+""" + OneNamePart, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     public static (string AnonXml, ObfuscationMap Map) Obfuscate(string showplanXml, ObfuscationMap map)
     {
         var doc = XDocument.Parse(showplanXml, LoadOptions.PreserveWhitespace);
@@ -71,19 +83,33 @@ public static class PlanObfuscator
             }
         }
 
-        return (doc.ToString(SaveOptions.DisableFormatting), map);
+        var body = doc.ToString(SaveOptions.DisableFormatting);
+        // doc.ToString() drops the XML declaration. SQL Server emits .sqlplan as UTF-16 with a
+        // declaration; the runner writes the returned string as UTF-8. Re-emit the declaration
+        // normalized to utf-8 so the declared encoding matches the bytes on disk and the file stays
+        // SSMS-openable (review fix #8). Plans without a declaration keep none.
+        if (doc.Declaration is null)
+            return (body, map);
+        var decl = new XDeclaration(doc.Declaration.Version, "utf-8", doc.Declaration.Standalone);
+        return (decl + Environment.NewLine + body, map);
     }
 
     private static void RenameNode(XElement el, ObfuscationMap map)
     {
         var schema = Val(el, "Schema");
         var table = Val(el, "Table");
-        if ((schema is not null && SystemSchemas.Contains(ObfuscationMap.Strip(schema)))
-            || (table is not null && InternalTables.Contains(ObfuscationMap.Strip(table))))
-            return; // whitelisted: neither the object nor its columns are mapped
+        var whitelisted =
+            (schema is not null && SystemSchemas.Contains(ObfuscationMap.Strip(schema)))
+            || (table is not null && InternalTables.Contains(ObfuscationMap.Strip(table)));
+
+        // The Database component is a user-chosen name even on whitelisted system/internal objects
+        // (e.g. a query touching sys.indexes inside a user database), so it is sensitive and must be
+        // mapped unconditionally — BEFORE the whitelist short-circuit (review fix #2).
+        Set(el, "Database", NameKind.Database, map);
+        if (whitelisted)
+            return; // whitelisted: neither the system object nor its columns are mapped further
 
         // Standard single-component name attributes.
-        Set(el, "Database", NameKind.Database, map);
         Set(el, "Schema", NameKind.Schema, map);
         SetTable(el, map); // temp tables use NameKind.TempTable; regular tables use NameKind.Table
         Set(el, "Index", NameKind.Index, map);
@@ -123,7 +149,11 @@ public static class PlanObfuscator
         // Multi-part name attributes: values like [Sales].[dbo].[GetCustomer].
         // Segments are shared with Object references so the same [Sales] -> Db1 everywhere.
         SetMultiPart(el, "ProcName", map);
-        SetMultiPart(el, "FunctionName", map);
+        // FunctionName on <Intrinsic> is a built-in (isnull, getdate, …), NOT a user object:
+        // mapping it would corrupt the SQL text and inflate the Table counter (review fix #1).
+        // <UserDefinedFunction FunctionName="…"> is still mapped.
+        if (el.Name.LocalName != "Intrinsic")
+            SetMultiPart(el, "FunctionName", map);
     }
 
     // Maps a multi-part bracketed name attribute (e.g. ProcName="[db].[schema].[proc]").
@@ -220,6 +250,13 @@ public static class PlanObfuscator
             var stripped = StripComments(attr.Value);
             foreach (Match m in DdlLeadClause.Matches(stripped))
                 MapDdlMultiPartName(m.Groups[1].Value, map);
+            // Single-name DDL of non-Table kinds (index/statistics/schema) — review fix #4.
+            foreach (Match m in DdlIndexClause.Matches(stripped))
+                map.Token(NameKind.Index, ExtractInnerName(m.Groups[1].Value));
+            foreach (Match m in DdlStatisticsClause.Matches(stripped))
+                map.Token(NameKind.Statistics, ExtractInnerName(m.Groups[1].Value));
+            foreach (Match m in DdlSchemaClause.Matches(stripped))
+                map.Token(NameKind.Schema, ExtractInnerName(m.Groups[1].Value));
         }
     }
 
@@ -319,6 +356,23 @@ public static class PlanObfuscator
         {
             CollectName(node.Name);
             CollectName(node.TriggerObject?.Name);
+        }
+
+        // Non-Table single-name DDL: the defined name maps to Index/Statistics/Schema, not Table
+        // (review fix #4). The indexed/analyzed table (OnName) is still collected like any object ref.
+        public override void Visit(CreateIndexStatement node)
+        {
+            if (node.Name is not null) map.Token(NameKind.Index, node.Name.Value);
+            CollectName(node.OnName);
+        }
+        public override void Visit(CreateStatisticsStatement node)
+        {
+            if (node.Name is not null) map.Token(NameKind.Statistics, node.Name.Value);
+            CollectName(node.OnName);
+        }
+        public override void Visit(CreateSchemaStatement node)
+        {
+            if (node.Name is not null) map.Token(NameKind.Schema, node.Name.Value);
         }
 
         private void CollectName(SchemaObjectName? obj)

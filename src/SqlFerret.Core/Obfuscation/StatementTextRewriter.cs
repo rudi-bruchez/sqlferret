@@ -101,6 +101,9 @@ public static class StatementTextRewriter
         var s = Regex.Replace(raw, @"'(?:[^']|'')*'", "?");                  // string literals
         s = Regex.Replace(s, @"/\*.*?\*/", " ", RegexOptions.Singleline);     // block comments
         s = Regex.Replace(s, @"--[^\n]*", " ");                              // line comments
+        // Hex literals (0xDEADBEEF) BEFORE the numeric scrub, which would otherwise consume only the
+        // leading '0' and leave the hex payload intact (review fix #3).
+        s = Regex.Replace(s, @"(?<![A-Za-z_@#$0-9.])0[xX][0-9A-Fa-f]+", "?"); // hex literals
         s = Regex.Replace(s, @"(?<![A-Za-z_@#$0-9.])\d+(\.\d+)?", "?");       // numeric literals
         foreach (var kv in lookup.OrderByDescending(kv => kv.Key.Length))     // longest-first to avoid substrings
         {
