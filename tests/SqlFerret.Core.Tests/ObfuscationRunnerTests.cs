@@ -81,12 +81,16 @@ public class ObfuscationRunnerTests
         Directory.CreateDirectory(subDir);
         try
         {
+            // a has Customers only -> Table1 (first encounter in ordinal sort)
+            // b has Orders only    -> Table2 with shared map; Table1 with a per-file map (falsifiable)
+            // c has Customers only -> Table1 again via the shared map (reuse, not re-assign)
             File.WriteAllText(Path.Combine(inDir, "a.sqlplan"), Plan("Customers"));
-            File.WriteAllText(Path.Combine(inDir, "b.sqlplan"), Plan("Customers"));
+            File.WriteAllText(Path.Combine(inDir, "b.sqlplan"), Plan("Orders"));
             File.WriteAllText(Path.Combine(subDir, "c.sqlplan"), Plan("Customers"));
 
             var result = ObfuscationRunner.RunFolder(inDir, outDir);
 
+            Assert.Equal(3, result.FilesFound);
             Assert.Equal(3, result.FilesProcessed);
             Assert.Equal(0, result.FilesFailed);
             Assert.True(File.Exists(Path.Combine(outDir, "a.anon.sqlplan")));
@@ -95,13 +99,48 @@ public class ObfuscationRunnerTests
             Assert.True(File.Exists(Path.Combine(outDir, "_folder.map.json")));
             Assert.Equal(result.MapPath, Path.Combine(outDir, "_folder.map.json"));
 
-            // Shared map: all three plans reference Customers, must all map to the same token.
             var a = File.ReadAllText(Path.Combine(outDir, "a.anon.sqlplan"));
             var b = File.ReadAllText(Path.Combine(outDir, "b.anon.sqlplan"));
+            var c = File.ReadAllText(Path.Combine(outDir, "sub", "c.anon.sqlplan"));
+
+            // a: Customers -> Table1
             Assert.DoesNotContain("Customers", a);
-            Assert.DoesNotContain("Customers", b);
             Assert.Contains("Table1", a);
-            Assert.Contains("Table1", b);
+
+            // b: Orders -> Table2 (shared map carries Table1 from a's Customers).
+            // With a per-file map Orders would be Table1 — this assertion is the falsifiable guard.
+            Assert.DoesNotContain("Orders", b);
+            Assert.Contains("Table2", b);
+            Assert.DoesNotContain("Table1", b);
+
+            // c: Customers reuses Table1 from the shared map
+            Assert.DoesNotContain("Customers", c);
+            Assert.Contains("Table1", c);
+        }
+        finally { Directory.Delete(baseDir, recursive: true); }
+    }
+
+    [Fact]
+    public void RunFolder_all_failed_files_writes_map_and_reports_FilesFound()
+    {
+        var baseDir = Path.Combine(Path.GetTempPath(), $"obfallfail_{Guid.NewGuid():N}");
+        var inDir = Path.Combine(baseDir, "in");
+        var outDir = Path.Combine(baseDir, "out");
+        Directory.CreateDirectory(inDir);
+        try
+        {
+            File.WriteAllText(Path.Combine(inDir, "bad1.sqlplan"), "<bad");
+            File.WriteAllText(Path.Combine(inDir, "bad2.sqlplan"), "<bad");
+
+            // Must not throw even when every file is malformed.
+            var result = ObfuscationRunner.RunFolder(inDir, outDir);
+
+            Assert.Equal(2, result.FilesFound);
+            Assert.Equal(0, result.FilesProcessed);
+            Assert.Equal(2, result.FilesFailed);
+            Assert.Equal(2, result.Failures.Count);
+            // Map file is still written (empty map is valid output).
+            Assert.True(File.Exists(Path.Combine(outDir, "_folder.map.json")));
         }
         finally { Directory.Delete(baseDir, recursive: true); }
     }

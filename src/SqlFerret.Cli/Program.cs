@@ -279,7 +279,7 @@ switch (args[0])
                 }
                 var fr = SqlFerret.Core.Obfuscation.ObfuscationRunner.RunFolder(inDir, outDir);
                 foreach (var fail in fr.Failures) Console.Error.WriteLine($"  skipped {fail}");
-                if (fr.FilesProcessed == 0)
+                if (fr.FilesFound == 0)
                 {
                     Console.Error.WriteLine($"obfuscate-plan: no .sqlplan files found under {inDir}");
                     return 1;

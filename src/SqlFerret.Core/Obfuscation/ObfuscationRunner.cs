@@ -10,6 +10,7 @@ namespace SqlFerret.Core.Obfuscation;
 public readonly record struct ObfuscationResult(string AnonPath, string MapPath, int NamesMapped);
 
 public readonly record struct FolderObfuscationResult(
+    int FilesFound,
     int FilesProcessed,
     int FilesFailed,
     int NamesMapped,
@@ -53,6 +54,7 @@ public static class ObfuscationRunner
             .OrderBy(f => f, StringComparer.Ordinal)
             .ToList();
 
+        var filesFound = files.Count;
         var map = new ObfuscationMap();
         var filesProcessed = 0;
         var filesFailed = 0;
@@ -65,6 +67,9 @@ public static class ObfuscationRunner
             {
                 var text = File.ReadAllText(file);
                 var (anon, _) = PlanObfuscator.Obfuscate(text, map);
+                // Note: on a case-sensitive filesystem two inputs differing only in extension case
+                // (e.g. "a.sqlplan" vs "a.SQLPlan") produce the same output path — last write wins.
+                // Accepted edge case; `EnumerateFiles` on Linux can surface both.
                 var outFile = Path.Combine(outDir, Path.ChangeExtension(rel, null) + ".anon.sqlplan");
                 Directory.CreateDirectory(Path.GetDirectoryName(outFile)!);
                 File.WriteAllText(outFile, anon);
@@ -81,7 +86,7 @@ public static class ObfuscationRunner
         var mapPath = Path.Combine(outDir, "_folder.map.json");
         File.WriteAllText(mapPath, map.ToJson());
 
-        return new FolderObfuscationResult(filesProcessed, filesFailed, map.Entries().Count(), mapPath, failures);
+        return new FolderObfuscationResult(filesFound, filesProcessed, filesFailed, map.Entries().Count(), mapPath, failures);
     }
 
     internal static string MapJsonPath(string outPath) =>
