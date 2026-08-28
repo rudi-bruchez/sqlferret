@@ -19,10 +19,13 @@ namespace SqlFerret.Core.Normalization;
 /// a value; three rounds of adversarial review each found a new shape that slipped a value through
 /// it anyway (a value assigned inside the declaration, a comment, a bracketed identifier, a
 /// numeric default). Rather than extend that predicate a fourth time, the pass-through was
-/// removed. Nothing of substance is lost: parameter names and types are already persisted per
+/// removed — reason enough on its own, since it repeatedly leaked values regardless of any
+/// downstream persistence. Parameter names and types are also not lost: they are persisted per
 /// execution in <c>execution_parameters</c> (<c>name</c>, <c>sql_type_guess</c>) under every
-/// redaction policy, so keeping a second, harder-to-validate copy inside <c>sql_text_raw</c> was
-/// redundant.
+/// redaction policy EXCEPT <c>off</c>, which stores no parameter rows at all
+/// (<c>IngestionService.RedactParams</c> skips them entirely), so keeping a second,
+/// harder-to-validate copy inside <c>sql_text_raw</c> was redundant under every policy that keeps
+/// parameter rows in the first place.
 /// </remarks>
 internal static class SpExecuteSqlUnwrapper
 {
@@ -108,6 +111,12 @@ internal static class SpExecuteSqlUnwrapper
                     text = innerRewritten;
                 else if (TokenNormalizer.LiteralTokens.Contains(t.TokenType))
                     text = "?";
+                else if (t.TokenType == TSqlTokenType.AsciiStringOrQuotedIdentifier)
+                    // A double-quoted token: ambiguous under SET QUOTED_IDENTIFIER OFF, could be
+                    // a value. Fail safe, same as TokenNormalizer's qiCollapsedSql (see
+                    // NormalizedQuery.QiCollapsedSql). Distinct from QuotedIdentifier ([...]),
+                    // which is unambiguously an identifier and stays verbatim below.
+                    text = "?";
                 else if (TokenNormalizer.KeywordTokens.Contains(t.TokenType))
                     text = t.Text.ToLowerInvariant();
                 else
@@ -137,12 +146,14 @@ internal static class SpExecuteSqlUnwrapper
         string body = isUnicode ? raw[2..^1] : raw[1..^1];
         string inner = body.Replace("''", "'");
 
-        var (normalizedSql, tokenizeFailed) = TokenNormalizer.Normalize(inner);
+        var (_, tokenizeFailed, qiCollapsedSql) = TokenNormalizer.Normalize(inner);
         // An unparseable inner statement keeps its literals intact under TokenNormalizer's
         // fallback — re-emitting it would leak. Falling back to nq.NormalizedSql (the whole
         // outer statement collapsed to '?') is the safe choice here.
         if (tokenizeFailed) return null;
 
-        return (isUnicode ? "N'" : "'") + normalizedSql.Replace("'", "''") + "'";
+        // qiCollapsedSql, not normalizedSql: a double-quoted token inside the inner statement
+        // (SET QUOTED_IDENTIFIER OFF) must fail safe here too — see NormalizedQuery.QiCollapsedSql.
+        return (isUnicode ? "N'" : "'") + qiCollapsedSql.Replace("'", "''") + "'";
     }
 }

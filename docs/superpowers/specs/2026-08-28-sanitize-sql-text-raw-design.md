@@ -29,10 +29,14 @@ literal and slipped past the "declaration-shaped" predicate guarding it — a va
 the declaration, a `--` comment, a bare word, a bracketed identifier, a numeric default. Rather
 than extend the predicate a fourth time, the verbatim pass-through was removed: `Literals` now
 keeps only the inner query text from an `sp_executesql` call, and every other argument — the
-parameter declaration included — collapses to `?` like any other literal. Parameter names and
-types are not lost to a project; they are already persisted per execution in
-`execution_parameters` (`name`, `sql_type_guess`) under every redaction policy, so the verbatim
-copy inside `sql_text_raw` was redundant as well as unsafe.
+parameter declaration included — collapses to `?` like any other literal. That removal stands on
+its own reason — it repeatedly leaked a value, and no predicate closed off every shape found —
+regardless of any downstream persistence. Parameter names and types are also not lost to a
+project: they are already persisted per execution in `execution_parameters` (`name`,
+`sql_type_guess`), but only under redaction policies that persist parameter rows at all — every
+policy *except* `off`, which stores no `execution_parameters` rows for any execution. So the
+verbatim copy inside `sql_text_raw` was redundant under every policy that keeps a parameter-row
+copy, and unsafe regardless.
 
 ---
 

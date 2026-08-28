@@ -41,18 +41,22 @@ public class EstimatedPlanService(string connectionString, string plansFolder)
     /// </summary>
     public async Task<string> CaptureAsync(ExecutionEvent ev, string planId, CancellationToken ct = default)
     {
-        // A sanitized run stores literal-free text: "… WHERE Email = ?" is not valid T-SQL.
-        // Refuse here rather than sending it to the server and surfacing a syntax error.
+        ReplayScript script = ReplayBuilder.Build(ev);
+
+        // A sanitized run stores literal-free statement text: "… WHERE Email = ?" is not valid
+        // T-SQL. Only RawBatch and SpExecuteSql scripts are built from that stored text —
+        // ExecProc is built from ev.Parameters (ReplayBuilder never reads SqlTextRaw for it) and
+        // executes fine on a sanitized project, so it must not be refused here. Must still run
+        // before any SqlConnection is constructed or opened.
         if (ev.SqlTextPolicy is not null
-            && !ev.SqlTextPolicy.Equals("raw", StringComparison.OrdinalIgnoreCase))
+            && !ev.SqlTextPolicy.Equals("raw", StringComparison.OrdinalIgnoreCase)
+            && script.Kind is ReplayKind.RawBatch or ReplayKind.SpExecuteSql)
         {
             throw new InvalidOperationException(
                 $"estimated plan: this execution was imported with --sanitize-sql-text {ev.SqlTextPolicy}; " +
                 "the stored statement text is not executable. Re-import with --sanitize-sql-text raw " +
                 "to capture estimated plans.");
         }
-
-        ReplayScript script = ReplayBuilder.Build(ev);
 
         await using var conn = new SqlConnection(connectionString);
         await conn.OpenAsync(ct);

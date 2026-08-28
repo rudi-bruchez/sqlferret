@@ -194,4 +194,64 @@ public class RpcSanitizationTests
 
         Assert.Equal(raw, result);
     }
+
+    // FIX 1 — double-quoted values under SET QUOTED_IDENTIFIER OFF tokenize as QuotedIdentifier,
+    // not a string literal, and were re-emitted verbatim at Literals. The decision is fail-safe:
+    // collapse a double-quoted token to '?' too, at Literals only.
+
+    [Fact]
+    public void Double_quoted_value_in_a_plain_batch_is_collapsed_at_literals()
+    {
+        const string raw = $"SELECT Name FROM dbo.Customers WHERE Email = \"{Pii}\"";
+
+        var result = Sanitize(raw);
+
+        Assert.DoesNotContain(Pii, result);
+        Assert.Equal("select Name from dbo.Customers where Email = ?", result);
+    }
+
+    [Fact]
+    public void Double_quoted_value_survives_untouched_at_raw()
+    {
+        const string raw = $"SELECT Name FROM dbo.Customers WHERE Email = \"{Pii}\"";
+
+        var result = Sanitize(raw, SqlTextSanitization.Raw);
+
+        Assert.Equal(raw, result);
+    }
+
+    [Fact]
+    public void Double_quoted_value_inside_sp_executesql_inner_statement_is_collapsed()
+    {
+        const string raw = $"exec sp_executesql N'SELECT a FROM dbo.t WHERE e = \"{Pii}\"'";
+
+        var result = Sanitize(raw);
+
+        Assert.DoesNotContain(Pii, result);
+        Assert.Contains("dbo.t", result); // schema/table survives — only the value is lost
+        Assert.Equal("exec sp_executesql N'select a from dbo.t where e = ?'", result);
+    }
+
+    [Fact]
+    public void Bracketed_identifier_is_not_collapsed_at_literals()
+    {
+        const string raw = "SELECT a FROM [Order Details] WHERE b = 'x'";
+
+        var result = Sanitize(raw);
+
+        Assert.Contains("[Order Details]", result);
+    }
+
+    [Fact]
+    public void NormalizedHash_is_unchanged_between_raw_and_literals_for_a_double_quoted_query()
+    {
+        const string raw = $"SELECT Name FROM dbo.Customers WHERE Email = \"{Pii}\"";
+        var nq = QueryNormalizer.Normalize(raw);
+
+        var (_, rawNormalized, _) = SqlTextSanitizer.Apply(raw, nq, SqlTextSanitization.Raw);
+        var (_, literalsNormalized, _) = SqlTextSanitizer.Apply(raw, nq, SqlTextSanitization.Literals);
+
+        Assert.Equal(rawNormalized.NormalizedHash, literalsNormalized.NormalizedHash);
+        Assert.Equal(nq.NormalizedHash, literalsNormalized.NormalizedHash);
+    }
 }

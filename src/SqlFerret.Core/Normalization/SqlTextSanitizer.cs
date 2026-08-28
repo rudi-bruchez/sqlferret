@@ -43,6 +43,18 @@ public static class SqlTextSanitizer
     /// <c>normalized_queries</c>, which lives in the same file and joins on the same hash.
     /// <see cref="NormalizedQuery.NormalizedHash"/> is a non-reversible hash and is preserved so
     /// fingerprint joins keep working. Mirrors <c>IngestionService.PrepareProc</c>.
+    /// <para/>
+    /// At <see cref="SqlTextSanitization.Literals"/>, storage always uses
+    /// <see cref="NormalizedQuery.QiCollapsedSql"/> — never the plain
+    /// <see cref="NormalizedQuery.NormalizedSql"/> — for both the returned <c>Text</c> and the
+    /// returned <c>Normalized.NormalizedSql</c>. A double-quoted token
+    /// (<c>SET QUOTED_IDENTIFIER OFF</c>) is genuinely ambiguous — the capture never records the
+    /// session setting — so it fails safe and collapses like a literal in both
+    /// <c>executions.sql_text_raw</c> and <c>normalized_queries.normalized_sql</c>; an earlier
+    /// revision fixed only the raw column, which just relocated the leak into the normalized one.
+    /// <see cref="NormalizedQuery.NormalizedHash"/> is untouched — it keeps being derived from
+    /// <see cref="NormalizedQuery.NormalizedSql"/>, not the QI-collapsed variant, so fingerprints
+    /// stay comparable across sanitization levels.
     /// </remarks>
     public static (string Text, NormalizedQuery Normalized, bool Failed) Apply(
         string raw, NormalizedQuery nq, SqlTextSanitization level)
@@ -50,12 +62,18 @@ public static class SqlTextSanitizer
         if (level == SqlTextSanitization.Raw) return (raw, nq, false);
         if (nq.TokenizeFailed) return (Placeholder, nq with { NormalizedSql = Placeholder }, true);
 
+        // Fail-safe variant for storage: a double-quoted token also collapses to '?'. Used for
+        // both the raw text below and Normalized.NormalizedSql, so the leak can't relocate from
+        // one storage column to the other.
+        var safeNq = nq with { NormalizedSql = nq.QiCollapsedSql };
+
         // sp_executesql's inner statement is itself a string literal: TokenNormalizer.Normalize
         // collapses it along with the trailing parameter values, losing every table/column name.
-        // Unwrap it when possible; nq.NormalizedSql (fully collapsed) is always a safe fallback.
+        // Unwrap it when possible; safeNq.NormalizedSql (fully collapsed, QI-safe) is always a
+        // safe fallback.
         var unwrapped = SpExecuteSqlUnwrapper.TryUnwrap(raw);
-        if (unwrapped is not null) return (unwrapped, nq, false);
+        if (unwrapped is not null) return (unwrapped, safeNq, false);
 
-        return (nq.NormalizedSql, nq, false);
+        return (safeNq.NormalizedSql, safeNq, false);
     }
 }

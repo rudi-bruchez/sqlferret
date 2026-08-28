@@ -12,6 +12,7 @@ using System.Data;
 using System.Drawing;
 using SqlFerret.Core.Analysis;
 using SqlFerret.Core.Config;
+using SqlFerret.Core.Model;
 using SqlFerret.Tui.Presenters;
 using SqlFerret.Tui.Shell;
 using Terminal.Gui.Input;
@@ -114,7 +115,12 @@ public sealed class DrillDownView : View
         var res = _clip.Copy(script.Sql, $"exec-{_rows[i].ExecutionId}");
         string note = script.Confidence < 1.0 ? $" (confidence {script.Confidence:0.0})" : "";
         string redactedNote = anyRedacted ? " — WARNING: parameter values are redacted" : "";
-        string sanitizedNote = sqlTextPolicy is not null && !sqlTextPolicy.Equals("raw", StringComparison.OrdinalIgnoreCase)
+        // ExecProc is built from parameters, never from the stored (possibly sanitized) statement
+        // text — see ReplayBuilder.Build / EstimatedPlanService.CaptureAsync — so it executes fine
+        // on a sanitized project and must not get this warning.
+        string sanitizedNote = sqlTextPolicy is not null
+            && !sqlTextPolicy.Equals("raw", StringComparison.OrdinalIgnoreCase)
+            && script.Kind is ReplayKind.RawBatch or ReplayKind.SpExecuteSql
             ? " — WARNING: statement text is sanitized and will not execute"
             : "";
         return res with { Description = $"{script.Kind}: {res.Description}{note}{redactedNote}{sanitizedNote}" };

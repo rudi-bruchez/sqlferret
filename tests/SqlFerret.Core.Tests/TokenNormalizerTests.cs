@@ -14,7 +14,7 @@ public class TokenNormalizerTests
     [InlineData("SELECT * FROM t WHERE s = 'it''s'", "select * from t where s = ?")]
     public void Normalizes_literals_and_shape(string raw, string expected)
     {
-        var (normalized, failed) = TokenNormalizer.Normalize(raw);
+        var (normalized, failed, _) = TokenNormalizer.Normalize(raw);
         Assert.False(failed);
         Assert.Equal(expected, normalized);
     }
@@ -22,8 +22,27 @@ public class TokenNormalizerTests
     [Fact]
     public void Unparseable_input_falls_back_and_flags()
     {
-        var (normalized, failed) = TokenNormalizer.Normalize("@@@ not sql ((");
+        var (normalized, failed, _) = TokenNormalizer.Normalize("@@@ not sql ((");
         Assert.True(failed);
         Assert.False(string.IsNullOrWhiteSpace(normalized));
+    }
+
+    [Theory]
+    [InlineData(
+        "SELECT Name FROM dbo.Customers WHERE Email = \"alice@example.com\"",
+        "select Name from dbo.Customers where Email = \"alice@example.com\"",
+        "select Name from dbo.Customers where Email = ?")]
+    [InlineData(
+        "SELECT a FROM [Order Details] WHERE b = 'x'",
+        "select a from [Order Details] where b = ?",
+        "select a from [Order Details] where b = ?")]
+    public void QiCollapsedSql_collapses_double_quoted_tokens_but_normalizedSql_does_not(
+        string raw, string expectedNormalized, string expectedQiCollapsed)
+    {
+        var (normalized, failed, qiCollapsed) = TokenNormalizer.Normalize(raw);
+
+        Assert.False(failed);
+        Assert.Equal(expectedNormalized, normalized);
+        Assert.Equal(expectedQiCollapsed, qiCollapsed);
     }
 }

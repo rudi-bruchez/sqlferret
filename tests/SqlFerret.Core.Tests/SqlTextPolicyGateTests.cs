@@ -93,4 +93,28 @@ public class SqlTextPolicyGateTests
         Assert.DoesNotContain("not executable", ex.Message);
         Assert.IsNotType<InvalidOperationException>(ex);
     }
+
+    // FIX 2 — ExecProc (an RPC with an ObjectName and parameters) is built by ReplayBuilder from
+    // ev.Parameters, never from the stored SqlTextRaw, so it executes fine on a sanitized project.
+    // The gate must not refuse it, and — same as the raw/unknown case above — must reach the
+    // (failing, unusable) connection attempt rather than our refusal.
+    [Fact]
+    public async Task CaptureAsync_does_not_refuse_an_exec_proc_on_a_sanitized_project()
+    {
+        var ev = new ExecutionEvent
+        {
+            EventName = "rpc_completed",
+            EventClass = EventClass.RpcCall,
+            SqlTextRaw = "exec dbo.GetOrder @OrderId = ?",
+            XeFileName = "s_0.xel",
+            SqlTextPolicy = "literals",
+            ObjectName = "dbo.GetOrder",
+            Parameters = [new RawParameter(0, "@OrderId", ParameterSourceKind.RpcParameter, "int", "123", 1.0)],
+        };
+        var svc = new EstimatedPlanService("Server=(invalid);Connect Timeout=1", Path.GetTempPath());
+
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() => svc.CaptureAsync(ev, "plan1"));
+        Assert.DoesNotContain("not executable", ex.Message);
+        Assert.IsNotType<InvalidOperationException>(ex);
+    }
 }

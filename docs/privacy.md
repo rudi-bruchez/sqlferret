@@ -58,14 +58,19 @@ needs its own control. That control is `--sanitize-sql-text`, covered next.
    N'select Name from dbo.Customers where Email = @e',?,@e=?`. The inner query text is the *only*
    thing kept from the call — every other argument, including the parameter-declaration literal
    (`N'@e nvarchar(50)'`), collapses to `?` like any other literal. Parameter names and types are
-   not lost: they're already recorded per execution in `execution_parameters` (`name`,
-   `sql_type_guess`) under every redaction policy, so a project doesn't lose that information —
-   it's just not duplicated inside `sql_text_raw`, where an earlier revision kept it verbatim and
-   several rounds of review each found a new way to hide a value inside it. When the statement
-   argument isn't a literal (passed via a variable, e.g. `exec sp_executesql @stmt, ...`) or the
-   inner statement fails to parse, the unwrap is skipped and the whole call falls back to the
-   fully collapsed form, same as any other unparseable statement — a loss of readability, not of
-   privacy: no value survives either way.
+   not lost to `literals`: they're already recorded per execution in `execution_parameters`
+   (`name`, `sql_type_guess`) — but only when parameter rows are persisted at all, which is every
+   redaction policy *except* `off` (`off` stores no `execution_parameters` rows for any execution,
+   full stop). Regardless, that overlap is not why the pass-through was removed: it's removed
+   because it repeatedly leaked a value — several rounds of review each found a new way to hide
+   one inside it — which is reason enough on its own. When the statement argument isn't a literal
+   (passed via a variable, e.g. `exec sp_executesql @stmt, ...`) or the inner statement fails to
+   parse, the unwrap is skipped and the whole call falls back to the fully collapsed form, same as
+   any other unparseable statement — a loss of readability, not of privacy: no value survives
+   either way. A double-quoted token (`SET QUOTED_IDENTIFIER OFF`) is genuinely ambiguous — the
+   capture never records the session's setting — so `literals` fails safe and collapses it to `?`
+   too, in both `sql_text_raw` and `normalized_sql`; a legitimately double-quoted identifier is
+   lost along with it. Bracketed identifiers (`[Order Details]`) are unaffected.
 3. **A project is only safe to share if every run in it was sanitized.**
    `normalized_queries` is project-wide, and its `ON CONFLICT` upsert updates only
    `last_seen_at` — a query shape first seen during a `raw` import keeps that raw text forever,
