@@ -71,8 +71,11 @@ switch (args[0])
                 return 1;
             }
             var sanitizeStr = Arg("--sanitize-sql-text", project.Config.SqlTextPolicy);
-            if (!Enum.TryParse<SqlTextSanitization>(sanitizeStr, ignoreCase: true, out var sqlText)
-                || !Enum.IsDefined(sqlText))
+            // Validate the INPUT STRING against the defined enum names, not the parsed value:
+            // Enum.TryParse("0", ...) succeeds and yields Raw, which IS a defined value, so
+            // checking Enum.IsDefined on the parsed result alone lets numeric typos through.
+            if (!Enum.GetNames<SqlTextSanitization>().Any(n => n.Equals(sanitizeStr, StringComparison.OrdinalIgnoreCase))
+                || !Enum.TryParse<SqlTextSanitization>(sanitizeStr, ignoreCase: true, out var sqlText))
             {
                 Console.Error.WriteLine($"import: invalid --sanitize-sql-text value '{sanitizeStr}'. Valid: raw, literals");
                 return 1;

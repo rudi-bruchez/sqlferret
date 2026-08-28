@@ -17,9 +17,13 @@ public sealed class ImportPresenter(DuckDbProject db, AuditProject project)
             // The configured level applies in the TUI too: leaving it on Raw here would make the
             // host silently ignore a project's privacy setting. An invalid value must fail loudly,
             // the same as the CLI does, rather than silently falling back to the permissive Raw.
-            if (!Enum.TryParse<SqlTextSanitization>(
-                    project.Config.SqlTextPolicy, ignoreCase: true, out var sqlText)
-                || !Enum.IsDefined(sqlText))
+            // Validate the INPUT STRING against the defined enum names, not the parsed value:
+            // Enum.TryParse("0", ...) succeeds and yields Raw, which IS a defined value, so
+            // checking Enum.IsDefined on the parsed result alone lets numeric typos through.
+            if (!Enum.GetNames<SqlTextSanitization>().Any(n =>
+                    n.Equals(project.Config.SqlTextPolicy, StringComparison.OrdinalIgnoreCase))
+                || !Enum.TryParse<SqlTextSanitization>(
+                    project.Config.SqlTextPolicy, ignoreCase: true, out var sqlText))
             {
                 throw new ArgumentException(
                     $"import: invalid ingest.sqlTextSanitization value '{project.Config.SqlTextPolicy}'. Valid: raw, literals");

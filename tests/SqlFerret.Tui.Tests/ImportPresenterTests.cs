@@ -32,6 +32,8 @@ public class ImportPresenterTests
     [Theory]
     [InlineData("literal")]   // misspelled name
     [InlineData("7")]         // Enum.TryParse accepts numeric strings for undefined values too
+    [InlineData("0")]         // in-range numeric: TryParse("0") succeeds and yields Raw, a defined value
+    [InlineData("1")]         // in-range numeric: TryParse("1") succeeds and yields Literals, a defined value
     public async Task RunAsync_throws_on_an_invalid_configured_sql_text_policy(string configuredValue)
     {
         // No sample/ needed: the bad config value is read and validated before the presenter
