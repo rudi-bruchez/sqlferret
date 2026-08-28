@@ -112,9 +112,10 @@ switch (args[0])
                 Console.WriteLine($"plans: {result.PlanProfiles} profiles, {digestRows.Count} distinct -> {planDir}");
                 if (sqlText != SqlTextSanitization.Raw)
                     Console.Error.WriteLine(
-                        $"warning: --sanitize-sql-text {sanitizeStr} does not sanitize plan artifacts; " +
-                        $".sqlplan and .digest.json files under {planDir} still carry unsanitized statement " +
-                        $"text. Use obfuscate-plan before sharing them.");
+                        $"warning: statement-text sanitization policy '{sanitizeStr}' does not sanitize plan " +
+                        $"artifacts; plan_profiles.statement_text in sqlferret.duckdb, and .sqlplan and " +
+                        $".digest.json files under {planDir}, still carry unsanitized statement text. Use " +
+                        $"obfuscate-plan before sharing them.");
             }
 
             Console.WriteLine(

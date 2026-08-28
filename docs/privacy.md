@@ -18,6 +18,7 @@ situation.
 | `blocking_reports.raw_xml` | The full blocked-process report, including both input buffers | Retained only when redaction is `off` |
 | `blocking_processes.inputbuf` | The input buffer text | Same gate |
 | `deadlock_reports.graph_xml` | The deadlock graph | Same gate, otherwise stored as `<redacted/>` |
+| `plan_profiles.statement_text` | Statement text inside `sqlferret.duckdb` itself | Not sanitized by `--sanitize-sql-text` |
 | `plans/**/*.sqlplan` | Showplan XML: schema, table, column and index names, and sometimes literal predicate values | `obfuscate-plan`, after the fact |
 | `plans/**/*.digest.json` | Plan metrics plus a truncated `StatementText` | Not redacted |
 | `obfuscation_map` table and `*.map.json` | The reverse mapping from tokens to real identifiers | Nothing. This *is* the key. |
@@ -63,11 +64,16 @@ needs its own control. That control is `--sanitize-sql-text`, covered next.
    redaction policy *except* `off` (`off` stores no `execution_parameters` rows for any execution,
    full stop). Regardless, that overlap is not why the pass-through was removed: it's removed
    because it repeatedly leaked a value — several rounds of review each found a new way to hide
-   one inside it — which is reason enough on its own. When the statement argument isn't a literal
-   (passed via a variable, e.g. `exec sp_executesql @stmt, ...`) or the inner statement fails to
-   parse, the unwrap is skipped and the whole call falls back to the fully collapsed form, same as
-   any other unparseable statement — a loss of readability, not of privacy: no value survives
-   either way. A double-quoted token (`SET QUOTED_IDENTIFIER OFF`) is genuinely ambiguous — the
+   one inside it — which is reason enough on its own. The unwrap only recognizes the positional
+   literal form, `exec sp_executesql N'...', ...` — the statement argument immediately following
+   the procedure name, as a string literal. When the statement argument isn't a literal (passed
+   via a variable, e.g. `exec sp_executesql @stmt, ...`), passed by name (`exec sp_executesql
+   @stmt = N'...', @params = N'...'`), invoked through a bracketed identifier (`[sys].
+   [sp_executesql]`), or the inner statement fails to parse, the unwrap is skipped and the whole
+   call falls back to the fully collapsed form, same as any other unparseable statement — a loss
+   of readability, not of privacy: no value survives either way, but a user seeing `exec
+   sp_executesql ?,?` where they expected readable SQL should know it fell back rather than
+   failed. A double-quoted token (`SET QUOTED_IDENTIFIER OFF`) is genuinely ambiguous — the
    capture never records the session's setting — so `literals` fails safe and collapses it to `?`
    too, in both `sql_text_raw` and `normalized_sql`; a legitimately double-quoted identifier is
    lost along with it. Bracketed identifiers (`[Order Details]`) are unaffected.
@@ -85,12 +91,15 @@ needs its own control. That control is `--sanitize-sql-text`, covered next.
    that hash's `normalized_sql` is pinned to `"(unparseable sql text; redacted)"` for the life of
    the project. A later `raw` import of the same shape cannot repair it — `last_seen_at` moves,
    the placeholder text does not.
-4. **A sanitized project can still carry real statement text elsewhere — three places, largest
+4. **A sanitized project can still carry real statement text elsewhere — four places, largest
    first.**
    - `qds_query_text.query_sql_text`. A project that ran `query-store-import` stores Query Store
      statement text verbatim and untruncated, in the same `sqlferret.duckdb`, regardless of
-     `--sanitize-sql-text`. This is the largest of the three, and the one most likely to surprise
+     `--sanitize-sql-text`. This is the largest of the four, and the one most likely to surprise
      you.
+   - `plan_profiles.statement_text`, also inside `sqlferret.duckdb` itself, this option does not
+     touch — the most surprising of the four, since it sits in the database the user thinks is
+     sanitized.
    - `plans/**/*.digest.json` — a truncated `StatementText` this option does not touch.
    - `.sqlplan` files — statement text until `obfuscate-plan` rewrites them.
 5. **`--redaction off` and `--sanitize-sql-text literals` combine into a misleading project.**

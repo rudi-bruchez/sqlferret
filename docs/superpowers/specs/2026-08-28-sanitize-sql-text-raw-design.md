@@ -304,11 +304,19 @@ effect.
 
 ## 8. Performance
 
-Nothing measurable. `Literals` reuses a `NormalizedQuery` that was already computed for every
-mapped event; the rewrite is a record `with`-expression and a field read. No new ScriptDom pass at
-any level.
+Superseded by the `sp_executesql` unwrapper (`SpExecuteSqlUnwrapper`), landed after this section
+was written: `Literals` is no longer free. Preserving identifiers inside an `sp_executesql` inner
+statement requires two additional ScriptDom passes per event — a `Parse()` to detect a malformed
+call and a `GetTokenStream()` to rewrite it — on top of the parses `TokenNormalizer` already pays
+for every mapped event.
 
-The ~3 parses per event under `docs/development.md#known-gaps` are unchanged by this work.
+A fast-path guard keeps this off the common case: `SpExecuteSqlUnwrapper.TryUnwrap` does a plain
+substring check for `"sp_executesql"` first and returns immediately when it is absent, so the
+extra parses are paid only by events that actually invoke `sp_executesql` — the dominant shape
+for parameterized applications, but still a minority of a typical workload.
+
+The ~3 parses per event under `docs/development.md#known-gaps` are unchanged by this work; the
+`sp_executesql` unwrap adds up to 2 more, gated by the substring check above.
 
 ## 9. Testing
 

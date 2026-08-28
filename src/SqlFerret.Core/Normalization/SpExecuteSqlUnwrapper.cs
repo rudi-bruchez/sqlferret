@@ -130,6 +130,9 @@ internal static class SpExecuteSqlUnwrapper
         }
         catch
         {
+            // Deliberate fallback: any parser failure here must degrade to the caller's safe,
+            // fully-collapsed form (TokenNormalizer's own output), never propagate. Losing the
+            // unwrap loses readability, not privacy — no value survives either way.
             return null;
         }
     }

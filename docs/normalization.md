@@ -85,6 +85,14 @@ every row in `normalized_queries`.
 it: at the `literals` level the stored statement text *is* the normalizer's output, so a rule
 change in one should prompt a look at the other. See [privacy.md](privacy.md).
 
+At `literals`, a double-quoted token (`"alice@example.com"`) is always collapsed to `?`, along
+with ordinary literals. The `.xel` capture does not record the session's `QUOTED_IDENTIFIER`
+setting, so a double-quoted token is ambiguous — a string value under `QUOTED_IDENTIFIER OFF`, an
+identifier under `ON` — and normalization fails safe rather than risk a leak. The cost is that a
+legitimately double-quoted identifier (`"Order Details"`) is lost to `?` too. Bracketed
+identifiers (`[Order Details]`) are unambiguous and unaffected — they are also the SQL Server
+convention. See [privacy.md](privacy.md).
+
 This exists so that a future change to the normalization rules is detectable rather than
 silently corrupting comparisons. If you compare two projects, or two runs inside one project,
 check that the versions match. Fingerprints from different normalizer versions are not

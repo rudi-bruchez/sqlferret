@@ -63,8 +63,11 @@ attribution, plan findings and ingestion-quality checks. Read it before inventin
 
 ## Before sharing anything outward
 
-`executions.sql_text_raw` is **never redacted**, and `.sqlplan` files carry your schema and
-sometimes literal values. Before a plan leaves the project, run
+`executions.sql_text_raw` is stored raw by default — never redacted unless the import used
+`--sanitize-sql-text literals` (`ingest.sqlTextSanitization`), which collapses literals but
+leaves identifiers. Check `ingestion_runs.sql_text_policy` before assuming either. `.sqlplan`
+files carry your schema and sometimes literal values regardless. Before a plan leaves the
+project, run
 `sqlferret obfuscate-plan --project <dir> --plan-id <id>`, and keep the `*.map.json` /
 `obfuscation_map` table behind — that map *is* the de-anonymization key.
 

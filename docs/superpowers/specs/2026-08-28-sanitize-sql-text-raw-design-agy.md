@@ -1,5 +1,10 @@
 # Design & Architecture Review — `sanitizeSqlTextRaw`: sanitizing `executions.sql_text_raw` at ingest
 
+> **Superseded.** This reviews revision 1 of the design (an `Obfuscated` level, a different
+> config key), which was abandoned. The implemented design is revision 2:
+> `docs/superpowers/specs/2026-08-28-sanitize-sql-text-raw-design.md`. Kept for history only —
+> do not implement against this document.
+
 **Date:** 2026-08-28  
 **Status:** Approved Design with Technical Architecture Review (Ready for Implementation)  
 **Target Branch:** `feat/sanitize-sql-text-raw`  

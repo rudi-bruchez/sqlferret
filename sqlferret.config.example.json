@@ -6,9 +6,10 @@
     "cpuUnit": "ms"
   },
 
-  "//ingest": "redactionPolicy: off | hash | masked | full. See docs/privacy.md before changing.",
+  "//ingest": "redactionPolicy: off | hash | masked | full. sqlTextSanitization: raw | literals. See docs/privacy.md before changing.",
   "ingest": {
-    "redactionPolicy": "masked"
+    "redactionPolicy": "masked",
+    "sqlTextSanitization": "raw"
   },
 
   "//server": "${VAR} is interpolated from the environment; put the secret half in .env.",
