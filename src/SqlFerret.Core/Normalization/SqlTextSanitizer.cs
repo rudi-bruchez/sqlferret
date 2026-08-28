@@ -45,6 +45,13 @@ public static class SqlTextSanitizer
     {
         if (level == SqlTextSanitization.Raw) return (raw, nq, false);
         if (nq.TokenizeFailed) return (Placeholder, nq with { NormalizedSql = Placeholder }, true);
+
+        // sp_executesql's inner statement is itself a string literal: TokenNormalizer.Normalize
+        // collapses it along with the trailing parameter values, losing every table/column name.
+        // Unwrap it when possible; nq.NormalizedSql (fully collapsed) is always a safe fallback.
+        var unwrapped = SpExecuteSqlUnwrapper.TryUnwrap(raw);
+        if (unwrapped is not null) return (unwrapped, nq, false);
+
         return (nq.NormalizedSql, nq, false);
     }
 }

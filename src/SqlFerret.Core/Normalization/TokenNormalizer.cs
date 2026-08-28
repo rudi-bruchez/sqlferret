@@ -6,7 +6,8 @@ namespace SqlFerret.Core.Normalization;
 
 public static class TokenNormalizer
 {
-    private static readonly HashSet<TSqlTokenType> LiteralTokens =
+    // internal: reused by SpExecuteSqlUnwrapper's token walk so the two stay in lockstep.
+    internal static readonly HashSet<TSqlTokenType> LiteralTokens =
     [
         TSqlTokenType.Integer, TSqlTokenType.Numeric, TSqlTokenType.Money,
         TSqlTokenType.Real, TSqlTokenType.HexLiteral,
@@ -16,7 +17,7 @@ public static class TokenNormalizer
     // Explicit allow-list of keyword token types exercised by the golden tests.
     // This avoids the fiddly heuristic approach. Identifiers (dbo.Users, [my table])
     // are NOT in this set and keep their original casing.
-    private static readonly HashSet<TSqlTokenType> KeywordTokens =
+    internal static readonly HashSet<TSqlTokenType> KeywordTokens =
     [
         TSqlTokenType.Select,
         TSqlTokenType.From,

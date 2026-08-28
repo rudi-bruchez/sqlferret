@@ -13,6 +13,15 @@ Revision 1 also failed to protect `normalized_queries.normalized_sql`, which lea
 unparseable input; that is fixed here (§4.2). Reviews live beside this file as
 `…-design-claude.md` and `…-design-agy.md`.
 
+Revision 2 shipped with its own defect (found empirically, not by review, after merge to the
+feature branch): `Literals` collapsed `sp_executesql` RPCs' inner statement — itself a string
+literal in `EventMapper.ExtractSql`'s `statement` field — along with the parameter values,
+because `TokenNormalizer` has no notion that one particular literal is SQL text. Every table and
+column name in the dominant RPC shape for parameterized applications was lost, contradicting
+§4.3's "removes values, not structure" as written. Fixed by unwrapping and re-normalizing that one
+literal in place (`SpExecuteSqlUnwrapper`), with a fallback to the fully collapsed form whenever
+the unwrap can't be done safely; see §4.3.
+
 ---
 
 ## 1. Problem
@@ -181,8 +190,13 @@ every run in it was sanitized.** `ingestion_runs.sql_text_policy` (§5) is what 
 checkable.
 
 **`Literals` does not hide your schema.** Table, column and procedure names remain in both
-`sql_text_raw` and `normalized_sql`. The level removes values, not structure. Anyone deciding
-whether to share a project needs that stated plainly.
+`sql_text_raw` and `normalized_sql`, including inside an `sp_executesql` RPC: the inner statement
+argument is unwrapped and normalized in place (`SpExecuteSqlUnwrapper`), so its identifiers survive
+the same way a plain batch's do. The level removes values, not structure. Anyone deciding whether
+to share a project needs that stated plainly. The unwrap has one residual: when the statement
+argument is not a string literal (passed via a variable) or the inner statement fails to
+tokenize, the whole call falls back to the fully collapsed form and its identifiers are lost too
+— a loss of readability, not of privacy, since no value survives either path.
 
 ## 5. Provenance, versioning and schema
 

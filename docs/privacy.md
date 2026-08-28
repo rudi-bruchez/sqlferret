@@ -52,6 +52,15 @@ needs its own control. That control is `--sanitize-sql-text`, covered next.
    different columns and neither implies the other.
 2. **`literals` removes values, not schema.** Table, column and procedure names remain in both
    `sql_text_raw` and `normalized_sql`. A sanitized project still tells a reader your data model.
+   This includes `sp_executesql` RPCs: the inner statement passed as `N'...'` is unwrapped and
+   normalized in place, so its identifiers survive too — `exec sp_executesql N'SELECT Name FROM
+   dbo.Customers WHERE Email = @e',N'@e nvarchar(50)',@e='...'` becomes `exec sp_executesql
+   N'select Name from dbo.Customers where Email = @e',N'@e nvarchar(50)',@e=?`. The parameter
+   declaration argument (`N'@e nvarchar(50)'`) is kept verbatim — it carries only parameter names
+   and types, never a value. When the statement argument isn't a literal (passed via a variable,
+   e.g. `exec sp_executesql @stmt, ...`) or the inner statement fails to parse, the unwrap is
+   skipped and the whole call falls back to the fully collapsed form, same as any other
+   unparseable statement — a loss of readability, not of privacy: no value survives either way.
 3. **A project is only safe to share if every run in it was sanitized.**
    `normalized_queries` is project-wide, and its `ON CONFLICT` upsert updates only
    `last_seen_at` — a query shape first seen during a `raw` import keeps that raw text forever,

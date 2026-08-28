@@ -17,6 +17,13 @@ public class SqlTextSanitizationIngestionTests
             new Dictionary<string, object?> { ["database_name"] = "Sales", ["session_id"] = 1 }),
          "s_0.xel", offset);
 
+    // EventMapper.ExtractSql reads the "statement" field for rpc_completed, not "batch_text".
+    private static (IXeEventData, string, long) Rpc(string sql, long offset = 0) =>
+        (new FakeEvent("rpc_completed", new DateTime(2026, 1, 1),
+            new Dictionary<string, object?> { ["statement"] = sql, ["duration"] = 1000L },
+            new Dictionary<string, object?> { ["database_name"] = "Sales", ["session_id"] = 1 }),
+         "s_0.xel", offset);
+
     private static string Scalar(DuckDbProject db, string sql)
     {
         using var c = db.Connection.CreateCommand();
@@ -114,6 +121,26 @@ public class SqlTextSanitizationIngestionTests
             if (File.Exists(rawPath)) File.Delete(rawPath);
             if (File.Exists(litPath)) File.Delete(litPath);
         }
+    }
+
+    [Fact]
+    public void Literals_unwraps_sp_executesql_rpc_and_keeps_its_identifiers()
+    {
+        const string sql = $"exec sp_executesql N'SELECT Name FROM dbo.Customers WHERE Email = @e',N'@e nvarchar(50)',@e='{Pii}'";
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            new IngestionService(db, new IngestionOptions(RedactionMode.Masked, [],
+                    SqlText: SqlTextSanitization.Literals))
+                .Ingest("logs/", [Rpc(sql)]);
+
+            var stored = Scalar(db, "SELECT sql_text_raw FROM executions");
+            Assert.DoesNotContain(Pii, stored);
+            Assert.Contains("dbo.Customers", stored);
+            Assert.Contains("Name", stored);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
     }
 
     [Fact]
