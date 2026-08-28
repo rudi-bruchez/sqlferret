@@ -152,15 +152,17 @@ public class WorkloadQueries(DuckDBConnection conn)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-          SELECT event_name, event_class, object_name, database_name, login_name,
-                 client_hostname, client_app_name, session_id, captured_at, duration_us,
-                 sql_text_raw, xe_file_name, file_offset
-          FROM executions WHERE execution_id = $id
+          SELECT e.event_name, e.event_class, e.object_name, e.database_name, e.login_name,
+                 e.client_hostname, e.client_app_name, e.session_id, e.captured_at, e.duration_us,
+                 e.sql_text_raw, e.xe_file_name, e.file_offset, r.sql_text_policy
+          FROM executions e
+          LEFT JOIN ingestion_runs r ON r.run_id = e.run_id
+          WHERE e.execution_id = $id
           """;
         Add(cmd, "$id", executionId);
 
         string eventName, eventClassText, sqlRaw, xeFile;
-        string? objectName, db, login, host, app;
+        string? objectName, db, login, host, app, sqlTextPolicy;
         int? sessionId; long? durationUs; long fileOffset; DateTime capturedAt;
         using (var r = cmd.ExecuteReader())
         {
@@ -178,6 +180,7 @@ public class WorkloadQueries(DuckDBConnection conn)
             sqlRaw = r.GetString(10);
             xeFile = r.GetString(11);
             fileOffset = r.GetInt64(12);
+            sqlTextPolicy = r.IsDBNull(13) ? null : r.GetString(13);
         }
 
         var parameters = new List<RawParameter>();
@@ -214,6 +217,7 @@ public class WorkloadQueries(DuckDBConnection conn)
             SessionId = sessionId,
             DurationUs = durationUs,
             SqlTextRaw = sqlRaw,
+            SqlTextPolicy = sqlTextPolicy,
             Parameters = parameters,
             XeFileName = xeFile,
             FileOffset = fileOffset,

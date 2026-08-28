@@ -41,6 +41,17 @@ public class EstimatedPlanService(string connectionString, string plansFolder)
     /// </summary>
     public async Task<string> CaptureAsync(ExecutionEvent ev, string planId, CancellationToken ct = default)
     {
+        // A sanitized run stores literal-free text: "… WHERE Email = ?" is not valid T-SQL.
+        // Refuse here rather than sending it to the server and surfacing a syntax error.
+        if (ev.SqlTextPolicy is not null
+            && !ev.SqlTextPolicy.Equals("raw", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"estimated plan: this execution was imported with --sanitize-sql-text {ev.SqlTextPolicy}; " +
+                "the stored statement text is not executable. Re-import with --sanitize-sql-text raw " +
+                "to capture estimated plans.");
+        }
+
         ReplayScript script = ReplayBuilder.Build(ev);
 
         await using var conn = new SqlConnection(connectionString);
