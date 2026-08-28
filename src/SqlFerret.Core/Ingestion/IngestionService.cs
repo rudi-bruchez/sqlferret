@@ -1,0 +1,149 @@
+// src/SqlFerret.Core/Ingestion/IngestionService.cs
+using SqlFerret.Core.Filtering;
+using SqlFerret.Core.Model;
+using SqlFerret.Core.Normalization;
+using SqlFerret.Core.Parameters;
+using SqlFerret.Core.Storage;
+
+namespace SqlFerret.Core.Ingestion;
+
+public class IngestionService(DuckDbProject project, IngestionOptions options)
+{
+    private readonly RedactionPolicy _redaction = new(options.Redaction);
+    private readonly Func<ExecutionEvent, bool> _ingestKeep = FilterCompiler.ToIngestPredicate(options.Filters);
+
+    public IngestionResult Ingest(string sourcePath,
+        IEnumerable<(IXeEventData ev, string fileName, long offset)> events,
+        int filesCount = 1, long bytesTotal = 0,
+        IProgress<IngestionProgress>? progress = null)
+    {
+        long runId = project.BeginRun(sourcePath, filesCount, bytesTotal,
+            redactionPolicy: options.Redaction.ToString().ToLowerInvariant());
+
+        long read = 0, mapped = 0, unmapped = 0, cleaned = 0, tokenizeFailures = 0;
+        long blocking = 0, deadlocks = 0, blockingParseFailures = 0;
+        long planProfiles = 0, planParseFailures = 0, planWriteFailures = 0;
+        var planWriter = new SqlFerret.Core.Plans.PlanArtifactWriter(options.PlanProfileDir);
+        var planBuffer = new List<PreparedPlanProfile>(options.BatchSize);
+        var planThresholds = new SqlFerret.Core.Plans.PlanFindingThresholds();
+        string currentFile = "";
+        var buffer = new List<PreparedRow>(options.BatchSize);
+
+        foreach (var (ev, fileName, offset) in events)
+        {
+            currentFile = fileName;
+            read++;
+
+            var bkind = EventMapper.ClassifyBlocking(ev.Name);
+            if (bkind != BlockingEventKind.None)
+            {
+                if (bkind == BlockingEventKind.Blocked)
+                {
+                    var xml = EventMapper.ExtractBlockingXml(ev);
+                    var rep = xml is null ? null : BlockingReportParser.Parse(xml, ev.Timestamp);
+                    if (rep is null) { blockingParseFailures++; continue; }
+                    // Mirror deadlock gating: keep the raw XML only when nothing is redacted.
+                    var rawXml = options.Redaction == RedactionMode.Off ? xml : null;
+                    project.InsertBlockingBatch(runId, [Prepare(rep, rawXml)]);
+                    blocking++;
+                }
+                else
+                {
+                    var xml = EventMapper.ExtractDeadlockXml(ev);
+                    var dl = xml is null ? null : DeadlockReportParser.Parse(xml, ev.Timestamp);
+                    if (dl is null) { blockingParseFailures++; continue; }
+                    project.InsertDeadlockBatch(runId, [dl with { GraphXmlRedacted = options.Redaction == RedactionMode.Off ? dl.GraphXmlRedacted : "<redacted/>" }]);
+                    deadlocks++;
+                }
+                continue;
+            }
+
+            if (EventMapper.IsPlanProfile(ev.Name))
+            {
+                var planXml = EventMapper.ExtractShowplanXml(ev);
+                var profile = planXml is null
+                    ? null
+                    : SqlFerret.Core.Plans.PlanProfileParser.TryParse(planXml, ev, planThresholds);
+                if (profile is null) { planParseFailures++; continue; }
+
+                var outcome = planWriter.Write(profile, planXml!);
+                if (outcome == SqlFerret.Core.Plans.PlanWriteOutcome.Failed) planWriteFailures++;
+                planBuffer.Add(new PreparedPlanProfile(profile, outcome));
+                planProfiles++;
+
+                if (planBuffer.Count >= options.BatchSize)
+                {
+                    project.InsertPlanProfileBatch(runId, planBuffer);
+                    planBuffer.Clear();
+                }
+                continue;
+            }
+
+            var e = EventMapper.Map(ev, fileName, offset);
+            if (e.EventClass == EventClass.Unknown || string.IsNullOrEmpty(e.SqlTextRaw)) { unmapped++; continue; }
+            if (!_ingestKeep(e)) { cleaned++; continue; }
+
+            var nq = QueryNormalizer.Normalize(e.SqlTextRaw);
+            if (nq.TokenizeFailed) tokenizeFailures++;
+
+            buffer.Add(new PreparedRow(e, nq, RedactParams(e)));
+            mapped++;
+
+            if (buffer.Count >= options.BatchSize)
+            {
+                project.InsertBatch(runId, buffer); buffer.Clear();
+                progress?.Report(new IngestionProgress(read, mapped, unmapped, cleaned, tokenizeFailures, currentFile));
+            }
+        }
+        if (buffer.Count > 0) project.InsertBatch(runId, buffer);
+        if (planBuffer.Count > 0) project.InsertPlanProfileBatch(runId, planBuffer);
+
+        progress?.Report(new IngestionProgress(read, mapped, unmapped, cleaned, tokenizeFailures, currentFile));
+        project.FinishRun(runId, read, mapped, unmapped, cleaned, tokenizeFailures,
+            blocking, deadlocks, blockingParseFailures, planProfiles, planParseFailures, planWriteFailures);
+        return new IngestionResult(runId, read, mapped, unmapped, cleaned, tokenizeFailures,
+            blocking, deadlocks, blockingParseFailures, planProfiles, planParseFailures, planWriteFailures);
+    }
+
+    private PreparedBlockingReport Prepare(BlockingReport rep, string? rawXml)
+    {
+        return new PreparedBlockingReport(rep, PrepareProc(rep.Blocked), PrepareProc(rep.Blocking), rawXml);
+    }
+
+    private const string FallbackRedactedPlaceholder = "(unparseable inputbuf; redacted)";
+
+    private PreparedBlockingProcess PrepareProc(BlockingProcess p)
+    {
+        if (string.IsNullOrEmpty(p.InputBufRaw))
+            return new PreparedBlockingProcess(p, null, null);
+        var nq = QueryNormalizer.Normalize(p.InputBufRaw);
+        if (options.Redaction == RedactionMode.Off)
+        {
+            // Off: store raw, no masking
+            return new PreparedBlockingProcess(p with { InputBufFingerprint = nq.NormalizedHash }, nq, p.InputBufRaw);
+        }
+        if (nq.TokenizeFailed)
+        {
+            // Tokenize failed under non-Off redaction: FallbackCollapse left literals unmasked.
+            // Replace both the stored inputbuf and the NormalizedSql with a safe placeholder.
+            // NormalizedHash (a non-reversible hash) is safe to persist — keep it for fingerprint joins.
+            var safeNq = nq with { NormalizedSql = FallbackRedactedPlaceholder };
+            return new PreparedBlockingProcess(p with { InputBufFingerprint = nq.NormalizedHash }, safeNq, FallbackRedactedPlaceholder);
+        }
+        // Successful tokenization: ScriptDom already stripped literals from nq.NormalizedSql
+        return new PreparedBlockingProcess(p with { InputBufFingerprint = nq.NormalizedHash }, nq, nq.NormalizedSql);
+    }
+
+    private List<PreparedParameter> RedactParams(ExecutionEvent e)
+    {
+        var list = new List<PreparedParameter>();
+        foreach (var p in e.Parameters)
+        {
+            if (options.Redaction == RedactionMode.Off) continue; // off → no parameter rows
+            var (stored, redacted) = _redaction.Apply(p.Name, p.ValueText);
+            list.Add(new PreparedParameter(p.Ordinal, p.Name, p.SourceKind.ToString().ToLowerInvariant(),
+                      p.SqlTypeGuess, stored, redacted, false, p.ParseConfidence));
+        }
+        return list;
+    }
+}
