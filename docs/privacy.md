@@ -13,7 +13,7 @@ situation.
 | Artifact | Contains | Controlled by |
 |---|---|---|
 | `executions.sql_text_raw` | The statement as captured, including any inlined literals | `--sanitize-sql-text` (default `raw`: always stored) |
-| `normalized_queries.normalized_sql` | The statement shape; literals `?`. Real literals on tokenize failure unless sanitized | Same flag |
+| `normalized_queries.normalized_sql` | The statement shape; literals `?`. Real literals on tokenize failure unless sanitized | Executions path: `--sanitize-sql-text`. Blocking path: `--redaction` (see point 5 below) |
 | `execution_parameters.value_text` | Extracted RPC / `sp_executesql` parameter values | The redaction policy |
 | `blocking_reports.raw_xml` | The full blocked-process report, including both input buffers | Retained only when redaction is `off` |
 | `blocking_processes.inputbuf` | The input buffer text | Same gate |
@@ -75,6 +75,17 @@ needs its own control. That control is `--sanitize-sql-text`, covered next.
    `blocking_reports.raw_xml` still hold real statement text and literals. See the sharp edge in
    `off` below — it applies here too.
 
+   This also reaches `normalized_queries.normalized_sql`, and it is easy to miss because that
+   table is the one this feature was built to protect. `normalized_queries` is written from two
+   places: the executions path (governed by `--sanitize-sql-text`) and the blocking path, via
+   `IngestionService.PrepareProc`, which is governed by `--redaction` and never consults
+   `--sanitize-sql-text`. Under `off`, `PrepareProc` passes the blocked-process input buffer's
+   normalized text through untouched, and if that buffer failed to tokenize — common, since SQL
+   Server truncates input buffers — real literals from it land in `normalized_sql`. So
+   `--redaction off --sanitize-sql-text literals`, a supported combination, can leave every row of
+   `SELECT run_id, sql_text_policy FROM ingestion_runs` reading `literals` while
+   `normalized_queries` still carries real literal values from a blocked process.
+
 ---
 
 ## Redaction policies
@@ -115,7 +126,9 @@ setting for parameters.
 But the same value simultaneously **enables** retention of blocked-process XML, deadlock graphs
 and input buffers, because those are only kept when nothing is being redacted. So:
 
-- `--redaction off` → no parameter values, **full blocking and deadlock XML on disk**
+- `--redaction off` → no parameter values, **full blocking and deadlock XML on disk**, and —
+  if a blocked-process input buffer failed to tokenize — **real literals in
+  `normalized_queries.normalized_sql`**, regardless of `--sanitize-sql-text`
 - `--redaction masked` → masked parameter values, **no blocking or deadlock XML at all**
 
 Which means `export-events` only ever has something to export from runs imported with `off`. If

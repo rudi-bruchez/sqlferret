@@ -29,6 +29,32 @@ public class ImportPresenterTests
         finally { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }
     }
 
+    [Fact]
+    public async Task RunAsync_throws_on_an_invalid_configured_sql_text_policy()
+    {
+        // No sample/ needed: the bad config value is read and validated before the presenter
+        // ever touches the (nonexistent) import path, so this does not require SkippableFact.
+        var dir = Path.Combine(Path.GetTempPath(), $"sf_{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "sqlferret.config.json"),
+                """{ "ingest": { "sqlTextSanitization": "literal" } }""");
+
+            var project = AuditProject.OpenOrCreate(dir);
+            using var db = project.OpenDb();
+            var presenter = new ImportPresenter(db, project);
+            IProgress<ImportProgress> sync = new ListProgress(_ => { });
+
+            var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+                presenter.RunAsync("does-not-matter.xel", RedactionMode.Masked, sync, CancellationToken.None));
+
+            Assert.Contains("literal", ex.Message);
+            Assert.Contains("ingest.sqlTextSanitization", ex.Message);
+        }
+        finally { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }
+    }
+
     private sealed class ListProgress(Action<ImportProgress> a) : IProgress<ImportProgress>
     { public void Report(ImportProgress value) => a(value); }
 }

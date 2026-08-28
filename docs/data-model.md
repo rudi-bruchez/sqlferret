@@ -48,6 +48,9 @@ One row per `import`. The provenance and quality record for everything that run 
 
 The counters are designed to be **mutually exclusive and exhaustive**: every event read is
 accounted for in exactly one bucket. If they do not add up, that is a bug, not a rounding issue.
+`sql_text_sanitize_failures` is the one exception: it is not part of that partition, but a strict
+subset of `tokenize_failures` — an event that fails to tokenize under `--sanitize-sql-text
+literals` increments both.
 
 `redaction_policy` is per run. A project can contain runs imported under different policies, and
 `export-events` uses this column to decide which runs even have XML to export.

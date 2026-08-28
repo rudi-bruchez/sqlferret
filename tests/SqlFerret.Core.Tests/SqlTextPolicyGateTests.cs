@@ -91,5 +91,6 @@ public class SqlTextPolicyGateTests
         // connection — the point is only that InvalidOperationException with our message is absent.
         var ex = await Assert.ThrowsAnyAsync<Exception>(() => svc.CaptureAsync(ev, "plan1"));
         Assert.DoesNotContain("not executable", ex.Message);
+        Assert.IsNotType<InvalidOperationException>(ex);
     }
 }

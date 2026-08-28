@@ -20,7 +20,7 @@ Missing files are not an error. With neither present, built-in defaults apply.
   },
   "ingest": {
     "redactionPolicy": "masked",
-    "sqlTextSanitization": "literals"
+    "sqlTextSanitization": "raw"
   },
   "server": {
     "connectionString": "Server=sql01;Database=Sales;${SQLFERRET_AUTH};TrustServerCertificate=True",

@@ -292,7 +292,7 @@ with `--sanitize-sql-text raw` if estimated plans are needed for that data.
 
 There is no CLI command for this yet; it is a library entry point, exercised by an
 environment-gated integration test that needs `SQLFERRET_TEST_CONN`. `CaptureAsync` has no
-production caller today — the only invocation in the repository is in that test, and neither host
+production caller today — the only invocations in the repository are in tests, and neither host
 reaches it — so the refusal above is the contract for whoever wires it up next, not yet a
 user-visible behavior.
 

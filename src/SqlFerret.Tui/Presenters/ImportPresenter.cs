@@ -15,11 +15,14 @@ public sealed class ImportPresenter(DuckDbProject db, AuditProject project)
         return Task.Run(() =>
         {
             // The configured level applies in the TUI too: leaving it on Raw here would make the
-            // host silently ignore a project's privacy setting.
-            var sqlText = Enum.TryParse<SqlTextSanitization>(
-                project.Config.SqlTextPolicy, ignoreCase: true, out var parsed)
-                ? parsed
-                : SqlTextSanitization.Raw;
+            // host silently ignore a project's privacy setting. An invalid value must fail loudly,
+            // the same as the CLI does, rather than silently falling back to the permissive Raw.
+            if (!Enum.TryParse<SqlTextSanitization>(
+                project.Config.SqlTextPolicy, ignoreCase: true, out var sqlText))
+            {
+                throw new ArgumentException(
+                    $"import: invalid ingest.sqlTextSanitization value '{project.Config.SqlTextPolicy}'. Valid: raw, literals");
+            }
 
             var options = new IngestionOptions(redaction, [],
                 PlanProfileDir: project.PlanProfileRunFolder(db.PeekNextRunId()),
