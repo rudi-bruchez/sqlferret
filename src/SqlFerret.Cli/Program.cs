@@ -64,8 +64,15 @@ switch (args[0])
                 return 1;
             }
 
+            var sanitizeIndex = Array.IndexOf(args, "--sanitize-sql-text");
+            if (sanitizeIndex >= 0 && sanitizeIndex + 1 >= args.Length)
+            {
+                Console.Error.WriteLine("import: --sanitize-sql-text requires a value. Valid: raw, literals");
+                return 1;
+            }
             var sanitizeStr = Arg("--sanitize-sql-text", project.Config.SqlTextPolicy);
-            if (!Enum.TryParse<SqlTextSanitization>(sanitizeStr, ignoreCase: true, out var sqlText))
+            if (!Enum.TryParse<SqlTextSanitization>(sanitizeStr, ignoreCase: true, out var sqlText)
+                || !Enum.IsDefined(sqlText))
             {
                 Console.Error.WriteLine($"import: invalid --sanitize-sql-text value '{sanitizeStr}'. Valid: raw, literals");
                 return 1;
@@ -100,6 +107,11 @@ switch (args[0])
                 planWriter.WriteDigests(digestRows);
                 planWriter.WriteIndex(digestRows);
                 Console.WriteLine($"plans: {result.PlanProfiles} profiles, {digestRows.Count} distinct -> {planDir}");
+                if (sqlText != SqlTextSanitization.Raw)
+                    Console.Error.WriteLine(
+                        $"warning: --sanitize-sql-text {sanitizeStr} does not sanitize plan artifacts; " +
+                        $".sqlplan and .digest.json files under {planDir} still carry unsanitized statement " +
+                        $"text. Use obfuscate-plan before sharing them.");
             }
 
             Console.WriteLine(

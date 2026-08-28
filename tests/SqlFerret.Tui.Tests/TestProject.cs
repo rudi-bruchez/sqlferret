@@ -1,6 +1,7 @@
 // tests/SqlFerret.Tui.Tests/TestProject.cs
 using SqlFerret.Core.Filtering;
 using SqlFerret.Core.Ingestion;
+using SqlFerret.Core.Normalization;
 using SqlFerret.Core.Parameters;
 using SqlFerret.Core.Storage;
 
@@ -24,7 +25,8 @@ public static class TestProject
     /// </param>
     public static SeededProject SeedFrom(
         IEnumerable<(string name, string sql, string? objectName, long durationUs)> rows,
-        RedactionMode redaction = RedactionMode.Full)
+        RedactionMode redaction = RedactionMode.Full,
+        SqlTextSanitization sqlText = SqlTextSanitization.Raw)
     {
         var path = Path.Combine(Path.GetTempPath(), $"sf_tui_{Guid.NewGuid():N}.duckdb");
         var project = DuckDbProject.Open(path);
@@ -32,7 +34,7 @@ public static class TestProject
         var events = rows.Select((r, i) => BuildEvent(r.name, r.sql, r.objectName, r.durationUs, i)).ToList();
 
         var svc = new IngestionService(project,
-            new IngestionOptions(redaction, []));
+            new IngestionOptions(redaction, [], SqlText: sqlText));
 
         svc.Ingest("test/", events);
 

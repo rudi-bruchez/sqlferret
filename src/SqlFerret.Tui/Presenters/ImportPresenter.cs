@@ -18,7 +18,8 @@ public sealed class ImportPresenter(DuckDbProject db, AuditProject project)
             // host silently ignore a project's privacy setting. An invalid value must fail loudly,
             // the same as the CLI does, rather than silently falling back to the permissive Raw.
             if (!Enum.TryParse<SqlTextSanitization>(
-                project.Config.SqlTextPolicy, ignoreCase: true, out var sqlText))
+                    project.Config.SqlTextPolicy, ignoreCase: true, out var sqlText)
+                || !Enum.IsDefined(sqlText))
             {
                 throw new ArgumentException(
                     $"import: invalid ingest.sqlTextSanitization value '{project.Config.SqlTextPolicy}'. Valid: raw, literals");

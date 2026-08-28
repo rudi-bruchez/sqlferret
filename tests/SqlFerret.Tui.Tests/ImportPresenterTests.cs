@@ -29,8 +29,10 @@ public class ImportPresenterTests
         finally { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }
     }
 
-    [Fact]
-    public async Task RunAsync_throws_on_an_invalid_configured_sql_text_policy()
+    [Theory]
+    [InlineData("literal")]   // misspelled name
+    [InlineData("7")]         // Enum.TryParse accepts numeric strings for undefined values too
+    public async Task RunAsync_throws_on_an_invalid_configured_sql_text_policy(string configuredValue)
     {
         // No sample/ needed: the bad config value is read and validated before the presenter
         // ever touches the (nonexistent) import path, so this does not require SkippableFact.
@@ -39,7 +41,7 @@ public class ImportPresenterTests
         {
             Directory.CreateDirectory(dir);
             File.WriteAllText(Path.Combine(dir, "sqlferret.config.json"),
-                """{ "ingest": { "sqlTextSanitization": "literal" } }""");
+                $$"""{ "ingest": { "sqlTextSanitization": "{{configuredValue}}" } }""");
 
             var project = AuditProject.OpenOrCreate(dir);
             using var db = project.OpenDb();
@@ -49,7 +51,7 @@ public class ImportPresenterTests
             var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
                 presenter.RunAsync("does-not-matter.xel", RedactionMode.Masked, sync, CancellationToken.None));
 
-            Assert.Contains("literal", ex.Message);
+            Assert.Contains(configuredValue, ex.Message);
             Assert.Contains("ingest.sqlTextSanitization", ex.Message);
         }
         finally { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }

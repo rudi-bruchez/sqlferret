@@ -69,6 +69,12 @@ needs its own control. That control is `--sanitize-sql-text`, covered next.
    SELECT run_id, sql_text_policy FROM ingestion_runs;
    ```
    Every row must read `literals` before the project is safe to hand out.
+
+   The same first-writer-wins upsert also cuts the other way, as a utility loss rather than a
+   privacy one: if a `literals` import hits a query shape whose statement tokenize-fails first,
+   that hash's `normalized_sql` is pinned to `"(unparseable sql text; redacted)"` for the life of
+   the project. A later `raw` import of the same shape cannot repair it — `last_seen_at` moves,
+   the placeholder text does not.
 4. **A sanitized project can still carry real statement text elsewhere — three places, largest
    first.**
    - `qds_query_text.query_sql_text`. A project that ran `query-store-import` stores Query Store

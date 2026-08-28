@@ -110,11 +110,14 @@ public sealed class DrillDownView : View
         if (i < 0 || i >= _rows.Count)
             return new SqlFerret.Tui.Clipboard.ClipboardResult(false, null, "no row selected");
 
-        var (script, anyRedacted) = _p.BuildReplay(_rows[i].ExecutionId);
+        var (script, anyRedacted, sqlTextPolicy) = _p.BuildReplay(_rows[i].ExecutionId);
         var res = _clip.Copy(script.Sql, $"exec-{_rows[i].ExecutionId}");
         string note = script.Confidence < 1.0 ? $" (confidence {script.Confidence:0.0})" : "";
         string redactedNote = anyRedacted ? " — WARNING: parameter values are redacted" : "";
-        return res with { Description = $"{script.Kind}: {res.Description}{note}{redactedNote}" };
+        string sanitizedNote = sqlTextPolicy is not null && !sqlTextPolicy.Equals("raw", StringComparison.OrdinalIgnoreCase)
+            ? " — WARNING: statement text is sanitized and will not execute"
+            : "";
+        return res with { Description = $"{script.Kind}: {res.Description}{note}{redactedNote}{sanitizedNote}" };
     }
 
     private void OnOccKeyDown(object? sender, Key key)
