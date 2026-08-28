@@ -22,6 +22,18 @@ column name in the dominant RPC shape for parameterized applications was lost, c
 literal in place (`SpExecuteSqlUnwrapper`), with a fallback to the fully collapsed form whenever
 the unwrap can't be done safely; see §4.3.
 
+The fix for that defect first tried to also keep the `sp_executesql` parameter-declaration literal
+(`N'@e nvarchar(50)'`) verbatim, on the theory that it only ever carries parameter names and types.
+Three rounds of adversarial review each found a new token shape that hid a value inside that
+literal and slipped past the "declaration-shaped" predicate guarding it — a value assigned inside
+the declaration, a `--` comment, a bare word, a bracketed identifier, a numeric default. Rather
+than extend the predicate a fourth time, the verbatim pass-through was removed: `Literals` now
+keeps only the inner query text from an `sp_executesql` call, and every other argument — the
+parameter declaration included — collapses to `?` like any other literal. Parameter names and
+types are not lost to a project; they are already persisted per execution in
+`execution_parameters` (`name`, `sql_type_guess`) under every redaction policy, so the verbatim
+copy inside `sql_text_raw` was redundant as well as unsafe.
+
 ---
 
 ## 1. Problem
@@ -189,14 +201,20 @@ sanitized import into the same project will not clean it. **A project is only sa
 every run in it was sanitized.** `ingestion_runs.sql_text_policy` (§5) is what makes that
 checkable.
 
-**`Literals` does not hide your schema.** Table, column and procedure names remain in both
-`sql_text_raw` and `normalized_sql`, including inside an `sp_executesql` RPC: the inner statement
-argument is unwrapped and normalized in place (`SpExecuteSqlUnwrapper`), so its identifiers survive
-the same way a plain batch's do. The level removes values, not structure. Anyone deciding whether
-to share a project needs that stated plainly. The unwrap has one residual: when the statement
-argument is not a string literal (passed via a variable) or the inner statement fails to
-tokenize, the whole call falls back to the fully collapsed form and its identifiers are lost too
-— a loss of readability, not of privacy, since no value survives either path.
+**`Literals` does not hide your schema — for the inner query text, not for the whole call.** Table,
+column and procedure names remain in both `sql_text_raw` and `normalized_sql`, including inside an
+`sp_executesql` RPC: the inner statement argument is unwrapped and normalized in place
+(`SpExecuteSqlUnwrapper`), so its identifiers survive the same way a plain batch's do. That inner
+query is the *only* part of an `sp_executesql` call this keeps. Every other argument — the
+parameter-declaration literal (`N'@e nvarchar(50)'`) included — collapses to `?` like any other
+literal in the call; it does not survive verbatim. (An earlier revision kept it verbatim on the
+theory that it only ever carries names and types; that theory held for three predicates and broke
+on the fourth review, so the pass-through was removed rather than patched again — parameter names
+and types are already recorded per execution in `execution_parameters`, so nothing is lost to the
+project as a whole.) The unwrap also has a residual: when the statement argument is not a string
+literal (passed via a variable) or the inner statement fails to tokenize, the whole call falls back
+to the fully collapsed form and its identifiers are lost too — a loss of readability, not of
+privacy, since no value survives either path.
 
 ## 5. Provenance, versioning and schema
 

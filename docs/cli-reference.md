@@ -42,7 +42,7 @@ sqlferret import <path> --project <dir> [--redaction off|hash|masked|full]
 | `--project <dir>` | required | Project directory. |
 | `--redaction <mode>` | project config, default `masked` | Parameter-value redaction policy for this run. See [privacy.md](privacy.md). |
 | `--sanitize-sql-text <raw\|literals>` | project config, default `raw` | Statement text written to `sql_text_raw` and `normalized_sql`. `literals` collapses inlined literals to `?`; identifiers are untouched, including inside an
-unwrapped `sp_executesql` inner statement (see [privacy.md](privacy.md)). Reads `ingest.sqlTextSanitization` from the project config when not passed. An invalid value exits 1. Independent of `--redaction`. See [privacy.md](privacy.md). |
+unwrapped `sp_executesql` inner statement — the inner query is the only part of an `sp_executesql` call this keeps; every other argument, including the parameter-declaration literal, collapses to `?` too (see [privacy.md](privacy.md)). Reads `ingest.sqlTextSanitization` from the project config when not passed. An invalid value exits 1. Independent of `--redaction`. See [privacy.md](privacy.md). |
 
 A run imported at `literals` cannot produce estimated plans later — the stored statement text is
 not valid T-SQL. See [execution-plans.md](execution-plans.md#estimated-plans).

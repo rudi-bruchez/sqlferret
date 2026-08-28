@@ -55,12 +55,17 @@ needs its own control. That control is `--sanitize-sql-text`, covered next.
    This includes `sp_executesql` RPCs: the inner statement passed as `N'...'` is unwrapped and
    normalized in place, so its identifiers survive too — `exec sp_executesql N'SELECT Name FROM
    dbo.Customers WHERE Email = @e',N'@e nvarchar(50)',@e='...'` becomes `exec sp_executesql
-   N'select Name from dbo.Customers where Email = @e',N'@e nvarchar(50)',@e=?`. The parameter
-   declaration argument (`N'@e nvarchar(50)'`) is kept verbatim — it carries only parameter names
-   and types, never a value. When the statement argument isn't a literal (passed via a variable,
-   e.g. `exec sp_executesql @stmt, ...`) or the inner statement fails to parse, the unwrap is
-   skipped and the whole call falls back to the fully collapsed form, same as any other
-   unparseable statement — a loss of readability, not of privacy: no value survives either way.
+   N'select Name from dbo.Customers where Email = @e',?,@e=?`. The inner query text is the *only*
+   thing kept from the call — every other argument, including the parameter-declaration literal
+   (`N'@e nvarchar(50)'`), collapses to `?` like any other literal. Parameter names and types are
+   not lost: they're already recorded per execution in `execution_parameters` (`name`,
+   `sql_type_guess`) under every redaction policy, so a project doesn't lose that information —
+   it's just not duplicated inside `sql_text_raw`, where an earlier revision kept it verbatim and
+   several rounds of review each found a new way to hide a value inside it. When the statement
+   argument isn't a literal (passed via a variable, e.g. `exec sp_executesql @stmt, ...`) or the
+   inner statement fails to parse, the unwrap is skipped and the whole call falls back to the
+   fully collapsed form, same as any other unparseable statement — a loss of readability, not of
+   privacy: no value survives either way.
 3. **A project is only safe to share if every run in it was sanitized.**
    `normalized_queries` is project-wide, and its `ON CONFLICT` upsert updates only
    `last_seen_at` — a query shape first seen during a `raw` import keeps that raw text forever,

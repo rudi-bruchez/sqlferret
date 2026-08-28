@@ -36,13 +36,18 @@ public class RpcSanitizationTests
     }
 
     [Fact]
-    public void SpExecuteSql_keeps_the_parameter_declaration_verbatim()
+    public void SpExecuteSql_collapses_the_parameter_declaration_to_placeholder()
     {
+        // Removed after three rounds of adversarial review each found a new shape that slipped
+        // a value through a "keep the declaration verbatim" predicate. It now collapses like any
+        // other literal in the outer call — parameter names/types are already persisted per
+        // execution in execution_parameters, so nothing of substance is lost.
         const string raw = $"exec sp_executesql N'SELECT Name FROM dbo.Customers WHERE Email = @e',N'@e nvarchar(50)',@e='{Pii}'";
 
         var result = Sanitize(raw);
 
-        Assert.Contains("N'@e nvarchar(50)'", result);
+        Assert.DoesNotContain("nvarchar", result);
+        Assert.Contains("sp_executesql N'select Name from dbo.Customers where Email = @e',?,@e=?", result);
     }
 
     [Fact]
@@ -64,7 +69,7 @@ public class RpcSanitizationTests
         var result = Sanitize(raw);
 
         Assert.Equal(
-            "exec sp_executesql N'select Name from dbo.Customers where Email = @e',N'@e nvarchar(50)',@e=?",
+            "exec sp_executesql N'select Name from dbo.Customers where Email = @e',?,@e=?",
             result);
     }
 
@@ -104,9 +109,12 @@ public class RpcSanitizationTests
         Assert.DoesNotContain(Pii, result);
     }
 
-    // Fix round 1: the params slot was passed through with no validation that it actually held
-    // a declaration and not a value. Reproduced by an adversarial re-review; these three shapes
-    // must never leak the embedded value regardless of how it's smuggled into that slot.
+    // Fix rounds 1 and 2: the params slot was originally passed through verbatim with no
+    // validation, then with a "declaration-shaped" predicate that three rounds of adversarial
+    // review each found a new way past (a value assigned inside the declaration, a comment, a
+    // bare word, a bracketed identifier, a numeric default). The predicate was removed entirely
+    // — the slot now always collapses like any other literal — so all of these must never leak
+    // the embedded value, regardless of how it's smuggled into that slot.
 
     [Fact]
     public void SpExecuteSql_rejects_a_value_smuggled_inside_the_params_declaration()
@@ -116,6 +124,7 @@ public class RpcSanitizationTests
         var result = Sanitize(raw);
 
         Assert.DoesNotContain(Pii, result);
+        Assert.Equal("exec sp_executesql N'select a from dbo.t where e=@e',?,@e=?", result);
     }
 
     [Fact]
@@ -126,6 +135,7 @@ public class RpcSanitizationTests
         var result = Sanitize(raw);
 
         Assert.DoesNotContain(Pii, result);
+        Assert.Equal("exec sp_executesql N'select a from dbo.t',?", result);
     }
 
     [Fact]
@@ -139,13 +149,29 @@ public class RpcSanitizationTests
     }
 
     [Fact]
-    public void SpExecuteSql_still_passes_a_genuine_multi_parameter_declaration_verbatim()
+    public void SpExecuteSql_rejects_a_numeric_default_hidden_in_a_permitted_integer_token()
     {
-        const string raw = "exec sp_executesql N'SELECT 1',N'@e nvarchar(50), @n int',@e='x',@n=1";
+        // Integer tokens must stay legal for `nvarchar(50)` to remain verbatim under the old
+        // predicate — which is exactly what made a numeric default (`@e int = 123456789`) able
+        // to ride through unexamined. There is no longer a predicate to exploit: the whole slot
+        // collapses to '?' regardless of what token types it contains.
+        const string raw = "exec sp_executesql N'SELECT a FROM dbo.t WHERE e=@e',N'@e int = 123456789',@e=1";
 
         var result = Sanitize(raw);
 
-        Assert.Contains("N'@e nvarchar(50), @n int'", result);
+        Assert.DoesNotContain("123456789", result);
+        Assert.Equal("exec sp_executesql N'select a from dbo.t where e=@e',?,@e=?", result);
+    }
+
+    [Fact]
+    public void SpExecuteSql_rejects_a_value_hidden_inside_a_bracketed_identifier()
+    {
+        const string raw = $"exec sp_executesql N'SELECT a FROM dbo.t WHERE e=@e',N'@e nvarchar(50) = [{Pii}]',@e=1";
+
+        var result = Sanitize(raw);
+
+        Assert.DoesNotContain(Pii, result);
+        Assert.Equal("exec sp_executesql N'select a from dbo.t where e=@e',?,@e=?", result);
     }
 
     [Fact]

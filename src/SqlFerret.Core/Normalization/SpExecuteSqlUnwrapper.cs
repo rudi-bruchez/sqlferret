@@ -5,12 +5,25 @@ using Microsoft.SqlServer.TransactSql.ScriptDom;
 namespace SqlFerret.Core.Normalization;
 
 /// <summary>
-/// Unwraps <c>exec sp_executesql N'&lt;stmt&gt;', N'&lt;params&gt;', ...</c> so the inner
-/// statement's identifiers survive <see cref="SqlTextSanitization.Literals"/>. Without this,
-/// <see cref="TokenNormalizer"/> treats the inner statement as an ordinary string literal and
-/// collapses it to '?' along with every other value — safe, but it destroys every table and
-/// column name, which is the dominant shape for parameterized applications.
+/// Unwraps <c>exec sp_executesql N'&lt;stmt&gt;', ...</c> so the inner statement's identifiers
+/// survive <see cref="SqlTextSanitization.Literals"/>. Without this, <see cref="TokenNormalizer"/>
+/// treats the inner statement as an ordinary string literal and collapses it to '?' along with
+/// every other value — safe, but it destroys every table and column name, which is the dominant
+/// shape for parameterized applications.
 /// </summary>
+/// <remarks>
+/// The statement argument is the <em>only</em> thing this class re-emits specially. Every other
+/// argument — including the parameter-declaration literal (<c>N'@e nvarchar(50)'</c>) — collapses
+/// to <c>?</c> exactly like any other literal in the outer call. An earlier revision kept that
+/// declaration verbatim on the theory that it only ever carries parameter names and types, never
+/// a value; three rounds of adversarial review each found a new shape that slipped a value through
+/// it anyway (a value assigned inside the declaration, a comment, a bracketed identifier, a
+/// numeric default). Rather than extend that predicate a fourth time, the pass-through was
+/// removed. Nothing of substance is lost: parameter names and types are already persisted per
+/// execution in <c>execution_parameters</c> (<c>name</c>, <c>sql_type_guess</c>) under every
+/// redaction policy, so keeping a second, harder-to-validate copy inside <c>sql_text_raw</c> was
+/// redundant.
+/// </remarks>
 internal static class SpExecuteSqlUnwrapper
 {
     /// <summary>
@@ -66,24 +79,10 @@ internal static class SpExecuteSqlUnwrapper
 
             // The statement argument must be the token immediately following the identifier —
             // otherwise a value literal belonging to a later, unrelated argument (e.g. @e='x')
-            // could be mistaken for it. Same requirement for the parameter-declaration argument:
-            // it must immediately follow the statement argument's separating comma.
+            // could be mistaken for it.
             if (spExecPos + 1 >= content.Count) return null;
             int stmtIdx = content[spExecPos + 1];
             if (!IsStringLiteral(tokens[stmtIdx].TokenType)) return null; // statement in a variable
-
-            int paramsIdx = -1;
-            int afterStmtPos = spExecPos + 2;
-            if (afterStmtPos < content.Count && tokens[content[afterStmtPos]].TokenType == TSqlTokenType.Comma
-                && afterStmtPos + 1 < content.Count
-                && IsStringLiteral(tokens[content[afterStmtPos + 1]].TokenType))
-            {
-                int candidate = content[afterStmtPos + 1];
-                // Only pass this slot through verbatim when its content is provably declaration-
-                // shaped (a "@name type[, @name type]..." list). Positional guessing alone isn't
-                // a guarantee — nothing stops a caller from putting a value in this slot instead.
-                if (IsDeclarationShaped(tokens[candidate])) paramsIdx = candidate;
-            }
 
             string? innerRewritten = RewriteInnerStatement(tokens[stmtIdx]);
             if (innerRewritten is null) return null; // inner statement failed to tokenize
@@ -107,8 +106,6 @@ internal static class SpExecuteSqlUnwrapper
                 string text;
                 if (i == stmtIdx)
                     text = innerRewritten;
-                else if (i == paramsIdx)
-                    text = t.Text; // verbatim — validated declaration-shaped by IsDeclarationShaped
                 else if (TokenNormalizer.LiteralTokens.Contains(t.TokenType))
                     text = "?";
                 else if (TokenNormalizer.KeywordTokens.Contains(t.TokenType))
@@ -130,60 +127,6 @@ internal static class SpExecuteSqlUnwrapper
 
     private static bool IsStringLiteral(TSqlTokenType t) =>
         t is TSqlTokenType.AsciiStringLiteral or TSqlTokenType.UnicodeStringLiteral;
-
-    /// <summary>
-    /// True only when <paramref name="token"/>'s unquoted body tokenizes to a plausible
-    /// <c>sp_executesql</c> parameter declaration: it opens with a parameter name (a
-    /// <c>@name</c> <see cref="TSqlTokenType.Variable"/> token — every real declaration does)
-    /// and carries no string-literal or comment token anywhere, since that is where a value
-    /// would hide (an Integer token, e.g. <c>nvarchar(50)</c>'s <c>50</c>, is fine and expected).
-    /// Anything else — including a bare word like <c>N'SECRET'</c>, which starts with neither
-    /// <c>@</c> nor a value token but is not a declaration either — is rejected: false negatives
-    /// only cost readability (the caller collapses the slot to <c>?</c>), false positives would
-    /// leak a value, so this stays deliberately strict.
-    /// </summary>
-    private static bool IsDeclarationShaped(TSqlParserToken token)
-    {
-        try
-        {
-            bool isUnicode = token.TokenType == TSqlTokenType.UnicodeStringLiteral;
-            string raw = token.Text;
-            string body = isUnicode ? raw[2..^1] : raw[1..^1];
-            string content = body.Replace("''", "'");
-
-            var parser = new TSql160Parser(initialQuotedIdentifiers: true);
-            using var reader = new StringReader(content);
-            IList<TSqlParserToken> innerTokens = parser.GetTokenStream(reader, out IList<ParseError> errors);
-            if (errors.Count > 0) return false;
-
-            bool sawFirstToken = false;
-            foreach (var t in innerTokens)
-            {
-                switch (t.TokenType)
-                {
-                    case TSqlTokenType.WhiteSpace:
-                    case TSqlTokenType.EndOfFile:
-                        continue;
-                    case TSqlTokenType.SingleLineComment:
-                    case TSqlTokenType.MultilineComment:
-                    case TSqlTokenType.AsciiStringLiteral:
-                    case TSqlTokenType.UnicodeStringLiteral:
-                        return false;
-                }
-
-                if (!sawFirstToken)
-                {
-                    if (t.TokenType != TSqlTokenType.Variable) return false;
-                    sawFirstToken = true;
-                }
-            }
-            return sawFirstToken; // reject an empty/whitespace-only declaration too
-        }
-        catch
-        {
-            return false;
-        }
-    }
 
     private static string? RewriteInnerStatement(TSqlParserToken stmtToken)
     {
