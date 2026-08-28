@@ -13,8 +13,12 @@ public enum SqlTextSanitization
 }
 
 /// <summary>
-/// Rewrites statement text before it reaches storage. Reuses the <see cref="NormalizedQuery"/>
-/// the ingestion loop already computed, so no level costs an additional parse.
+/// Rewrites statement text before it reaches storage. <c>Raw</c> and a tokenize-failed
+/// <c>Literals</c> input cost nothing extra — they reuse the <see cref="NormalizedQuery"/> the
+/// ingestion loop already computed. A successfully-tokenized <c>Literals</c> input additionally
+/// calls <see cref="SpExecuteSqlUnwrapper.TryUnwrap"/>, which is a cheap substring pre-check for
+/// almost every event and two more ScriptDom passes only for the ones that actually mention
+/// <c>sp_executesql</c>.
 /// </summary>
 public static class SqlTextSanitizer
 {

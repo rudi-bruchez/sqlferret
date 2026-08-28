@@ -22,6 +22,11 @@ internal static class SpExecuteSqlUnwrapper
     {
         if (string.IsNullOrWhiteSpace(rawSql)) return null;
 
+        // Cheap pre-check: every plain sql_batch_completed event pays for this call at
+        // `Literals`, and the identifier text must appear literally for the match below to ever
+        // succeed — so skip the two ScriptDom passes entirely when it can't possibly be present.
+        if (rawSql.IndexOf("sp_executesql", StringComparison.OrdinalIgnoreCase) < 0) return null;
+
         try
         {
             var parser = new TSql160Parser(initialQuotedIdentifiers: true);
@@ -73,7 +78,11 @@ internal static class SpExecuteSqlUnwrapper
                 && afterStmtPos + 1 < content.Count
                 && IsStringLiteral(tokens[content[afterStmtPos + 1]].TokenType))
             {
-                paramsIdx = content[afterStmtPos + 1];
+                int candidate = content[afterStmtPos + 1];
+                // Only pass this slot through verbatim when its content is provably declaration-
+                // shaped (a "@name type[, @name type]..." list). Positional guessing alone isn't
+                // a guarantee — nothing stops a caller from putting a value in this slot instead.
+                if (IsDeclarationShaped(tokens[candidate])) paramsIdx = candidate;
             }
 
             string? innerRewritten = RewriteInnerStatement(tokens[stmtIdx]);
@@ -99,7 +108,7 @@ internal static class SpExecuteSqlUnwrapper
                 if (i == stmtIdx)
                     text = innerRewritten;
                 else if (i == paramsIdx)
-                    text = t.Text; // verbatim — names/types only, never a user value
+                    text = t.Text; // verbatim — validated declaration-shaped by IsDeclarationShaped
                 else if (TokenNormalizer.LiteralTokens.Contains(t.TokenType))
                     text = "?";
                 else if (TokenNormalizer.KeywordTokens.Contains(t.TokenType))
@@ -121,6 +130,60 @@ internal static class SpExecuteSqlUnwrapper
 
     private static bool IsStringLiteral(TSqlTokenType t) =>
         t is TSqlTokenType.AsciiStringLiteral or TSqlTokenType.UnicodeStringLiteral;
+
+    /// <summary>
+    /// True only when <paramref name="token"/>'s unquoted body tokenizes to a plausible
+    /// <c>sp_executesql</c> parameter declaration: it opens with a parameter name (a
+    /// <c>@name</c> <see cref="TSqlTokenType.Variable"/> token — every real declaration does)
+    /// and carries no string-literal or comment token anywhere, since that is where a value
+    /// would hide (an Integer token, e.g. <c>nvarchar(50)</c>'s <c>50</c>, is fine and expected).
+    /// Anything else — including a bare word like <c>N'SECRET'</c>, which starts with neither
+    /// <c>@</c> nor a value token but is not a declaration either — is rejected: false negatives
+    /// only cost readability (the caller collapses the slot to <c>?</c>), false positives would
+    /// leak a value, so this stays deliberately strict.
+    /// </summary>
+    private static bool IsDeclarationShaped(TSqlParserToken token)
+    {
+        try
+        {
+            bool isUnicode = token.TokenType == TSqlTokenType.UnicodeStringLiteral;
+            string raw = token.Text;
+            string body = isUnicode ? raw[2..^1] : raw[1..^1];
+            string content = body.Replace("''", "'");
+
+            var parser = new TSql160Parser(initialQuotedIdentifiers: true);
+            using var reader = new StringReader(content);
+            IList<TSqlParserToken> innerTokens = parser.GetTokenStream(reader, out IList<ParseError> errors);
+            if (errors.Count > 0) return false;
+
+            bool sawFirstToken = false;
+            foreach (var t in innerTokens)
+            {
+                switch (t.TokenType)
+                {
+                    case TSqlTokenType.WhiteSpace:
+                    case TSqlTokenType.EndOfFile:
+                        continue;
+                    case TSqlTokenType.SingleLineComment:
+                    case TSqlTokenType.MultilineComment:
+                    case TSqlTokenType.AsciiStringLiteral:
+                    case TSqlTokenType.UnicodeStringLiteral:
+                        return false;
+                }
+
+                if (!sawFirstToken)
+                {
+                    if (t.TokenType != TSqlTokenType.Variable) return false;
+                    sawFirstToken = true;
+                }
+            }
+            return sawFirstToken; // reject an empty/whitespace-only declaration too
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     private static string? RewriteInnerStatement(TSqlParserToken stmtToken)
     {

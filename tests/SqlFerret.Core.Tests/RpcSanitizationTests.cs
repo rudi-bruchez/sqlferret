@@ -104,6 +104,61 @@ public class RpcSanitizationTests
         Assert.DoesNotContain(Pii, result);
     }
 
+    // Fix round 1: the params slot was passed through with no validation that it actually held
+    // a declaration and not a value. Reproduced by an adversarial re-review; these three shapes
+    // must never leak the embedded value regardless of how it's smuggled into that slot.
+
+    [Fact]
+    public void SpExecuteSql_rejects_a_value_smuggled_inside_the_params_declaration()
+    {
+        const string raw = $"exec sp_executesql N'SELECT a FROM dbo.t WHERE e=@e',N'@e nvarchar(50) = ''{Pii}''',@e=1";
+
+        var result = Sanitize(raw);
+
+        Assert.DoesNotContain(Pii, result);
+    }
+
+    [Fact]
+    public void SpExecuteSql_rejects_a_value_smuggled_inside_a_comment_in_the_params_slot()
+    {
+        const string raw = $"exec sp_executesql N'SELECT a FROM dbo.t',N'-- {Pii}'";
+
+        var result = Sanitize(raw);
+
+        Assert.DoesNotContain(Pii, result);
+    }
+
+    [Fact]
+    public void SpExecuteSql_rejects_a_params_slot_that_is_not_declaration_shaped()
+    {
+        const string raw = "exec sp_executesql N'SELECT 1', N'SECRET'";
+
+        var result = Sanitize(raw);
+
+        Assert.DoesNotContain("SECRET", result);
+    }
+
+    [Fact]
+    public void SpExecuteSql_still_passes_a_genuine_multi_parameter_declaration_verbatim()
+    {
+        const string raw = "exec sp_executesql N'SELECT 1',N'@e nvarchar(50), @n int',@e='x',@n=1";
+
+        var result = Sanitize(raw);
+
+        Assert.Contains("N'@e nvarchar(50), @n int'", result);
+    }
+
+    [Fact]
+    public void Batch_with_no_sp_executesql_sanitizes_identically_with_the_fast_path_guard()
+    {
+        const string raw = $"SELECT * FROM dbo.Customers WHERE Email = '{Pii}'";
+
+        var result = Sanitize(raw);
+
+        Assert.Equal(QueryNormalizer.Normalize(raw).NormalizedSql, result);
+        Assert.DoesNotContain(Pii, result);
+    }
+
     [Fact]
     public void Raw_is_unaffected()
     {
