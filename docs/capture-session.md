@@ -1,146 +1,173 @@
-# Capture session — événements et actions requis
+# Capture session: events and actions
 
-## Événements
+What to put in your Extended Events session so that SQLFerret can do its job, and what happens if
+you leave something out.
 
-| Événement | Rôle |
+## Events
+
+| Event | Role |
 |---|---|
-| `sqlserver.rpc_completed` | Exécutions de procédures et de `sp_executesql` |
-| `sqlserver.sql_batch_completed` | Exécutions de batches ad hoc |
-| `sqlserver.query_post_execution_plan_profile` | Plan **réel** avec compteurs d'exécution |
+| `sqlserver.rpc_completed` | Stored procedure and `sp_executesql` executions |
+| `sqlserver.sql_batch_completed` | Ad-hoc batch executions |
+| `sqlserver.query_post_execution_plan_profile` | **Actual** plan with runtime counters |
+| `sqlserver.blocked_process_report` | Blocking incidents (requires a server-level threshold, see [blocking.md](blocking.md)) |
+| `sqlserver.xml_deadlock_report` | Deadlock graphs |
+
+> **Do not substitute `query_post_execution_showplan` for `query_post_execution_plan_profile`.**
+> They look interchangeable and are not. The showplan variant is dramatically more expensive and
+> has no business running on a production instance. SQLFerret matches the profile event by exact
+> name precisely so the expensive one cannot be routed here by accident.
 
 ## Actions
 
-`query_post_execution_plan_profile` s'auto-identifie : `QueryHash` et `QueryPlanHash` sont des
-attributs de `<StmtSimple>` **dans le XML du plan**. Aucune action n'est requise sur cet événement
-pour une corrélation au niveau de la forme de requête.
+`query_post_execution_plan_profile` self-identifies: `QueryHash` and `QueryPlanHash` are
+attributes of `<StmtSimple>` **inside the plan XML**. No action is needed on that event for
+shape-level correlation.
 
-Ce qui manque est du côté des événements de complétion :
+What is missing is on the completion side:
 
-| Action | À poser sur | Ce qu'elle permet |
+| Action | Put it on | What it enables |
 |---|---|---|
-| `sqlserver.query_hash` | `rpc_completed`, `sql_batch_completed` | Jointure `executions.query_hash` ↔ `plan_profiles.query_hash` |
-| `sqlserver.query_plan_hash` | `rpc_completed`, `sql_batch_completed` | Jointure sur la forme de plan |
-| `package0.attach_activity_id` | **tous** les événements | GUID + n° de séquence partagés au sein d'un même batch : corrélation par exécution, et non par forme de requête |
-| `sqlserver.session_id` | tous | Filet de secours, combiné à l'ordre des événements |
+| `sqlserver.query_hash` | `rpc_completed`, `sql_batch_completed` | Join `executions.query_hash` ↔ `plan_profiles.query_hash` |
+| `sqlserver.query_plan_hash` | `rpc_completed`, `sql_batch_completed` | Join on plan shape |
+| `package0.attach_activity_id` | **every** event | A GUID plus a sequence number shared within one batch: correlation per *execution*, not per query shape |
+| `sqlserver.session_id` | every event | Fallback, combined with event ordering |
+| `sqlserver.database_name`, `sqlserver.client_app_name`, `sqlserver.client_hostname` | completion events | Slicing the workload by origin |
 
-**N'utilisez jamais `<StmtSimple StatementText>` comme clé.** Il est tronqué, et peut être vide :
-sur nos plans de référence il vaut 1 518 caractères dans un cas et **2 caractères** dans l'autre
-pour une instruction `SELECT` complète.
+**Never use `<StmtSimple StatementText>` as a key.** It is truncated, and it can be nearly empty.
+On our reference plans it is 1,518 characters in one case and **2 characters** in another, for a
+complete `SELECT` statement in both.
 
-## Session prête à coller
+If you skip `sqlserver.query_hash`, SQLFerret still ingests everything, but `import` warns you:
 
-    CREATE EVENT SESSION [sqlferret_capture] ON SERVER
-      ADD EVENT sqlserver.rpc_completed (
-          ACTION (sqlserver.query_hash, sqlserver.query_plan_hash,
-                  package0.attach_activity_id, sqlserver.session_id,
-                  sqlserver.database_name, sqlserver.client_app_name)
-          WHERE duration > 100000),
-      ADD EVENT sqlserver.sql_batch_completed (
-          ACTION (sqlserver.query_hash, sqlserver.query_plan_hash,
-                  package0.attach_activity_id, sqlserver.session_id,
-                  sqlserver.database_name, sqlserver.client_app_name)
-          WHERE duration > 100000),
-      ADD EVENT sqlserver.query_post_execution_plan_profile (
-          ACTION (package0.attach_activity_id, sqlserver.session_id,
-                  sqlserver.database_name))
-      ADD TARGET package0.event_file (SET filename = N'sqlferret', max_file_size = 256)
-      WITH (MAX_MEMORY = 8192 KB, EVENT_RETENTION_MODE = ALLOW_SINGLE_EVENT_LOSS,
-            MAX_DISPATCH_LATENCY = 30 SECONDS, STARTUP_STATE = OFF);
+```text
+warning: 346 plan profiles ingested, but no execution carries query_hash.
+         Plans cannot be correlated with queries.
+         Add ACTION(sqlserver.query_hash) to rpc_completed / sql_batch_completed.
+         See docs/capture-session.md
+```
 
-## Corrélation manuelle, à défaut d'actions
+## Ready-to-paste session
 
-Les digests et `index.json` publient `captured_at_utc` en ISO 8601 UTC, précision microseconde.
+```sql
+CREATE EVENT SESSION [sqlferret_capture] ON SERVER
+  ADD EVENT sqlserver.rpc_completed (
+      ACTION (sqlserver.query_hash, sqlserver.query_plan_hash,
+              package0.attach_activity_id, sqlserver.session_id,
+              sqlserver.database_name, sqlserver.client_app_name)
+      WHERE duration > 100000),
+  ADD EVENT sqlserver.sql_batch_completed (
+      ACTION (sqlserver.query_hash, sqlserver.query_plan_hash,
+              package0.attach_activity_id, sqlserver.session_id,
+              sqlserver.database_name, sqlserver.client_app_name)
+      WHERE duration > 100000),
+  ADD EVENT sqlserver.query_post_execution_plan_profile (
+      ACTION (package0.attach_activity_id, sqlserver.session_id,
+              sqlserver.database_name))
+  ADD TARGET package0.event_file (SET filename = N'sqlferret', max_file_size = 256)
+  WITH (MAX_MEMORY = 8192 KB, EVENT_RETENTION_MODE = ALLOW_SINGLE_EVENT_LOSS,
+        MAX_DISPATCH_LATENCY = 30 SECONDS, STARTUP_STATE = OFF);
+```
 
-**SSMS affiche les événements étendus en heure locale par défaut.** Cocher « Display values in UTC »
-dans la visionneuse, sinon la corrélation manuelle échoue d'un décalage horaire entier.
+`duration > 100000` is 100 ms, because Extended Events expresses `duration` in microseconds.
+Raise the threshold on a busy server; lower it when hunting a chatty ORM.
 
-## Observé sur la trace de référence (trace_0.xel, 2026-08-04)
+To add blocking and deadlocks:
 
-Sonde XELite jetable (`tools/probe/`, supprimée après usage, jamais committée) exécutée sur
-`trace_0.xel` (39,4 Mo) avec `Microsoft.SqlServer.XEvent.XELite` 2024.2.5.1 / .NET 10.
+```sql
+ALTER EVENT SESSION [sqlferret_capture] ON SERVER
+  ADD EVENT sqlserver.blocked_process_report,
+  ADD EVENT sqlserver.xml_deadlock_report;
+```
 
-**1. Champ portant le XML du plan.** `showplan_xml` est confirmé — présent tel quel dans
-`IXeEventData.Fields` de `query_post_execution_plan_profile`. L'hypothèse de la spec
-(`ev.Fields["showplan_xml"]`) est donc correcte, aucun changement requis pour
-`EventMapper.ExtractShowplanXml` (tâche 1).
+Start, run your workload, stop, then copy the `.xel` files off the instance:
 
-Liste complète des champs (`Fields.Keys`) de `query_post_execution_plan_profile` :
+```sql
+ALTER EVENT SESSION [sqlferret_capture] ON SERVER STATE = START;
+-- … later …
+ALTER EVENT SESSION [sqlferret_capture] ON SERVER STATE = STOP;
+```
 
-    cpu_time, database_name, dop, duration, estimated_cost, estimated_rows,
-    granted_memory_kb, ideal_memory_kb, nest_level, object_id, object_name,
-    object_type, requested_memory_kb, serial_ideal_memory_kb, showplan_xml,
-    source_database_id, used_memory_kb
+## Manual correlation, when the actions are missing
 
-**2. `duration` et `cpu_time`.** Les deux sont **présents** sur `query_post_execution_plan_profile`,
-confirmant le relevé de métadonnées qui fondait la spec. Le typage `long?` du writer reste
-néanmoins la bonne décision : ce constat vaut pour `trace_0.xel`, pas comme garantie du moteur pour
-toute capture.
+Digests and `index.json` publish `captured_at_utc` in ISO 8601 UTC with microsecond precision.
+That timestamp is the fallback correlation path when the plans and the executions cannot be
+joined on a hash.
 
-**3. Action d'activité.** **Ni `activity_id` ni `attach_activity_id` ne sont présents** sur les
-`Actions` réellement observées, sur aucun des trois types d'événements de cette trace. Les actions
-effectivement capturées sont :
+**SSMS shows extended events in local time by default.** Tick "Display values in UTC" in the
+viewer, or manual correlation will be off by a whole time zone.
 
-- `query_post_execution_plan_profile` : `client_app_name`, `client_hostname`, `sql_text`,
-  `username` (l'action `sql_text` sur cet événement n'était pas anticipée par la spec — bonus,
-  non requis par le contrat V1) ;
-- `rpc_completed` / `sql_batch_completed` : `client_app_name`, `client_hostname`, `username`.
+---
 
-**Cette liste corrige la section « Contexte mesuré » de la spec**, qui listait `activity_id` et
-`database_name` comme actions « présentes » sur la foi d'une extraction de chaînes UTF-16 dans le
-bloc de métadonnées — une méthode qui trouve des noms **déclarés** quelque part dans le binaire, pas
-des actions effectivement posées sur un événement. La lecture XELite en direct (`IXEvent.Actions`)
-fait foi : `activity_id` et `database_name` sont absents en pratique sur `trace_0.xel`. Ceci renforce
-la conclusion déjà actée : **aucune corrélation par activité n'est possible sur cette trace**, V1
-reste donc la seule voie exploitable ici.
+# Field notes from the reference trace
 
-**4. `xe.Timestamp.Kind`.** Le squelette de sonde du brief suppose `IXEvent.Timestamp` de type
-`DateTime` et lit `.Kind` — **ça ne compile pas** : `IXEvent.Timestamp` est en réalité un
-`DateTimeOffset` (confirmé aussi par `XelReader.cs`, qui appelle déjà `.UtcDateTime`). La sonde a été
-adaptée pour lire `Offset` et `UtcDateTime.Kind` à la place. Sur `trace_0.xel`, les trois types
-d'événements affichent `Offset=00:00:00` et `UtcDateTime.Kind=Utc` — XELite restitue donc des
-horodatages déjà exprimés en UTC (offset nul), pas en heure locale. Exemple mesuré :
+The rest of this page records what was actually measured against a real production capture
+(`trace_0.xel`, 39.4 MB, 2026-08-04) rather than what the documentation predicted. It is kept
+because several of the predictions were wrong in ways worth knowing about.
 
-    TIMESTAMP: 2026-08-04T14:20:11.9144860+00:00  Offset=00:00:00
-    UtcDateTime=2026-08-04T14:20:11.9144860Z  Kind=Utc
+## First pass: a throwaway XELite probe
 
-Le contrat de corrélation manuelle en UTC tient. Le chemin `IXeEventData.Timestamp` (déjà `DateTime`
-via `.UtcDateTime` dans `XelReader.cs`) reste la bonne API côté Core ; le repli de conversion
-mentionné en tâche 3 pour un `Kind=Local` reste du code mort sur cette trace, mais reste une
-précaution raisonnable pour d'autres captures.
+Run with `Microsoft.SqlServer.XEvent.XELite` 2024.2.5.1 on .NET 10, before the real parser
+existed.
 
-**5. Volumétrie.** 346 événements de plan, **62 plans distincts** (`QueryPlanHash` extrait du XML
-par regex, à des fins de sonde uniquement — le parseur définitif utilisera `XDocument`). Très en
-deçà du seuil de ~2 000 : aucun plafonnement de `PlanArtifactWriter` n'est nécessaire pour cette
-trace.
+**1. Which field carries the plan XML.** `showplan_xml`, confirmed. It is present as-is in
+`IXeEventData.Fields` for `query_post_execution_plan_profile`. The full field list:
 
-## Bout en bout : run réel sur `trace_0.xel` (tâche 12)
+```text
+cpu_time, database_name, dop, duration, estimated_cost, estimated_rows,
+granted_memory_kb, ideal_memory_kb, nest_level, object_id, object_name,
+object_type, requested_memory_kb, serial_ideal_memory_kb, showplan_xml,
+source_database_id, used_memory_kb
+```
 
-Ce qui précède vient d'une sonde XELite jetable, avant écriture du parseur définitif. Ce qui suit
-vient de la commande `import` réelle, exécutée deux fois de bout en bout sur `trace_0.xel` avec
-l'implémentation V1 complète (parseur, writer, schéma DuckDB, passe finale, digests, `index.json`).
-Les deux mesures sont complémentaires : la première valide les hypothèses de conception, celle-ci
-valide le pipeline livré.
+**2. `duration` and `cpu_time`.** Both are present on `query_post_execution_plan_profile`. The
+writer still types them as `long?`, because that is true of *this* trace, not a guarantee the
+engine makes for every capture.
 
-- **897 événements lus** dans `trace_0.xel` (`rpc_completed` + `sql_batch_completed` +
-  `query_post_execution_plan_profile`).
-- **346 événements de plan ingérés, 62 plans distincts** — confirme exactement la volumétrie
-  mesurée par la sonde ci-dessus, cette fois via le parseur `XDocument` définitif plutôt qu'un
-  regex de sonde.
-- **85 fichiers `.sqlplan` écrits** : 62 premières occurrences (`p_*.sqlplan`, `m_*.sqlplan` ou
-  `c_*.sqlplan` selon le cas) plus 23 fichiers `.worst.sqlplan` — les plans dont une exécution
-  ultérieure a dépassé strictement la durée de la première occurrence. 85 dépasse 62 précisément
-  parce que ces 23 plans ont deux fichiers chacun.
-- **62 `*.digest.json`** (un par plan distinct) et **1 `index.json`**, listant les 62 plans.
-- L'**avertissement de corrélation s'est déclenché** : la trace ne porte aucune action
-  `sqlserver.query_hash` sur les événements de complétion, donc aucune ligne `executions` du run
-  n'a de `query_hash` non nul. Message observé sur `stderr` :
+**3. Activity actions.** **Neither `activity_id` nor `attach_activity_id` was present** on the
+actions actually observed, on any of the three event types in this trace. What was there:
 
-  ```
-  warning: 346 plan profiles ingested, but no execution carries query_hash.
-           Plans cannot be correlated with queries.
-           Add ACTION(sqlserver.query_hash) to rpc_completed / sql_batch_completed.
-           See docs/capture-session.md
-  ```
+- `query_post_execution_plan_profile`: `client_app_name`, `client_hostname`, `sql_text`,
+  `username`. The `sql_text` action on this event was not anticipated, and is a bonus rather than
+  a contract.
+- `rpc_completed` / `sql_batch_completed`: `client_app_name`, `client_hostname`, `username`.
 
-  Confirme le scénario documenté plus haut : sans capturer `sqlserver.query_hash` (voir la session
-  prête à coller ci-dessus), la seule voie de corrélation qui reste est l'horodatage manuel.
+This corrects an earlier reading that listed `activity_id` and `database_name` as present, which
+came from extracting UTF-16 strings out of the metadata block. That method finds names *declared*
+somewhere in the binary, not actions actually attached to an event. A live XELite read
+(`IXEvent.Actions`) is authoritative, and on this trace both are absent. No per-activity
+correlation is possible on this capture.
+
+**4. `xe.Timestamp.Kind`.** `IXEvent.Timestamp` is a `DateTimeOffset`, not a `DateTime`, so
+reading `.Kind` directly does not compile. On this trace all three event types report
+`Offset=00:00:00` and `UtcDateTime.Kind=Utc`, so XELite hands back timestamps already expressed in
+UTC:
+
+```text
+TIMESTAMP: 2026-08-04T14:20:11.9144860+00:00  Offset=00:00:00
+UtcDateTime=2026-08-04T14:20:11.9144860Z  Kind=Utc
+```
+
+The manual-correlation-in-UTC contract holds. `XelReader` already calls `.UtcDateTime`, so
+`IXeEventData.Timestamp` is a plain UTC `DateTime` by the time Core sees it.
+
+**5. Volume.** 346 plan events, **62 distinct plans**. Far below the point where the artifact
+writer would need any cap.
+
+## Second pass: the real `import` command
+
+Everything above came from a probe. The following came from running the shipped V1 pipeline
+end to end on the same file, twice.
+
+- **897 events read** (`rpc_completed` + `sql_batch_completed` + `query_post_execution_plan_profile`).
+- **346 plan events ingested, 62 distinct plans**, matching the probe exactly, this time through
+  the real `XDocument` parser rather than a probe regex.
+- **85 `.sqlplan` files written**: 62 first occurrences (`p_*`, `m_*` or `c_*` depending on how the
+  plan identity was derived) plus 23 `.worst.sqlplan` files, for the plans where a later execution
+  was strictly slower than the first. 85 exceeds 62 by exactly those 23 plans having two files.
+- **62 `*.digest.json`** (one per distinct plan) and **1 `index.json`**.
+- **The correlation warning fired**, because the trace carries no `sqlserver.query_hash` action on
+  its completion events, so no `executions` row in the run has a non-null `query_hash`.
+
+Which is the documented scenario at the top of this page: without capturing
+`sqlserver.query_hash`, timestamp-based manual correlation is the only path left.

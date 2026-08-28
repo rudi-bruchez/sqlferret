@@ -1,0 +1,19 @@
+{
+  "//": "Copy to sqlferret.config.json, here or inside an audit project directory.",
+  "//display": "durationUnit / cpuUnit: ms | s | us. Formatting only — storage is always microseconds.",
+  "display": {
+    "durationUnit": "ms",
+    "cpuUnit": "ms"
+  },
+
+  "//ingest": "redactionPolicy: off | hash | masked | full. See docs/privacy.md before changing.",
+  "ingest": {
+    "redactionPolicy": "masked"
+  },
+
+  "//server": "${VAR} is interpolated from the environment; put the secret half in .env.",
+  "server": {
+    "connectionString": "Server=localhost;Database=master;${SQLFERRET_AUTH}",
+    "plansFolder": "./plans"
+  }
+}
