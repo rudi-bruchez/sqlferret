@@ -42,12 +42,19 @@ One row per `import`. The provenance and quality record for everything that run 
 | `events_plan_profiles`, `plan_parse_failures`, `plan_write_failures` | BIGINT | |
 | `normalizer_version` | INTEGER | Currently 1 |
 | `redaction_policy` | TEXT | The policy in force for this run |
+| `sql_text_policy` | TEXT | `raw` or `literals`. **NULL means a run imported before this column existed — read it as `raw`.** |
+| `sql_text_sanitizer_version` | INTEGER | `SqlTextSanitizer.Version`, currently 1. NULL for pre-versioning runs. |
+| `sql_text_sanitize_failures` | BIGINT | Events whose text could not be tokenized and were replaced by the sanitizer's placeholder |
 
 The counters are designed to be **mutually exclusive and exhaustive**: every event read is
 accounted for in exactly one bucket. If they do not add up, that is a bug, not a rounding issue.
 
 `redaction_policy` is per run. A project can contain runs imported under different policies, and
 `export-events` uses this column to decide which runs even have XML to export.
+
+`sql_text_policy` is also per run, and the same caution applies: a project can mix `raw` and
+`literals` runs, and `normalized_queries` is project-wide, so a shape first seen under `raw` keeps
+its raw text regardless of later runs. See [privacy.md](privacy.md#statement-text-sanitization).
 
 ### `executions`
 

@@ -81,6 +81,10 @@ raising an error.
 `QueryNormalizer.Version` is currently **1** and is persisted twice: on `ingestion_runs` and on
 every row in `normalized_queries`.
 
+`SqlTextSanitizer.Version` (also 1, on `ingestion_runs.sql_text_sanitizer_version`) is coupled to
+it: at the `literals` level the stored statement text *is* the normalizer's output, so a rule
+change in one should prompt a look at the other. See [privacy.md](privacy.md).
+
 This exists so that a future change to the normalization rules is detectable rather than
 silently corrupting comparisons. If you compare two projects, or two runs inside one project,
 check that the versions match. Fingerprints from different normalizer versions are not

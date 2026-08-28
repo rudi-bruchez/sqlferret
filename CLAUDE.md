@@ -122,13 +122,19 @@ If you observe a violation in code the task does not touch, **report it and move
 - **Redaction before any parameter value reaches disk.** `RedactionPolicy` (off/hash/masked/full,
   plus per-name sensitive overrides) is applied in `IngestionService` before `PreparedParameter`
   is built. Note: `off` discards parameter values *and* is the only mode that retains raw
-  blocking/deadlock XML. See `docs/privacy.md`.
+  blocking/deadlock XML. Redaction covers parameter values; `--sanitize-sql-text` covers statement
+  text (`sql_text_raw` / `normalized_sql`). The two are independent — neither implies the other.
+  See `docs/privacy.md`.
 - **Nothing silently dropped.** Unmapped, tokenize-failed, ingest-cleaned, blocking, deadlock and
   plan-profile events are all counted on `ingestion_runs`. Counters stay mutually exclusive and
   exhaustive. A new event type means a new counter.
 - **`QueryNormalizer.Version = 1`**, persisted on both `ingestion_runs` and `normalized_queries`.
   Changing normalization rules requires bumping it — fingerprints across versions are not
   comparable.
+- **`SqlTextSanitizer.Version = 1`**, persisted on `ingestion_runs.sql_text_sanitizer_version`.
+  Changing what the sanitizer stores requires bumping it. It is coupled to
+  `QueryNormalizer.Version`: at the `literals` level the stored text *is* the normalizer's
+  output, so bumping one should prompt a look at the other.
 - **SQL safety.** User free text (hashes, names, ids, limits) must be **bound parameters**
   (`$name`). Only allow-listed identifiers may be interpolated: `FilterCompiler.AllowedFields`,
   `WorkloadQueries` sort/dimension lists. `FilterCompiler` escapes strings by doubling single

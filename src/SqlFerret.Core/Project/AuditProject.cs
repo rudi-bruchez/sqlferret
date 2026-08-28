@@ -149,6 +149,7 @@ public sealed class AuditProject
 
         - Durations and CPU times are stored in **microseconds** in the database; hosts format them for display.
         - Parameter values may be redacted per the project's redaction policy before being written to disk.
+        - Statement text may be sanitized per the project's `ingest.sqlTextSanitization` setting: at `literals`, inlined literal values are replaced by `?` before being written to disk. Identifiers are not removed. See `docs/privacy.md`.
 
         ## Capture session
 

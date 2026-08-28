@@ -12,7 +12,8 @@ situation.
 
 | Artifact | Contains | Controlled by |
 |---|---|---|
-| `executions.sql_text_raw` | The statement as captured, including any inlined literals | **Nothing. Always stored.** |
+| `executions.sql_text_raw` | The statement as captured, including any inlined literals | `--sanitize-sql-text` (default `raw`: always stored) |
+| `normalized_queries.normalized_sql` | The statement shape; literals `?`. Real literals on tokenize failure unless sanitized | Same flag |
 | `execution_parameters.value_text` | Extracted RPC / `sp_executesql` parameter values | The redaction policy |
 | `blocking_reports.raw_xml` | The full blocked-process report, including both input buffers | Retained only when redaction is `off` |
 | `blocking_processes.inputbuf` | The input buffer text | Same gate |
@@ -37,10 +38,42 @@ A batch with inlined literals does not:
 SELECT * FROM Customers WHERE Email = 'alice@example.com'   -- stored verbatim
 ```
 
-Normalization replaces literals with `?` in `normalized_queries.normalized_sql`, but
-`executions.sql_text_raw` keeps the original. Normalization is a grouping mechanism, not a
-privacy mechanism. If your workload inlines literals, no redaction policy will protect you, and
-the project file must be treated as production data.
+Normalization replaces literals with `?` in `normalized_queries.normalized_sql`, but by default
+`executions.sql_text_raw` keeps the original, and a tokenize failure leaves real literals in
+`normalized_sql` too. Normalization is a grouping mechanism, not a privacy mechanism on its own.
+If your workload inlines literals, redaction alone will not protect you — the statement text
+needs its own control. That control is `--sanitize-sql-text`, covered next.
+
+### Statement-text sanitization
+
+1. **The levels.** `raw` (default, unchanged) and `literals` (statement text stored with literals
+   collapsed to `?`). Set per import with `--sanitize-sql-text`, or in `sqlferret.config.json`
+   under `ingest.sqlTextSanitization`. Independent of `--redaction` — the two flags control
+   different columns and neither implies the other.
+2. **`literals` removes values, not schema.** Table, column and procedure names remain in both
+   `sql_text_raw` and `normalized_sql`. A sanitized project still tells a reader your data model.
+3. **A project is only safe to share if every run in it was sanitized.**
+   `normalized_queries` is project-wide, and its `ON CONFLICT` upsert updates only
+   `last_seen_at` — a query shape first seen during a `raw` import keeps that raw text forever,
+   and a later `literals` import into the same project will not clean it up. Check with:
+   ```sql
+   SELECT run_id, sql_text_policy FROM ingestion_runs;
+   ```
+   Every row must read `literals` before the project is safe to hand out.
+4. **A sanitized project can still carry real statement text elsewhere — three places, largest
+   first.**
+   - `qds_query_text.query_sql_text`. A project that ran `query-store-import` stores Query Store
+     statement text verbatim and untruncated, in the same `sqlferret.duckdb`, regardless of
+     `--sanitize-sql-text`. This is the largest of the three, and the one most likely to surprise
+     you.
+   - `plans/**/*.digest.json` — a truncated `StatementText` this option does not touch.
+   - `.sqlplan` files — statement text until `obfuscate-plan` rewrites them.
+5. **`--redaction off` and `--sanitize-sql-text literals` combine into a misleading project.**
+   `off` retains the raw input buffer and the raw blocking/deadlock XML regardless of statement
+   sanitization — the two flags are deliberately orthogonal. So one command can produce a project
+   whose `executions.sql_text_raw` is sanitized while `blocking_processes.inputbuf` and
+   `blocking_reports.raw_xml` still hold real statement text and literals. See the sharp edge in
+   `off` below — it applies here too.
 
 ---
 
@@ -91,6 +124,9 @@ deliberate refusal, not a bug.
 
 If you need both parameter privacy and blocking XML, you currently have to import twice, into two
 projects, under two policies.
+
+`--sanitize-sql-text` does not change this. `off` plus `literals` is a real, supported
+combination, and it is easy to misread as "fully sanitized" — it is not. See point 5 above.
 
 ---
 
@@ -198,7 +234,9 @@ sqlferret obfuscate-plan --in-dir ./audits/share/plans \
 #    and NOT ./audits/share-anon.map.json
 ```
 
-Then review `executions.sql_text_raw` before sharing anything derived from the database itself:
+Then review `executions.sql_text_raw` before sharing anything derived from the database itself.
+This recipe only applies to runs imported at `raw` — `ingestion_runs.sql_text_policy` tells you
+which those are; a `literals` run has already had its literals collapsed.
 
 ```sql
 SELECT sql_text_raw FROM executions
