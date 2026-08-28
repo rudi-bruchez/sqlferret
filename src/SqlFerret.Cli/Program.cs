@@ -4,6 +4,7 @@ using SqlFerret.Core.Analysis;
 using SqlFerret.Core.Config;
 using SqlFerret.Core.Filtering;
 using SqlFerret.Core.Ingestion;
+using SqlFerret.Core.Normalization;
 using SqlFerret.Core.Parameters;
 using SqlFerret.Core.Project;
 using SqlFerret.Core.Server;
@@ -39,7 +40,7 @@ AuditProject? OpenProject()
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: import <path> --project <dir> | top-slow --project <dir> | export-blocking --project <dir> [...] | query-store-import --project <dir> [--conn <s>] [--database <db>] [--no-plans] [--from <dt> --to <dt> | --last <N>{h|d}] | export-events --project <dir> --out <dir> [--kind blocking|deadlock|both] [--from <dt> --to <dt> | --last <N>{h|d}] [--fingerprint <hash>] [--database <id>] [--limit <n>] | obfuscate-plan (--in <file> --out <file> | --in-dir <dir> --out-dir <dir> [--map <file>] | --project <dir> --plan-id <id>)");
+    Console.Error.WriteLine("usage: import <path> --project <dir> [--redaction off|hash|masked|full] [--sanitize-sql-text raw|literals] | top-slow --project <dir> | export-blocking --project <dir> [...] | query-store-import --project <dir> [--conn <s>] [--database <db>] [--no-plans] [--from <dt> --to <dt> | --last <N>{h|d}] | export-events --project <dir> --out <dir> [--kind blocking|deadlock|both] [--from <dt> --to <dt> | --last <N>{h|d}] [--fingerprint <hash>] [--database <id>] [--limit <n>] | obfuscate-plan (--in <file> --out <file> | --in-dir <dir> --out-dir <dir> [--map <file>] | --project <dir> --plan-id <id>)");
     return 1;
 }
 
@@ -63,9 +64,17 @@ switch (args[0])
                 return 1;
             }
 
+            var sanitizeStr = Arg("--sanitize-sql-text", project.Config.SqlTextPolicy);
+            if (!Enum.TryParse<SqlTextSanitization>(sanitizeStr, ignoreCase: true, out var sqlText))
+            {
+                Console.Error.WriteLine($"import: invalid --sanitize-sql-text value '{sanitizeStr}'. Valid: raw, literals");
+                return 1;
+            }
+
             using var db = project.OpenDb();
             var options = new IngestionOptions(redaction, Array.Empty<FilterRule>(),
-                PlanProfileDir: project.PlanProfileRunFolder(db.PeekNextRunId()));
+                PlanProfileDir: project.PlanProfileRunFolder(db.PeekNextRunId()),
+                SqlText: sqlText);
 
             // Live in-place gauge on stderr (kept off stdout so the summary stays clean and
             // pipe-friendly). Synchronous IProgress so carriage-return updates stay ordered.
@@ -98,7 +107,8 @@ switch (args[0])
                 $"unmapped={result.Unmapped} cleaned={result.Cleaned} tokenizeFailures={result.TokenizeFailures} " +
                 $"blocking={result.Blocking} deadlocks={result.Deadlocks} blockingParseFailures={result.BlockingParseFailures} " +
                 $"planProfiles={result.PlanProfiles} planParseFailures={result.PlanParseFailures} " +
-                $"planWriteFailures={result.PlanWriteFailures}");
+                $"planWriteFailures={result.PlanWriteFailures} " +
+                $"sqlTextSanitizeFailures={result.SqlTextSanitizeFailures}");
 
             if (db.PlanCorrelationWarning(result.RunId) is { } planWarning)
                 Console.Error.WriteLine(planWarning);
