@@ -18,9 +18,11 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
         IProgress<IngestionProgress>? progress = null)
     {
         long runId = project.BeginRun(sourcePath, filesCount, bytesTotal,
-            redactionPolicy: options.Redaction.ToString().ToLowerInvariant());
+            redactionPolicy: options.Redaction.ToString().ToLowerInvariant(),
+            sqlText: options.SqlText);
 
         long read = 0, mapped = 0, unmapped = 0, cleaned = 0, tokenizeFailures = 0;
+        long sqlTextSanitizeFailures = 0;
         long blocking = 0, deadlocks = 0, blockingParseFailures = 0;
         long planProfiles = 0, planParseFailures = 0, planWriteFailures = 0;
         var planWriter = new SqlFerret.Core.Plans.PlanArtifactWriter(options.PlanProfileDir);
@@ -86,7 +88,14 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
             var nq = QueryNormalizer.Normalize(e.SqlTextRaw);
             if (nq.TokenizeFailed) tokenizeFailures++;
 
-            buffer.Add(new PreparedRow(e, nq, RedactParams(e)));
+            // Sanitize before the row is built, so unredacted literals never reach storage.
+            // safeNq carries the substituted NormalizedSql: on tokenize failure the normalizer's
+            // fallback leaves literals intact, and normalized_queries lives in the same file.
+            var (sqlText, safeNq, sanitizeFailed) =
+                SqlTextSanitizer.Apply(e.SqlTextRaw, nq, options.SqlText);
+            if (sanitizeFailed) sqlTextSanitizeFailures++;
+
+            buffer.Add(new PreparedRow(e with { SqlTextRaw = sqlText }, safeNq, RedactParams(e)));
             mapped++;
 
             if (buffer.Count >= options.BatchSize)
@@ -100,9 +109,11 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
 
         progress?.Report(new IngestionProgress(read, mapped, unmapped, cleaned, tokenizeFailures, currentFile));
         project.FinishRun(runId, read, mapped, unmapped, cleaned, tokenizeFailures,
-            blocking, deadlocks, blockingParseFailures, planProfiles, planParseFailures, planWriteFailures);
+            blocking, deadlocks, blockingParseFailures, planProfiles, planParseFailures, planWriteFailures,
+            sqlTextSanitizeFailures);
         return new IngestionResult(runId, read, mapped, unmapped, cleaned, tokenizeFailures,
-            blocking, deadlocks, blockingParseFailures, planProfiles, planParseFailures, planWriteFailures);
+            blocking, deadlocks, blockingParseFailures, planProfiles, planParseFailures, planWriteFailures,
+            sqlTextSanitizeFailures);
     }
 
     private PreparedBlockingReport Prepare(BlockingReport rep, string? rawXml)
