@@ -235,6 +235,36 @@ Better than passing `--conn` on the command line: put it in the project's
 `sqlferret.config.json` with the secret part interpolated from `.env`. See
 [configuration.md](configuration.md).
 
+## 7. Optional: driving SQLFerret from an AI agent
+
+The repository ships an agent skill at
+[`.agents/skills/analyzing-sql-workloads/SKILL.md`](../.agents/skills/analyzing-sql-workloads/SKILL.md).
+It teaches a coding agent the workflow above and, more importantly, the traps that make an agent
+draw a wrong conclusion without noticing: microsecond columns read as milliseconds, the three
+incompatible `query_hash` text formats, `--redaction off` being the *only* policy that retains
+blocking XML, and `plan_profiles.statement_text` being truncated by the engine.
+
+`.agents/skills/` is the cross-runtime location, recognized by several agent CLIs. To use the
+skill while working outside this repository, link or copy it into your runtime's own skills
+directory — for Claude Code, `~/.claude/skills/`:
+
+```bash
+ln -s "$PWD/.agents/skills/analyzing-sql-workloads" ~/.claude/skills/analyzing-sql-workloads
+```
+
+```powershell
+# Windows, no elevation required
+cmd /c mklink /J "$env:USERPROFILE\.claude\skills\analyzing-sql-workloads" `
+    "$PWD\.agents\skills\analyzing-sql-workloads"
+```
+
+Inside this repository, `.claude/skills/` already holds such a link; it is gitignored, so create
+it once after cloning if you want the skill picked up here.
+
+Whatever the runtime, the agent still needs the tool itself: a .NET 10 SDK and either the
+`sqlferret` alias from [step 2](#making-it-feel-like-a-command) or the full
+`dotnet run --project src/SqlFerret.Cli --` form.
+
 ## Where to go next
 
 - Something looks wrong in a plan → [execution-plans.md](execution-plans.md)
@@ -242,3 +272,4 @@ Better than passing `--conn` on the command line: put it in the project's
 - You need to share a plan outside your organization → [privacy.md](privacy.md)
 - You want to write your own analysis on top → [data-model.md](data-model.md) and
   [architecture.md](architecture.md)
+- You want an agent to do the analysis → [`.agents/skills/analyzing-sql-workloads/SKILL.md`](../.agents/skills/analyzing-sql-workloads/SKILL.md)

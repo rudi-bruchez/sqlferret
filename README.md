@@ -8,6 +8,15 @@ deduplicated and triaged, and Query Store snapshots.
 No SQL Server Management Studio. No Windows requirement. No server-side agent. One embedded
 DuckDB file and a pile of plain JSON.
 
+**In short:**
+
+- **Ingests** Extended Events `.xel` files and normalizes every statement into a fingerprinted
+  query shape.
+- **Snapshots** Query Store read-only from a live server into the same project.
+- **Digests** blocking, deadlocks and real execution plans into ranked, bounded reports.
+- **Redacts** parameter values before they touch the disk; obfuscates plans reversibly for sharing.
+- **Stores** everything in one queryable DuckDB file — SQL, JSON exports, or an AI agent.
+
 ```console
 $ sqlferret import ./logs --project ./audits/prod-2026-08
 run 1: read=41827 mapped=41120 unmapped=612 cleaned=95 tokenizeFailures=0
@@ -166,6 +175,27 @@ audits/prod-2026-08/
 The directory is self-describing and portable. Zip it, hand it to a colleague, open it a year
 later: everything needed to interpret it travels with it.
 
+## Using it from an AI agent
+
+Every export is bounded JSON or Markdown and the project file is plain DuckDB, so an agent can
+work a 200 MB trace without ever opening it. The repository ships a skill that teaches one how:
+
+```
+.agents/skills/analyzing-sql-workloads/SKILL.md
+```
+
+`.agents/skills/` is the cross-runtime location. To use it outside this repository, link it into
+your runtime's skills directory — for Claude Code:
+
+```bash
+ln -s "$PWD/.agents/skills/analyzing-sql-workloads" ~/.claude/skills/analyzing-sql-workloads
+```
+
+The skill covers the workflow and, more usefully, the traps that produce confidently wrong
+answers: microsecond columns read as milliseconds, the three incompatible `query_hash` text
+formats, and `--redaction off` being the only policy that retains blocking XML. Setup details in
+[getting-started.md](docs/getting-started.md#7-optional-driving-sqlferret-from-an-ai-agent).
+
 ## A word on privacy
 
 Production traces contain production data. Read **[docs/privacy.md](docs/privacy.md)** before
@@ -199,6 +229,7 @@ pointing SQLFerret at anything real. The short version:
 | **[Privacy and redaction](docs/privacy.md)** | What lands on disk, and how to control it. |
 | **[Architecture](docs/architecture.md)** | Layering, design rules, why there is no DI container. |
 | **[Development](docs/development.md)** | Build, test, conventions, known gaps. |
+| **[Agent skill](.agents/skills/analyzing-sql-workloads/SKILL.md)** | How an AI agent should drive SQLFerret, and the traps it must avoid. |
 
 ## Status
 

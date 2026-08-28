@@ -67,3 +67,7 @@ sample/
 exemples-plans/
 *.sqlplan
 *.SQLPlan
+
+# Agent skills live in .agents/skills (committed). .claude/skills holds a local
+# junction/symlink to them for Claude Code; the link itself is not committed.
+/.claude/skills/
