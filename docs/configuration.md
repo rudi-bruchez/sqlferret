@@ -91,12 +91,18 @@ Written at creation and updated on every open. Not meant to be hand-edited.
 ```json
 {
   "SchemaVersion": 1,
-  "ToolVersion": "1.0.0.0",
+  "ToolVersion": "0.1.0.0",
   "CreatedUtc": "2026-08-04T09:12:44.1120000+00:00",
   "LastOpenedUtc": "2026-08-28T07:31:02.4410000+00:00",
   "Notes": null
 }
 ```
+
+`SchemaVersion` is the project-directory format; `ToolVersion` is the SQLFerret build that
+created the directory, taken from the assembly version declared in `Directory.Build.props`. The
+two move independently — a new release does not necessarily change the directory format.
+Projects created before 0.1.0 record `1.0.0.0`, which was an unset SDK default rather than a
+release: read it as "predates versioning".
 
 If the file is present but unreadable, SQLFerret reinitializes it and prints a warning to stderr,
 because provenance has been lost:

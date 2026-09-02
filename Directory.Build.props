@@ -1,0 +1,18 @@
+<Project>
+
+  <!--
+    One place for the product version, rather than three .csproj files that would drift.
+
+    This is what AuditProject writes into every project directory's project.json as
+    `ToolVersion`, so it is provenance, not decoration: it records which build created
+    an audit. The .NET SDK appends the commit SHA to InformationalVersion on its own,
+    which makes that provenance exact.
+
+    0.x on purpose. The CLI surface is still moving, and semver 1.0 would be a promise
+    of command and flag stability that this tool is not ready to make.
+  -->
+  <PropertyGroup>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+</Project>
