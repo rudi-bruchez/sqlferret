@@ -26,7 +26,7 @@ public class DuckDbProjectInsertTests
                 CapturedAt = new DateTime(2026, 1, 1),
                 XeFileName = "s_0.xel"
             };
-            var nq = new NormalizedQuery("exec dbo.p @a = ?", "hash1", "EXEC", "dbo.P", false);
+            var nq = new NormalizedQuery("exec dbo.p @a = ?", "hash1", "EXEC", "dbo.P", null, false);
             var row = new PreparedRow(ev, nq, [new PreparedParameter(0, "@a", "rpc_parameter", "int", "1", false, false, 0.9)]);
 
             p.InsertBatch(run, [row]);

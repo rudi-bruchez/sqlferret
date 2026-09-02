@@ -11,12 +11,12 @@ public class BlockingReportParserTests
         <process id="p1" waitresource="KEY: 5:72057594041204736 (x)" waittime="5972"
                  spid="201" status="suspended" trancount="2" lockMode="S"
                  isolationlevel="read committed (2)" clientapp="SampleApp" hostname="WS1" loginname="svc">
-          <inputbuf>exec dbo.GetWidget @WidgetId=897,@Code='W123456'</inputbuf>
+          <inputbuf>exec dbo.usp_SelectDocument @TenantId=897,@Code='0000000000000'</inputbuf>
         </process>
       </blocked-process>
       <blocking-process>
         <process id="p2" spid="118" status="sleeping" trancount="1" clientapp="SampleApp" hostname="WS2" loginname="svc">
-          <inputbuf>UPDATE dbo.Widget SET W_TM=0 WHERE W_ID=42</inputbuf>
+          <inputbuf>UPDATE dbo.T_Document_Doc SET Doc_TM=0 WHERE Doc_ID=42</inputbuf>
         </process>
       </blocking-process>
     </blocked-process-report>
@@ -33,7 +33,7 @@ public class BlockingReportParserTests
         Assert.Equal(5_972_000L, r.Blocked.WaitTimeUs);            // ms -> us
         Assert.Equal("S", r.Blocked.LockMode);
         Assert.Equal(2, r.Blocked.TranCount);
-        Assert.Contains("GetWidget", r.Blocked.InputBufRaw);
+        Assert.Contains("usp_SelectDocument", r.Blocked.InputBufRaw);
         Assert.Null(r.Blocked.InputBufFingerprint);                // set later, in IngestionService
         Assert.Equal(118, r.Blocking.Spid);
         Assert.Contains("UPDATE", r.Blocking.InputBufRaw);

@@ -49,6 +49,7 @@ later.
 | | |
 |---|---|
 | **Normalizes queries** | Real T-SQL tokenization (ScriptDom, not regex). Literals become `?`, `IN (?, ?, ?)` collapses to `IN (?)`, keywords are lowercased, identifiers keep their casing. The result is SHA-256 fingerprinted, so the same shape always lands on the same row. |
+| **Classifies statements** | Each shape carries a `statement_kind`, a `primary_table` and a `target_object`, derived from a real AST — DDL included, so an `ALTER TABLE … ADD` or an index build is a first-class row rather than something you fish out with a regex. |
 | **Ranks the workload** | Count, average, p95, max and total duration per query shape, aggregated in DuckDB. Slice by database, login, host or application. |
 | **Digests blocking** | Parses `blocked_process_report` into a relational model (wait-resource type, lock mode, isolation level, chain depth) and emits a ranked digest as Markdown or JSON. |
 | **Triages real plans** | Ingests `query_post_execution_plan_profile`, deduplicates by plan hash, keeps the first and the slowest `.sqlplan` per distinct plan, and flags spills, oversized memory grants, defeated row goals, cardinality misestimates and large scans. |
@@ -69,7 +70,7 @@ flowchart LR
     E --> G
     F --> G
     F --> H["plans/profile/run_N/<br/>*.sqlplan · *.digest.json · index.json"]
-    G --> I["top-slow<br/>export-blocking<br/>export-events"]
+    G --> I["top-slow · query<br/>export-blocking<br/>export-events"]
     S[("SQL Server<br/>Query Store")] -.->|query-store-import| G
 ```
 
@@ -107,10 +108,21 @@ dotnet run --project src/SqlFerret.Cli -- \
 `.xel` file or a folder, in which case every top-level `*.xel` is read in name order, which is the
 order SQL Server numbers its rollover files in.
 
+Add `--redaction off` when the analysis needs the real SQL text and parameter values. It is also
+the only policy that retains raw blocking and deadlock XML — see
+[docs/privacy.md](docs/privacy.md).
+
 ### 4. Look at the workload
 
 ```bash
 dotnet run --project src/SqlFerret.Cli -- top-slow --project ./audits/prod-2026-08 --limit 20
+```
+
+For anything `top-slow` does not cover, run SQL against the project directly:
+
+```bash
+dotnet run --project src/SqlFerret.Cli -- query --project ./audits/prod-2026-08 --format md \
+    --sql "SELECT statement_kind, count(*) n FROM normalized_queries GROUP BY 1 ORDER BY n DESC"
 ```
 
 Or open the terminal UI, which gives you a sortable table with drill-down into individual
@@ -120,7 +132,7 @@ executions and their parameters:
 dotnet run --project src/SqlFerret.Tui -- ./audits/prod-2026-08
 ```
 
-Or skip both and query the store directly, because it is just DuckDB:
+Or skip all three and open the store yourself, because it is just DuckDB:
 
 ```bash
 duckdb ./audits/prod-2026-08/sqlferret.duckdb
@@ -146,12 +158,25 @@ dotnet run --project src/SqlFerret.Cli -- \
 |---|---|
 | `import <path> --project <dir>` | Ingest a `.xel` file or folder. [→](docs/cli-reference.md#import) |
 | `top-slow --project <dir>` | Print query shapes ranked by total duration. [→](docs/cli-reference.md#top-slow) |
+| `query --project <dir> --sql <text>` | Run arbitrary SQL against the project, as `table`, `csv`, `json` or `md`. [→](docs/cli-reference.md#query) |
+| `reclassify --project <dir>` | Re-run normalization and classification in place, without re-importing. [→](docs/cli-reference.md#reclassify) |
 | `export-blocking --project <dir>` | Blocking digest as Markdown, JSON, or an NDJSON dump. [→](docs/cli-reference.md#export-blocking) |
 | `export-events --project <dir> --out <dir>` | Raw blocked-process and deadlock XML, one file per event, plus a manifest. [→](docs/cli-reference.md#export-events) |
 | `query-store-import --project <dir>` | Snapshot a live database's Query Store. [→](docs/cli-reference.md#query-store-import) |
 | `obfuscate-plan …` | Anonymize `.sqlplan` files, reversibly. [→](docs/cli-reference.md#obfuscate-plan) |
 
+There is no `--help`: run the CLI with no argument and it prints its usage line.
+
 Full flags, exit codes and output formats: **[docs/cli-reference.md](docs/cli-reference.md)**.
+
+### Two notes on `query`
+
+- Duration formatting follows the **output column name**. `SELECT duration_us AS duration` gives
+  you raw microseconds; keep the `_us` suffix (`AS total_us`) to keep the formatting, or pass
+  `--raw` to never get it.
+- A **1000-row limit applies by default**; `--limit <n>` changes it, `--no-limit` lifts it.
+  Truncation is announced on `stderr`. `csv` and `json` are faithful formats; `table` and `md` are
+  presentation formats that render embedded newlines as `\n`.
 
 ## What a project directory looks like
 
@@ -181,19 +206,32 @@ Every export is bounded JSON or Markdown and the project file is plain DuckDB, s
 work a 200 MB trace without ever opening it. The repository ships a skill that teaches one how:
 
 ```
-.agents/skills/analyzing-sql-workloads/SKILL.md
+.agents/skills/analyzing-xel-workloads/SKILL.md
 ```
 
-`.agents/skills/` is the cross-runtime location. To use it outside this repository, link it into
-your runtime's skills directory — for Claude Code:
+`.agents/skills/` is the cross-runtime location; this repository's `.claude/skills` is a local
+junction to it, and is not committed. To use the skill outside this repository, link it into your
+runtime's skills directory — for Claude Code:
 
 ```bash
-ln -s "$PWD/.agents/skills/analyzing-sql-workloads" ~/.claude/skills/analyzing-sql-workloads
+# macOS / Linux
+ln -s "$PWD/.agents/skills/analyzing-xel-workloads" ~/.claude/skills/analyzing-xel-workloads
 ```
 
-The skill covers the workflow and, more usefully, the traps that produce confidently wrong
-answers: microsecond columns read as milliseconds, the three incompatible `query_hash` text
-formats, and `--redaction off` being the only policy that retains blocking XML. Setup details in
+```powershell
+# Windows — a junction needs no elevation, unlike a symbolic link
+New-Item -ItemType Junction `
+  -Path  "$env:USERPROFILE\.claude\skills\analyzing-xel-workloads" `
+  -Target "$PWD\.agents\skills\analyzing-xel-workloads"
+```
+
+A link rather than a copy: the skill evolves with the tool, and a copy goes stale.
+
+The skill (written in French) covers the workflow and, more usefully, the traps that produce
+confidently wrong answers: microsecond columns read as milliseconds, validating a filter by what
+it retains instead of what it excludes, `LIKE` patterns that assume a literal space, the three
+incompatible `query_hash` text formats, and `--redaction off` being the only policy that retains
+blocking XML. Setup details in
 [getting-started.md](docs/getting-started.md#7-optional-driving-sqlferret-from-an-ai-agent).
 
 ## A word on privacy
@@ -229,14 +267,14 @@ pointing SQLFerret at anything real. The short version:
 | **[Privacy and redaction](docs/privacy.md)** | What lands on disk, and how to control it. |
 | **[Architecture](docs/architecture.md)** | Layering, design rules, why there is no DI container. |
 | **[Development](docs/development.md)** | Build, test, conventions, known gaps. |
-| **[Agent skill](.agents/skills/analyzing-sql-workloads/SKILL.md)** | How an AI agent should drive SQLFerret, and the traps it must avoid. |
+| **[Agent skill](.agents/skills/analyzing-xel-workloads/SKILL.md)** | How an AI agent should drive SQLFerret, and the traps it must avoid. |
 
 ## Status
 
-The `.xel` ingestion pipeline, DuckDB storage, workload and blocking analysis, real-plan
-ingestion, Query Store import, plan obfuscation, the CLI and the terminal UI are implemented and
-covered by 387 tests. Ten of those are environment-gated and skip cleanly when no local capture
-or live server is available, so a fresh clone runs green.
+The `.xel` ingestion pipeline, DuckDB storage, workload and blocking analysis, DDL classification,
+ad-hoc `query`, real-plan ingestion, Query Store import, plan obfuscation, the CLI and the terminal
+UI are implemented and covered by 512 tests. Ten of those are environment-gated and skip cleanly
+when no local capture or live server is available, so a fresh clone runs green.
 
 Known gaps are tracked in [docs/development.md](docs/development.md#known-gaps).
 

@@ -8,6 +8,18 @@ else that speaks DuckDB, and query it directly.
 duckdb ./audits/prod-2026-08/sqlferret.duckdb
 ```
 
+You do not need any of them, though: `query` runs the same SQL through the tool itself, opens the
+database read-only, and formats durations for you. It is the recommended path, and the only one
+that does not require a second DuckDB installation:
+
+```bash
+sqlferret query --project ./audits/prod-2026-08 --format md \
+    --sql "SELECT statement_kind, count(*) n FROM normalized_queries GROUP BY 1 ORDER BY n DESC"
+```
+
+See [cli-reference.md#query](cli-reference.md#query) — in particular the default row limit and the
+way duration formatting keys off the output column name.
+
 Schema creation is idempotent (`CREATE TABLE IF NOT EXISTS` plus `ADD COLUMN IF NOT EXISTS`
 migrations), so opening an older project with a newer build upgrades it in place.
 
@@ -79,10 +91,14 @@ One row per distinct query shape, deduplicated across every run.
 |---|---|---|
 | `normalized_hash` | TEXT PK | SHA-256 (hex, lowercase) of the normalized text |
 | `normalized_sql` | TEXT | Literals replaced by `?`, keywords lowercased |
-| `statement_kind` | TEXT | `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `EXEC`, `OTHER` |
-| `primary_table` | TEXT | First table in the FROM clause, or the update/insert/delete target, or the procedure name |
-| `normalizer_version` | INTEGER | Bump invalidates comparability across projects |
+| `statement_kind` | TEXT | DML (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `EXEC`, `FETCH`), DDL (`CREATE TABLE`, `ALTER TABLE ADD COLUMN`, `CREATE INDEX`, `ALTER PROCEDURE`, …) or `OTHER`. Roughly fifty values — the full mapping is in [normalization.md](normalization.md#classification) |
+| `primary_table` | TEXT | The table the statement acts on, **as written** (schema prefix included when present) |
+| `target_object` | TEXT | The sub-object the statement targets: column, constraint, index, procedure, function, trigger, cursor. `NULL` for most DML |
+| `normalizer_version` | INTEGER | Bump invalidates comparability across projects. Covers classification too |
 | `first_seen_at`, `last_seen_at` | TIMESTAMP | |
+
+`primary_table` keeping the name as written means `dbo.T` and `T` are two distinct values. A
+`GROUP BY primary_table` will split one table across two rows if the workload writes it both ways.
 
 This is the table the whole tool is built around. See [normalization.md](normalization.md).
 

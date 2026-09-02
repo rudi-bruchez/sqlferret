@@ -100,8 +100,115 @@ SELECT      1204  total=812304 ms   select o.id , o.total from dbo.Orders o wher
 
 Ordering is by `total_duration_us` and is not configurable from the CLI. The underlying
 `WorkloadQueries.TopSlow` also supports `p95_duration_us`, `max_duration_us` and
-`avg_duration_us`, and the terminal UI exposes them; from the CLI, query the DuckDB file directly
-if you need a different ranking. See [data-model.md](data-model.md#useful-queries).
+`avg_duration_us`, and the terminal UI exposes them; from the CLI, use [`query`](#query) if you
+need a different ranking. See [data-model.md](data-model.md#useful-queries).
+
+---
+
+## `query`
+
+Run arbitrary SQL against the project and print the result.
+
+```text
+sqlferret query --project <dir> (--sql <text> | --file <path>)
+                [--format table|csv|json|md] [--limit <n> | --no-limit] [--raw]
+```
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `--project <dir>` | required | Project directory. Opened **read-only**. |
+| `--sql <text>` | — | The statement to run. Exactly one of `--sql` or `--file` is required. |
+| `--file <path>` | — | Read the statement from a file instead. |
+| `--format <f>` | `table` | One of `table`, `csv`, `json`, `md`. Anything else is an error. |
+| `--limit <n>` | 1000 | Maximum rows returned. Must be a strictly positive integer. |
+| `--no-limit` | — | Return every row. Mutually exclusive with `--limit`. |
+| `--raw` | off | Never apply duration formatting; print values as stored. |
+
+**The database is opened read-only.** Write protection comes from the connection, not from
+inspecting your SQL — parsing the statement to decide whether it writes would be a sieve.
+
+### The default row limit
+
+A result set is materialised entirely in managed memory, so an unbounded `SELECT * FROM
+executions` — a perfectly ordinary query — would exhaust the heap on a real trace. Hence the
+1000-row default.
+
+Truncation is never silent: it is announced on `stderr`, and the `table` footer names the cause,
+distinguishing the default limit from an explicit `--limit`. Do not discard `stderr` if you care
+whether you saw the whole answer.
+
+`--limit` with no value, or with a non-numeric or non-positive one, is an error rather than a
+silent fallback.
+
+### Duration formatting follows the column name
+
+A column whose **output name** ends in `_us` is formatted using the project's display unit;
+any other name is printed as stored.
+
+```sql
+SELECT sum(duration_us) AS total_us   -- formatted
+SELECT sum(duration_us) AS total      -- raw microseconds
+```
+
+The suffix converts **any** numeric value in that column whatever its SQL type — `sum()` yields a
+HUGEINT and `avg()` a DOUBLE — so two `_us` columns on the same row are always in the same unit.
+`--raw` disables the whole mechanism.
+
+### Choosing a format
+
+`csv` and `json` are **faithful**: newlines inside a value are preserved, and `json` stays typed
+down to a HUGEINT. `table` and `md` are **presentation** formats with one record per line, so a
+newline inside a `sql_text_raw` is rendered as `\n` rather than breaking the grid. SQL you intend
+to read back or replay should come out as `csv` or `json`.
+
+`json` indexes rows by column name, so a `JOIN` that returns two columns with the same name would
+overwrite one of them. That case is reported on `stderr` rather than passing unnoticed; alias your
+columns.
+
+If the project's classification is stale, the command says so on `stderr` — see
+[`reclassify`](#reclassify).
+
+```bash
+sqlferret query --project ./audits/prod-2026-08 --format md \
+    --sql "SELECT statement_kind, count(*) n FROM normalized_queries GROUP BY 1 ORDER BY n DESC"
+```
+
+---
+
+## `reclassify`
+
+Re-run normalization and classification over an existing project, in place, without re-importing.
+
+```text
+sqlferret reclassify --project <dir> [--force]
+```
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `--project <dir>` | required | Project directory. Opened read-write. |
+| `--force` | off | Replay rows that are already at the current version. |
+
+Use it when a project was imported by an older `QueryNormalizer.Version`. The commands that read a
+project detect the situation and mention it on `stderr`; this is the fix, and it costs no
+re-import because the classification is recomputed from the statement text already stored.
+
+`--force` is for the other case: the version has not moved, but the classifier has gained a visitor
+for a construct it previously left as `OTHER`, and you want those rows replayed.
+
+```text
+reclassify: v1 -> v3 | examined=8421 changed=1180 unchanged=7241 unclassified=12 withoutSample=3
+```
+
+Two outcomes are reported separately on `stderr` because they are not the same problem:
+
+- **unclassified** — the text was parsed but no visitor claimed it, or it could not be parsed at
+  all. `--force` will replay these once the classifier learns the construct.
+- **withoutSample** — no source text was retained for that signature, neither an execution nor a
+  blocking input buffer, so there is nothing to reclassify. Its classification is left untouched;
+  `--force` cannot help, only a re-import can.
+
+Already at the current version and without `--force`, the command reports `rien a faire` and
+changes nothing.
 
 ---
 

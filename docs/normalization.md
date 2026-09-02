@@ -21,7 +21,7 @@ computable statement rather than an intuition.
 `QueryNormalizer.Normalize` does three things and returns a `NormalizedQuery`:
 
 1. **`TokenNormalizer`** rewrites the statement text.
-2. **`AstClassifier`** determines the statement kind and the primary table.
+2. **`AstClassifier`** determines the statement kind, the primary table and the target object.
 3. **`Fingerprint`** hashes the normalized text with SHA-256 and returns lowercase hex.
 
 Both steps 1 and 2 use `Microsoft.SqlServer.TransactSql.ScriptDom` with a `TSql160Parser`. This
@@ -51,19 +51,66 @@ length still groups into one shape.
 
 ### Classification
 
-`AstClassifier` parses the statement into an AST and takes the **first** statement of the batch:
+`AstClassifier` parses the statement into an AST and walks it with a visitor. It produces three
+values at once — `statement_kind`, `primary_table` and `target_object` — and they are **locked
+together on the first match**: whichever statement claims the kind also supplies the table and the
+target, so you never get the kind of one statement paired with the table of another.
 
-| Kind | Primary table |
-|---|---|
-| `SELECT` | First named table in the FROM clause |
-| `INSERT` | Insert target |
-| `UPDATE` | Update target |
-| `DELETE` | Delete target |
-| `EXEC` | Procedure name |
-| `OTHER` | none |
+DML and procedure calls:
 
-"First statement wins" is a real limitation for multi-statement batches. A batch that opens with
-a `SET NOCOUNT ON` classifies as `OTHER`. This is a known simplification, not an accident.
+| Kind | Primary table | Target object |
+|---|---|---|
+| `SELECT` | First named table in the FROM clause | — |
+| `INSERT` | Insert target | — |
+| `UPDATE` | Update target | — |
+| `DELETE` | Delete target | — |
+| `MERGE` | Merge target | — |
+| `EXEC` | Procedure name | — |
+| `FETCH` | — | Cursor name |
+| `OTHER` | — | — |
+
+DDL is classified too, which is what makes an upgrade-script audit possible. The kind carries the
+**form** of the statement, `primary_table` the table it acts on, and `target_object` the
+sub-object — the column, constraint, index, procedure or view being touched:
+
+| Kind | Primary table | Target object |
+|---|---|---|
+| `CREATE TABLE`, `DROP TABLE`, `TRUNCATE TABLE` | The table | — |
+| `ALTER TABLE ADD COLUMN`, `ALTER TABLE ALTER COLUMN` | The table | The column |
+| `ALTER TABLE ADD CONSTRAINT`, `ALTER TABLE DROP` | The table | The constraint or element |
+| `ALTER TABLE CHECK CONSTRAINT`, `ALTER TABLE NOCHECK CONSTRAINT` | The table | The constraint |
+| `ALTER TABLE REBUILD`, `ALTER TABLE SET`, `ALTER TABLE ADD` | The table | — |
+| `ALTER TABLE SWITCH` | The source table | The target table |
+| `ALTER TABLE SPLIT PARTITION`, `ALTER TABLE MERGE PARTITION` | The table | — |
+| `ALTER TABLE ENABLE/DISABLE TRIGGER` | The table | The trigger |
+| `ALTER TABLE ENABLE/DISABLE CHANGE_TRACKING` | The table | — |
+| `ALTER TABLE ENABLE/DISABLE FILETABLE_NAMESPACE` | The table | — |
+| `CREATE INDEX`, `CREATE CLUSTERED INDEX`, `ALTER INDEX`, `DROP INDEX` | The table | The index |
+| `CREATE STATISTICS`, `UPDATE STATISTICS` | The table | The statistics object |
+| `CREATE PROCEDURE`, `ALTER PROCEDURE`, `DROP PROCEDURE` | — | The procedure |
+| `CREATE FUNCTION`, `ALTER FUNCTION`, `DROP FUNCTION` | — | The function |
+| `CREATE VIEW`, `ALTER VIEW`, `DROP VIEW` | The view | — |
+| `CREATE TRIGGER`, `ALTER TRIGGER`, `DROP TRIGGER` | The table | The trigger |
+| `CREATE PARTITION FUNCTION`, `CREATE PARTITION SCHEME` | — | The object |
+| `ALTER DATABASE` | — | The database |
+
+Creation and alteration stay distinct — the node type says which one happened, and the difference
+carries meaning in an upgrade audit. `CREATE OR ALTER` is filed with the creations, because the
+text does not say which of the two actually occurred.
+
+**The first statement that a visitor recognizes wins.** That is not the same as the first
+statement of the batch: a statement with no visitor is skipped rather than claiming the batch, so
+`SET NOCOUNT ON; SELECT a FROM dbo.T` classifies as `SELECT` on `dbo.T`, not as `OTHER`. A batch
+in which *nothing* is recognized classifies as `OTHER`.
+
+Module bodies do not leak. `ALTER PROCEDURE dbo.P AS BEGIN UPDATE dbo.T … END` classifies as
+`ALTER PROCEDURE` with target `dbo.P` — not as `UPDATE` on `dbo.T`. Without that rule, a
+`GROUP BY primary_table` would charge the cost of replacing a procedure to a table the statement
+never touches, which is a wrong value rather than a missing one.
+
+**`primary_table` keeps the name as written**, schema prefix included when present. The same table
+written `dbo.T` in one statement and `T` in another produces two distinct values, and a
+`GROUP BY primary_table` splits it across two rows. Check before you aggregate.
 
 ### Fallback
 
@@ -78,13 +125,32 @@ raising an error.
 
 ## Versioning
 
-`QueryNormalizer.Version` is currently **1** and is persisted twice: on `ingestion_runs` and on
+`QueryNormalizer.Version` is currently **3** and is persisted twice: on `ingestion_runs` and on
 every row in `normalized_queries`.
 
-This exists so that a future change to the normalization rules is detectable rather than
-silently corrupting comparisons. If you compare two projects, or two runs inside one project,
-check that the versions match. Fingerprints from different normalizer versions are not
-comparable, even when the SQL is identical.
+This exists so that a change to the normalization rules is detectable rather than silently
+corrupting comparisons. If you compare two projects, or two runs inside one project, check that
+the versions match. Fingerprints from different normalizer versions are not comparable, even when
+the SQL is identical.
+
+The version covers **normalization and classification together**. It is bumped whenever
+`AstClassifier` would return a different answer for the same input — not only when the token
+rewriting changes. Without that, an already-imported project would silently keep its old
+classification and never be offered an upgrade.
+
+A project imported by an older version does not need re-importing. `reclassify` re-runs
+classification in place against the stored statement text:
+
+```bash
+sqlferret reclassify --project ./audits/prod-2026-08
+```
+
+The commands that read a project warn on `stderr` when they detect a stale classification. Two
+limits are worth knowing: a signature for which no source text was retained — neither an execution
+nor a blocking input buffer — cannot be reclassified at all and is left as it is, and statements
+that remain unclassified after the pass are reported so that `--force` can replay them once the
+classifier gains a visitor for them. See
+[cli-reference.md#reclassify](cli-reference.md#reclassify).
 
 ## What this does and does not guarantee
 

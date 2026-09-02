@@ -60,7 +60,7 @@ sample/
 
 # SQLFerret-specific
 *.duckdb
-# Root-anchored: the estimated-plan output folder only — must NOT match docs/superpowers/plans/
+# Root-anchored: the estimated-plan output folder only, not any nested plans/ directory
 /plans/
 
 # Real production execution plans (PII) — never commit
@@ -68,6 +68,6 @@ exemples-plans/
 *.sqlplan
 *.SQLPlan
 
-# Agent skills live in .agents/skills (committed). .claude/skills holds a local
-# junction/symlink to them for Claude Code; the link itself is not committed.
+# Agent skills live in .agents/skills (committed, cross-runtime). .claude/skills holds a
+# local junction/symlink to them for Claude Code; the link itself is not committed.
 /.claude/skills/

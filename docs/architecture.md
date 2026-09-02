@@ -9,7 +9,7 @@ sqlferret.sln                       classic .sln, net10.0 throughout
 │   ├── SqlFerret.Cli/              console host: import, analysis and export commands
 │   └── SqlFerret.Tui/              Terminal.Gui host: interactive exploration
 └── tests/
-    ├── SqlFerret.Core.Tests/       360 tests
+    ├── SqlFerret.Core.Tests/       485 tests
     └── SqlFerret.Tui.Tests/        27 tests
 ```
 
@@ -55,8 +55,8 @@ flowchart TD
 | `Parameters` | Parameter extraction and the redaction policy. Pure. |
 | `Filtering` | `FilterRule` and the compiler that turns rules into a SQL `WHERE` clause or an in-memory predicate. |
 | `Ingestion` | XELite reading, event routing and mapping, progress tracking, the `ImportRunner` orchestration entry point. |
-| `Storage` | `DuckDbProject`: schema creation, batched inserts, the analysis queries that belong to writing. Split across partial-class files by feature. |
-| `Analysis` | `WorkloadQueries`, `BlockingQueries`, `BlockingDigest`, `EventExportService`. All aggregation is SQL. |
+| `Storage` | `DuckDbProject`: schema creation, batched inserts, the analysis queries that belong to writing. Split across partial-class files by feature. `Reclassifier` re-runs classification in place. |
+| `Analysis` | `WorkloadQueries`, `BlockingQueries`, `BlockingDigest`, `EventExportService`, `AdHocQuery`. All aggregation is SQL. |
 | `Plans` | Showplan parsing, plan identity, the findings rules, the artifact writer. |
 | `Obfuscation` | Identifier mapping, plan rewriting, statement-text rewriting. |
 | `Server` | The only namespace that opens a `SqlConnection`: estimated-plan capture and Query Store import. |

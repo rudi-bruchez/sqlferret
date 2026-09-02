@@ -4,7 +4,7 @@
 
 ```bash
 dotnet build          # zero warnings expected
-dotnet test           # 387 tests: 377 pass, 10 skip
+dotnet test           # 512 tests: 502 pass, 10 skip
 dotnet format         # run before committing; .editorconfig is the style baseline
 ```
 
@@ -98,7 +98,10 @@ Every change should be checked against these:
 4. **Nothing silently dropped.** New event handling means a new counter on `ingestion_runs`, and
    the counters must stay mutually exclusive and exhaustive.
 5. **`QueryNormalizer.Version`** is persisted on both `ingestion_runs` and `normalized_queries`.
-   Changing normalization rules means bumping it.
+   It versions normalization **and classification together**: bump it whenever `AstClassifier`
+   would return a different answer for a given input, not only when the token rewriting changes.
+   Skip the bump and already-imported projects silently keep their old classification, with
+   nothing ever offering them [`reclassify`](cli-reference.md#reclassify).
 6. **SQL safety.** User free text is bound (`$name`); only allow-listed identifiers are
    interpolated. `planId` values must reject path traversal. `SET SHOWPLAN_XML ON` stays
    compile-only.
@@ -118,8 +121,8 @@ src/SqlFerret.Core/
 ├── Parameters/       extraction + redaction policy
 ├── Filtering/        filter rules and their SQL/predicate compiler
 ├── Ingestion/        XELite reading, event routing, ImportRunner, progress
-├── Storage/          DuckDbProject (partial: .cs, .Plans, .QueryStore, .Obfuscation)
-├── Analysis/         WorkloadQueries, BlockingQueries, BlockingDigest, EventExport
+├── Storage/          DuckDbProject (partial: .cs, .Plans, .QueryStore, .Obfuscation), Reclassifier
+├── Analysis/         WorkloadQueries, BlockingQueries, BlockingDigest, EventExport, AdHocQuery
 ├── Plans/            plan identity, parser, findings, artifact writer
 ├── Obfuscation/      identifier map, plan and statement rewriters
 ├── Server/           the only SqlConnection users: estimated plans, Query Store
@@ -127,7 +130,7 @@ src/SqlFerret.Core/
 ├── Config/           DotEnv, SqlFerretConfig, DisplayFormat, UiState
 └── Project/          AuditProject, ProjectManifest
 
-src/SqlFerret.Cli/    Program.cs switch + BlockingDigestMarkdown renderer
+src/SqlFerret.Cli/    Program.cs switch + BlockingDigestMarkdown and ResultFormatter renderers
 src/SqlFerret.Tui/    Shell/, Views/, Presenters/, Clipboard/
 ```
 
@@ -145,7 +148,8 @@ Tracked, deliberate, and open to contribution:
 - **Plan-to-execution correlation** is deferred. It needs no new code, only a capture that
   includes `sqlserver.query_hash`; see [capture-session.md](capture-session.md).
 - **`top-slow` cannot change its sort column** from the CLI, although the underlying query
-  supports four. The TUI exposes them.
+  supports four. The TUI exposes them, and [`query`](cli-reference.md#query) covers the case at the
+  cost of writing the SQL yourself.
 - **No `--help`.** Running the CLI bare prints a usage line; [cli-reference.md](cli-reference.md)
   is the reference.
 - **No deadlock digest.** Graphs are stored and exportable, but not summarized the way blocking is.

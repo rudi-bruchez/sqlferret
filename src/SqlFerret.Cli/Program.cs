@@ -1,5 +1,6 @@
 // src/SqlFerret.Cli/Program.cs
 using Microsoft.Data.SqlClient;
+using SqlFerret.Cli;
 using SqlFerret.Core.Analysis;
 using SqlFerret.Core.Config;
 using SqlFerret.Core.Filtering;
@@ -7,6 +8,12 @@ using SqlFerret.Core.Ingestion;
 using SqlFerret.Core.Parameters;
 using SqlFerret.Core.Project;
 using SqlFerret.Core.Server;
+using SqlFerret.Core.Storage;
+
+// Le meme avertissement est emis par 'top-slow' et par 'query' : une seule source de verite,
+// sans quoi les deux textes divergent au premier ajustement.
+const string StaleClassificationNote =
+    "note: classification anterieure detectee — lancer 'reclassify' pour typer le DDL";
 
 string Arg(string name, string? fallback = null)
 {
@@ -39,7 +46,7 @@ AuditProject? OpenProject()
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: import <path> --project <dir> | top-slow --project <dir> | export-blocking --project <dir> [...] | query-store-import --project <dir> [--conn <s>] [--database <db>] [--no-plans] [--from <dt> --to <dt> | --last <N>{h|d}] | export-events --project <dir> --out <dir> [--kind blocking|deadlock|both] [--from <dt> --to <dt> | --last <N>{h|d}] [--fingerprint <hash>] [--database <id>] [--limit <n>] | obfuscate-plan (--in <file> --out <file> | --in-dir <dir> --out-dir <dir> [--map <file>] | --project <dir> --plan-id <id>)");
+    Console.Error.WriteLine("usage: import <path> --project <dir> | top-slow --project <dir> | export-blocking --project <dir> [...] | query-store-import --project <dir> [--conn <s>] [--database <db>] [--no-plans] [--from <dt> --to <dt> | --last <N>{h|d}] | export-events --project <dir> --out <dir> [--kind blocking|deadlock|both] [--from <dt> --to <dt> | --last <N>{h|d}] [--fingerprint <hash>] [--database <id>] [--limit <n>] | obfuscate-plan (--in <file> --out <file> | --in-dir <dir> --out-dir <dir> [--map <file>] | --project <dir> --plan-id <id>) | query --project <dir> (--sql <texte> | --file <chemin>) [--format table|csv|json|md] [--limit <n> (defaut 1000) | --no-limit] [--raw] | reclassify --project <dir> [--force]");
     return 1;
 }
 
@@ -116,6 +123,8 @@ switch (args[0])
             foreach (var s in rows)
                 Console.WriteLine(
                     $"{s.StatementKind,-7} {s.Count,8}  total={DisplayFormat.Duration(s.TotalDurationUs, project.Config.DurationUnit),-12}  {Trim(s.NormalizedSql)}");
+            if (db.HasStaleClassification())
+                Console.Error.WriteLine(StaleClassificationNote);
             return 0;
         }
     case "export-blocking":
@@ -364,6 +373,123 @@ switch (args[0])
                 Console.Error.WriteLine($"obfuscate-plan: {ex.Message}");
                 return 1;
             }
+            return 0;
+        }
+    case "query":
+        {
+            var project = OpenProject();
+            if (project is null) return 1;
+
+            var inline = Arg("--sql");
+            var file = Arg("--file");
+            if (string.IsNullOrWhiteSpace(inline) == string.IsNullOrWhiteSpace(file))
+            {
+                Console.Error.WriteLine("query: fournir exactement l'un de --sql ou --file");
+                return 1;
+            }
+            string sql;
+            if (!string.IsNullOrWhiteSpace(file))
+            {
+                if (!File.Exists(file)) { Console.Error.WriteLine($"query: fichier introuvable: {file}"); return 1; }
+                sql = File.ReadAllText(file);
+            }
+            else sql = inline;
+
+            var format = Arg("--format", "table");
+            if (format is not ("table" or "csv" or "json" or "md"))
+            {
+                Console.Error.WriteLine($"query: --format invalide '{format}'. Valeurs: table, csv, json, md");
+                return 1;
+            }
+            // --limit non numerique valait "aucune limite", silencieusement : la meme faute de
+            // frappe donnait tout le jeu de resultats avec un code retour 0. Le fichier valide
+            // strictement partout ailleurs (--format ci-dessus, export-events --limit) ; meme
+            // idiome ici.
+            // On raisonne sur l'INDICE et non sur Arg(), qui rend "" aussi bien pour un drapeau
+            // absent que pour un drapeau sans valeur : `query ... --limit` en fin de ligne
+            // retombait donc sur la limite par defaut, sans un mot — le residu de la faute meme
+            // que cette validation corrige.
+            var noLimit = Array.IndexOf(args, "--no-limit") >= 0;
+            var limitAt = Array.IndexOf(args, "--limit");
+            int? limit;
+            if (noLimit && limitAt >= 0)
+            {
+                Console.Error.WriteLine("query: --limit et --no-limit sont exclusifs");
+                return 1;
+            }
+            if (noLimit) limit = null;
+            else if (limitAt < 0) limit = AdHocQuery.DefaultLimit;
+            else if (limitAt + 1 >= args.Length)
+            {
+                Console.Error.WriteLine("query: --limit attend une valeur : entier strictement positif (ou --no-limit)");
+                return 1;
+            }
+            else if (!int.TryParse(args[limitAt + 1], out var lq) || lq <= 0)
+            {
+                Console.Error.WriteLine($"query: --limit invalide '{args[limitAt + 1]}' : entier strictement positif attendu (ou --no-limit)");
+                return 1;
+            }
+            else limit = lq;
+            var raw = Array.IndexOf(args, "--raw") >= 0;
+
+            // Une seule formulation de la cause de troncature, pour le pied de page du tableau
+            // comme pour stderr : le pied de page annoncait "--limit" alors que la troncature vient
+            // desormais de la limite par defaut dans la plupart des cas.
+            var truncationCause = limitAt < 0
+                ? $"limite par defaut de {AdHocQuery.DefaultLimit} lignes ; --limit <n> ou --no-limit"
+                : "--limit ; --no-limit pour tout rendre";
+
+            // Tout est DANS le try, ouverture comprise : une base absente ou verrouillee doit
+            // produire un message, pas une trace de pile — et le rendu aussi, qui manipule les
+            // types rendus par DuckDB et peut donc echouer sur une valeur inattendue. Une seule
+            // connexion sert la requete et le controle de version : la seconde, ouverte apres coup
+            // pour HasStaleClassification, etait hors de cette protection.
+            try
+            {
+                using var db = project.OpenDbReadOnly();
+                var table = new AdHocQuery(db.Connection).Run(sql, limit);
+
+                Console.WriteLine(ResultFormatter.Render(table, format, project.Config.DurationUnit, raw, truncationCause));
+                // json seul indexe par nom de colonne (voir ResultFormatter.DuplicateColumnNames) :
+                // un JOIN sans alias sur une colonne partagee ecraserait une valeur sans
+                // avertissement.
+                if (format == "json")
+                {
+                    var dupes = ResultFormatter.DuplicateColumnNames(table);
+                    if (dupes.Count > 0)
+                        Console.Error.WriteLine($"warning: colonnes dupliquees dans la sortie json, valeurs ecrasees: {string.Join(", ", dupes)}");
+                }
+                if (table.Truncated)
+                    Console.Error.WriteLine($"warning: sortie tronquee a {table.Rows.Count} lignes ({truncationCause})");
+
+                if (db.HasStaleClassification())
+                    Console.Error.WriteLine(StaleClassificationNote);
+            }
+            catch (Exception ex) { Console.Error.WriteLine($"query: {ex.Message}"); return 1; }
+            return 0;
+        }
+    case "reclassify":
+        {
+            var project = OpenProject();
+            if (project is null) return 1;
+            var force = Array.IndexOf(args, "--force") >= 0;
+
+            using var db = project.OpenDb();
+            var r = new SqlFerret.Core.Storage.Reclassifier(db).Run(force);
+
+            Console.WriteLine(r.RowsExamined == 0
+                ? $"reclassify: rien a faire (deja en v{r.ToVersion})"
+                : $"reclassify: v{r.FromVersion} -> v{r.ToVersion} | examined={r.RowsExamined} changed={r.RowsChanged} unchanged={r.RowsUnchanged} unclassified={r.Unclassified} withoutSample={r.RowsWithoutSample}");
+
+            if (r.RowsChanged > 0)
+                Console.WriteLine("note: des lignes autrefois 'OTHER' portent desormais un statement_kind DDL");
+            // Les deux cas ne se traitent pas pareil, donc ils ne se disent pas ensemble : --force
+            // rejoue utilement les instructions non typees apres une evolution du classifieur,
+            // mais ne peut rien pour les signatures dont aucun texte source n'est conserve.
+            if (r.Unclassified > 0)
+                Console.Error.WriteLine($"warning: {r.Unclassified} instruction(s) non typee(s) — texte non analysable ou construction sans visiteur; --force les rejouera apres une evolution du classifieur");
+            if (r.RowsWithoutSample > 0)
+                Console.Error.WriteLine($"warning: {r.RowsWithoutSample} signature(s) sans texte source conserve (ni execution ni inputbuf de blocage) — leur classification est laissee telle quelle; --force n'y changera rien, seul un reimport le pourrait");
             return 0;
         }
     default:

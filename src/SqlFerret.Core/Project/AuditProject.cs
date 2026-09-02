@@ -118,6 +118,9 @@ public sealed class AuditProject
     /// <summary>Opens the project's DuckDB database (creating its schema if new).</summary>
     public DuckDbProject OpenDb() => DuckDbProject.Open(DuckDbPath);
 
+    /// <summary>Opens the project's DuckDB database read-only. The database must already exist.</summary>
+    public DuckDbProject OpenDbReadOnly() => DuckDbProject.OpenReadOnly(DuckDbPath);
+
     private const string ReadmeContent = """
         # SqlFerret audit project
 
@@ -128,7 +131,7 @@ public sealed class AuditProject
 
         | Path | Role |
         |------|------|
-        | `sqlferret.duckdb` | Embedded DuckDB database: normalized workload, blocking/deadlock reports, analysis tables. Open with the DuckDB CLI for ad-hoc SQL. |
+        | `sqlferret.duckdb` | Embedded DuckDB database: normalized workload, blocking/deadlock reports, analysis tables. Query it with `sqlferret query --project <this dir> --sql "..."`. The DuckDB CLI also works if you have it, but it is not a dependency of this tool. |
         | `plans/` | Captured `*.sqlplan` execution plans (estimated / Query Store). Open in SSMS or Plan Explorer. |
         | `plans/profile/run_<id>/` | Actual execution plans from `query_post_execution_plan_profile`, one `*.sqlplan` per distinct plan plus the slowest execution, a `*.digest.json` per plan, and an `index.json` for triage. One folder per ingestion run. |
         | `exports/` | Generated export packs (JSON/YAML + plans) for downstream / AI analysis. Created at project creation; empty until an export runs. |

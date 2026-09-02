@@ -22,6 +22,17 @@ public sealed partial class DuckDbProject : IDisposable
         return new DuckDbProject(conn);
     }
 
+    /// <summary>
+    /// Ouvre le projet en lecture seule. Le schéma n'est pas créé ni migré : la base doit exister.
+    /// Destinée aux chemins d'analyse qui ne doivent en aucun cas modifier la pièce à conviction.
+    /// </summary>
+    public static DuckDbProject OpenReadOnly(string path)
+    {
+        var conn = new DuckDBConnection($"Data Source={path};ACCESS_MODE=READ_ONLY");
+        conn.Open();
+        return new DuckDbProject(conn);
+    }
+
     private static void CreateSchema(DuckDBConnection conn)
     {
         using var cmd = conn.CreateCommand();
@@ -43,7 +54,8 @@ public sealed partial class DuckDbProject : IDisposable
 
         CREATE TABLE IF NOT EXISTS normalized_queries (
           normalized_hash TEXT PRIMARY KEY, normalized_sql TEXT, statement_kind TEXT,
-          primary_table TEXT, normalizer_version INTEGER, first_seen_at TIMESTAMP, last_seen_at TIMESTAMP);
+          primary_table TEXT, target_object TEXT, normalizer_version INTEGER,
+          first_seen_at TIMESTAMP, last_seen_at TIMESTAMP);
 
         CREATE TABLE IF NOT EXISTS execution_parameters (
           execution_id BIGINT, ordinal INTEGER, name TEXT, source_kind TEXT, sql_type_guess TEXT,
@@ -74,6 +86,7 @@ public sealed partial class DuckDbProject : IDisposable
               ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS events_plan_profiles BIGINT;
               ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS plan_parse_failures BIGINT;
               ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS plan_write_failures BIGINT;
+              ALTER TABLE normalized_queries ADD COLUMN IF NOT EXISTS target_object TEXT;
               """;
             migrate.ExecuteNonQuery();
         }
@@ -88,6 +101,13 @@ public sealed partial class DuckDbProject : IDisposable
         var v = c.ExecuteScalar();
         return v is null or DBNull ? 0 : Convert.ToInt64(v);
     }
+
+    /// <summary>
+    /// Vrai si au moins une signature porte une classification antérieure au normaliseur courant.
+    /// Sert aux hôtes à suggérer <c>reclassify</c>, jamais à bloquer une commande.
+    /// </summary>
+    public bool HasStaleClassification() =>
+        Scalar($"SELECT count(*) FROM normalized_queries WHERE normalizer_version < {QueryNormalizer.Version}") > 0;
 
     /// <summary>
     /// L'identifiant qu'attribuera le prochain BeginRun, sans le consommer. Permet aux hôtes
@@ -163,11 +183,15 @@ public sealed partial class DuckDbProject : IDisposable
         var n = r.Normalized;
         using var c = Connection.CreateCommand(); c.Transaction = tx;
         c.CommandText = """
-          INSERT INTO normalized_queries VALUES ($h,$sql,$kind,$tbl,$ver,$ts,$ts)
-          ON CONFLICT (normalized_hash) DO UPDATE SET last_seen_at = $ts
+          INSERT INTO normalized_queries
+                (normalized_hash, normalized_sql, statement_kind, primary_table,
+                 target_object, normalizer_version, first_seen_at, last_seen_at)
+          VALUES ($h,$sql,$kind,$tbl,$obj,$ver,$ts,$ts)
+          ON CONFLICT (normalized_hash) DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at
           """;
         Add(c, "$h", n.NormalizedHash); Add(c, "$sql", n.NormalizedSql); Add(c, "$kind", n.StatementKind);
-        Add(c, "$tbl", (object?)n.PrimaryTable); Add(c, "$ver", QueryNormalizer.Version); Add(c, "$ts", r.Event.CapturedAt);
+        Add(c, "$tbl", (object?)n.PrimaryTable); Add(c, "$obj", (object?)n.TargetObject);
+        Add(c, "$ver", QueryNormalizer.Version); Add(c, "$ts", r.Event.CapturedAt);
         c.ExecuteNonQuery();
     }
 
@@ -272,11 +296,15 @@ public sealed partial class DuckDbProject : IDisposable
         {
             using var u = Connection.CreateCommand(); u.Transaction = tx;
             u.CommandText = """
-              INSERT INTO normalized_queries VALUES ($h,$sql,$kind,$tbl,$ver,$ts,$ts)
-              ON CONFLICT (normalized_hash) DO UPDATE SET last_seen_at = $ts
+              INSERT INTO normalized_queries
+                    (normalized_hash, normalized_sql, statement_kind, primary_table,
+                     target_object, normalizer_version, first_seen_at, last_seen_at)
+              VALUES ($h,$sql,$kind,$tbl,$obj,$ver,$ts,$ts)
+              ON CONFLICT (normalized_hash) DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at
               """;
             Add(u, "$h", n.NormalizedHash); Add(u, "$sql", n.NormalizedSql); Add(u, "$kind", n.StatementKind);
-            Add(u, "$tbl", (object?)n.PrimaryTable); Add(u, "$ver", QueryNormalizer.Version); Add(u, "$ts", capturedAt);
+            Add(u, "$tbl", (object?)n.PrimaryTable); Add(u, "$obj", (object?)n.TargetObject);
+            Add(u, "$ver", QueryNormalizer.Version); Add(u, "$ts", capturedAt);
             u.ExecuteNonQuery();
         }
     }

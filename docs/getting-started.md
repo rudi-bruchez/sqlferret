@@ -76,7 +76,7 @@ A clean build produces zero warnings. To check the suite:
 dotnet test
 ```
 
-You should see 387 tests, 377 passing and 10 skipped. The skips are the tests that need a local
+You should see 512 tests, 502 passing and 10 skipped. The skips are the tests that need a local
 `.xel` sample or a live SQL Server, and they skip by design so that a fresh clone stays green.
 
 ### Making it feel like a command
@@ -164,19 +164,42 @@ the statement. Full key map in [tui.md](tui.md).
 
 ### Direct SQL
 
-The project file is a plain DuckDB database with no proprietary layer on top. This is often the
-fastest path to an answer:
+Anything `top-slow` does not answer, `query` will. It opens the project read-only and formats
+durations for you:
+
+```bash
+sqlferret query --project ./audits/prod-2026-08 --format md --sql "
+  SELECT client_app_name, count(*) AS execs, sum(duration_us) AS total_us
+  FROM executions
+  GROUP BY 1 ORDER BY total_us DESC LIMIT 10"
+```
+
+Two things to know before you trust the output. Duration formatting keys off the **output column
+name**: `AS total_us` gets formatted, `AS total` gives raw microseconds, and `--raw` never
+formats. And a **1000-row limit applies by default** — `--limit <n>` changes it, `--no-limit`
+lifts it, and truncation is announced on `stderr`, so do not pipe that away. Full details in
+[cli-reference.md#query](cli-reference.md#query).
+
+Because the classification is stored, DDL is queryable as a first-class thing rather than
+something you fish out with a regex:
+
+```bash
+sqlferret query --project ./audits/prod-2026-08 --format md --sql "
+  SELECT n.statement_kind, n.primary_table, n.target_object,
+         count(*) AS execs, sum(e.duration_us) AS total_us
+  FROM executions e JOIN normalized_queries n USING (normalized_hash)
+  WHERE n.statement_kind LIKE 'ALTER TABLE%' OR n.statement_kind LIKE '%INDEX'
+  GROUP BY ALL ORDER BY total_us DESC LIMIT 20"
+```
+
+The project file is also a plain DuckDB database with no proprietary layer on top, so any DuckDB
+client works if you prefer one:
 
 ```bash
 duckdb ./audits/prod-2026-08/sqlferret.duckdb
 ```
 
 ```sql
--- which application is burning the most time?
-SELECT client_app_name, count(*) AS execs, sum(duration_us) / 1e6 AS total_s
-FROM executions
-GROUP BY 1 ORDER BY total_s DESC LIMIT 10;
-
 -- the same query shape, but only the slow tail
 SELECT n.normalized_sql, count(*), max(e.duration_us) / 1000 AS max_ms
 FROM executions e JOIN normalized_queries n USING (normalized_hash)
@@ -185,6 +208,15 @@ GROUP BY 1 ORDER BY 2 DESC LIMIT 20;
 ```
 
 Every table and column is documented in [data-model.md](data-model.md).
+
+### Upgrading an older project
+
+If the project was imported by an earlier build, the reading commands say so on `stderr`. Bring
+its classification up to date in place, without re-importing:
+
+```bash
+sqlferret reclassify --project ./audits/prod-2026-08
+```
 
 ## 5. Export
 
@@ -238,24 +270,25 @@ Better than passing `--conn` on the command line: put it in the project's
 ## 7. Optional: driving SQLFerret from an AI agent
 
 The repository ships an agent skill at
-[`.agents/skills/analyzing-sql-workloads/SKILL.md`](../.agents/skills/analyzing-sql-workloads/SKILL.md).
+[`.agents/skills/analyzing-xel-workloads/SKILL.md`](../.agents/skills/analyzing-xel-workloads/SKILL.md).
 It teaches a coding agent the workflow above and, more importantly, the traps that make an agent
-draw a wrong conclusion without noticing: microsecond columns read as milliseconds, the three
-incompatible `query_hash` text formats, `--redaction off` being the *only* policy that retains
-blocking XML, and `plan_profiles.statement_text` being truncated by the engine.
+draw a wrong conclusion without noticing: microsecond columns read as milliseconds, validating a
+filter by what it retains instead of what it excludes, the three incompatible `query_hash` text
+formats, `--redaction off` being the *only* policy that retains blocking XML, and
+`plan_profiles.statement_text` being truncated by the engine. It is written in French.
 
 `.agents/skills/` is the cross-runtime location, recognized by several agent CLIs. To use the
 skill while working outside this repository, link or copy it into your runtime's own skills
 directory — for Claude Code, `~/.claude/skills/`:
 
 ```bash
-ln -s "$PWD/.agents/skills/analyzing-sql-workloads" ~/.claude/skills/analyzing-sql-workloads
+ln -s "$PWD/.agents/skills/analyzing-xel-workloads" ~/.claude/skills/analyzing-xel-workloads
 ```
 
 ```powershell
 # Windows, no elevation required
-cmd /c mklink /J "$env:USERPROFILE\.claude\skills\analyzing-sql-workloads" `
-    "$PWD\.agents\skills\analyzing-sql-workloads"
+cmd /c mklink /J "$env:USERPROFILE\.claude\skills\analyzing-xel-workloads" `
+    "$PWD\.agents\skills\analyzing-xel-workloads"
 ```
 
 Inside this repository, `.claude/skills/` already holds such a link; it is gitignored, so create
@@ -272,4 +305,4 @@ Whatever the runtime, the agent still needs the tool itself: a .NET 10 SDK and e
 - You need to share a plan outside your organization → [privacy.md](privacy.md)
 - You want to write your own analysis on top → [data-model.md](data-model.md) and
   [architecture.md](architecture.md)
-- You want an agent to do the analysis → [`.agents/skills/analyzing-sql-workloads/SKILL.md`](../.agents/skills/analyzing-sql-workloads/SKILL.md)
+- You want an agent to do the analysis → [`.agents/skills/analyzing-xel-workloads/SKILL.md`](../.agents/skills/analyzing-xel-workloads/SKILL.md)
