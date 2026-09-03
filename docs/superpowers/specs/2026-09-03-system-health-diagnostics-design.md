@@ -236,6 +236,13 @@ lockstep, or the numbers stop adding up where users read them:
 - The CLI import summary line in `Program.cs`.
 
 Counters stay mutually exclusive: a name-matched event is counted in exactly one of the three.
+
+Two further columns count **sub-documents, not events**, and therefore sit outside that sum:
+`server_diagnostics_embedded_blocking` and `server_diagnostics_embedded_blocking_failures`, for the
+`<blocked-process-report>` elements §5 lifts out of `blockingTasks`. Counting an embedded report in
+`events_blocking` would count one `sp_server_diagnostics_component_result` event twice — once as a
+diagnostics event and again per embedded report — and the reconciliation query would exceed
+`events_read`. The documentation must mark them as excluded where it publishes that query.
 `events_unmapped` drops by exactly their sum, which is a testable invariant. The ingestion-quality
 query published in `docs/data-model.md` sums the named counters and must gain these three, or it
 silently stops reconciling to `events_read`.
