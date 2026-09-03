@@ -71,7 +71,7 @@ the parameter collection matches `name`. Every `Add` helper does `name.TrimStart
 
 ```bash
 dotnet build                                  # 0 warnings expected (verified)
-dotnet test                                   # 512 tests: 502 pass, 10 skip (see below)
+dotnet test                                   # 578 tests: 568 pass, 10 skip (see below)
 dotnet test --filter <TestClassName>          # focused
 dotnet format <path>                          # style; .editorconfig is the baseline
 ```
