@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore
+
+      # Runs clean here and fails with thousands of ENDOFLINE errors on a Windows
+      # working copy. That is not a broken check: .editorconfig asks for `lf`, every
+      # blob in the index is `lf`, and there is no .gitattributes — so a Windows clone
+      # with core.autocrlf=true (the default) writes CRLF into the working tree and
+      # nothing else. The runner checks out lf and agrees with .editorconfig.
+      # If you need the check to pass locally, set core.autocrlf=false and re-checkout;
+      # do not "fix" it by committing CRLF.
+      - name: Format
+        run: dotnet format sqlferret.sln --verify-no-changes --no-restore
+
+      # The repository holds itself to zero warnings, so a warning is a defect like any
+      # other and should stop the build rather than scroll past. The cost is that a new
+      # SDK or analyzer release can turn this red for a reason no pull request
+      # introduced; when that happens, fix the warning or pin the SDK — do not drop the
+      # flag, or the standard quietly stops being one.
+      - name: Build
+        run: dotnet build --no-restore -warnaserror
+
+      # Ten tests skip and that is expected, not a silent hole: eight need a real
+      # capture under sample/ (gitignored, production data, never committed) and two
+      # need SQLFERRET_TEST_CONN pointing at a SQL Server. Neither exists on a runner.
+      - name: Test
+        run: dotnet test --no-build
