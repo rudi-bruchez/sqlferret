@@ -56,6 +56,11 @@ One row per `import`. The provenance and quality record for everything that run 
 | `redaction_policy` | TEXT | The policy in force for this run |
 | `sql_text_policy` | TEXT | `raw` or `literals`. **NULL means a run imported before this column existed — read it as `raw`.** |
 | `sql_text_sanitizer_version` | INTEGER | `SqlTextSanitizer.Version`, currently 1. NULL for pre-versioning runs. |
+| `events_server_diagnostics` | BIGINT | `sp_server_diagnostics_component_result` events parsed into one of the four known components |
+| `events_server_diagnostics_unhandled` | BIGINT | Same event, a component this tool does not read — `events`, or an availability group name. Not an error |
+| `server_diagnostics_parse_failures` | BIGINT | A **known** component whose payload was absent, malformed, or had an unexpected root |
+| `server_diagnostics_embedded_blocking` | BIGINT | `blocked-process-report` elements lifted out of a diagnostics cycle. **Sub-documents, not events** — excluded from the reconciliation sum |
+| `server_diagnostics_embedded_blocking_failures` | BIGINT | Same, that `BlockingReportParser` refused. Also excluded |
 | `sql_text_sanitize_failures` | BIGINT | Events whose text could not be tokenized and were replaced by the sanitizer's placeholder |
 
 The counters are designed to be **mutually exclusive and exhaustive**: every event read is
@@ -145,6 +150,7 @@ Extraction is regex-based over the statement text and is best-effort, which is w
 | `monitor_loop` | INTEGER | Groups reports emitted by the same blocked-process monitor pass. Used to reconstruct chains. |
 | `database_id` | INTEGER | |
 | `raw_xml` | TEXT | The original report. **NULL unless the run was imported with redaction `off`.** |
+| `source` | TEXT | `event` for a threshold-triggered `blocked_process_report`, `diagnostics` for a snapshot lifted out of an `sp_server_diagnostics` cycle. **NULL means a run imported before this column existed — read it as `event`.** Every filter must be written `coalesce(source,'event')`, or it silently drops every pre-migration row |
 
 ### `blocking_processes`
 
@@ -326,10 +332,81 @@ ORDER BY ms DESC LIMIT 20;
 -- Ingestion quality: did anything get lost?
 SELECT run_id, source_path, events_read,
        events_mapped + events_unmapped + events_cleaned
-       + events_blocking + events_deadlocks + events_plan_profiles AS accounted,
+       + events_blocking + events_deadlocks + events_plan_profiles
+       + events_server_diagnostics + events_server_diagnostics_unhandled
+       + server_diagnostics_parse_failures AS accounted,
        tokenize_failures, blocking_parse_failures, plan_parse_failures
 FROM ingestion_runs ORDER BY run_id;
 ```
+
+`accounted` must equal `events_read`. Do **not** add `server_diagnostics_embedded_blocking` or
+`server_diagnostics_embedded_blocking_failures` to that sum: they count `blocked-process-report`
+elements lifted out of a diagnostics cycle, which are sub-documents of an event already counted in
+`events_server_diagnostics`. Adding them makes `accounted` exceed `events_read`.
+
+## Health tables — `sp_server_diagnostics` cycles
+
+Written by `import` from a `system_health` capture. Empty for a workload-only capture.
+
+`health_cycles` — one row per diagnostics cycle.
+
+| Column | Type | Notes |
+|---|---|---|
+| `cycle_id` | BIGINT | |
+| `run_id` | BIGINT | |
+| `cycle_at` | TIMESTAMP | The earliest of the cycle's component timestamps |
+| `series_key` | TEXT | Sampling series. A capture folder can hold **more than one session** recording the same server; interval-scoped metrics never combine across series |
+
+`health_samples` — one row per component per cycle.
+
+| Column | Type | Notes |
+|---|---|---|
+| `sample_id` | BIGINT | |
+| `cycle_id`, `run_id` | BIGINT | |
+| `captured_at` | TIMESTAMP | The component's own timestamp. The four of a cycle differ by under a millisecond, which is why `cycle_id` exists |
+| `component` | TEXT | `QUERY_PROCESSING`, `RESOURCE`, `SYSTEM`, `IO_SUBSYSTEM`, or any other value SQL Server emits |
+| `state` | TEXT | `CLEAN`, `WARNING`, … stored verbatim |
+| `handled` | BOOLEAN | False for a component this tool does not read. The row is kept and has no children |
+
+`health_metrics` — every scalar attribute, name/value.
+
+| Column | Type | Notes |
+|---|---|---|
+| `sample_id` | BIGINT | |
+| `name` | TEXT | The source attribute name. A duration carries a `Us` suffix and is in **microseconds** |
+| `value_num` | DOUBLE | Non-integer values |
+| `value_big` | BIGINT | Integer counters. `DOUBLE` loses integers past 2^53 |
+| `value_text` | TEXT | Anything non-numeric, such as `trackingNonYieldingScheduler` |
+
+`health_waits` — `topWaits`. **These counters are cumulative since instance start**, like
+`sys.dm_os_wait_stats`. Summing them across cycles ranks uptime, not activity; take a delta.
+`avg_wait_us` and `max_wait_us` are instance-lifetime figures — the maximum is a running maximum
+whose record may predate the capture, and the average is rounded to whole milliseconds by the
+source, so it reads 0 for the busiest waits. Nothing should be ranked on either.
+
+| Column | Type | Notes |
+|---|---|---|
+| `sample_id` | BIGINT | |
+| `preemptive` | BOOLEAN | |
+| `ranking` | TEXT | `byCount` or `byDuration` — four independent lists, never summed together |
+| `wait_type` | TEXT | |
+| `waits` | BIGINT | Cumulative |
+| `avg_wait_us`, `max_wait_us` | BIGINT | Since instance start |
+
+`health_cpu_requests`, `health_pending_tasks`, `health_pending_io`, `health_memory_entries` —
+the remaining repeated nodes.
+
+| Table | Columns |
+|---|---|
+| `health_cpu_requests` | `sample_id`, `session_id`, `request_id`, `command`, `cpu_time_us`, `cpu_utilization`, `task_address` |
+| `health_pending_tasks` | `sample_id`, `entry_point`, `task_count` |
+| `health_pending_io` | `sample_id`, `duration_us`, `file_path`, `handle`, `offset_bytes` |
+| `health_memory_entries` | `sample_id`, `report_name`, `unit`, `description`, `value_num`, `value_text` |
+
+`health_pending_io.file_path` is a server-side path and is stored **verbatim under every redaction
+mode**, `full` included. See [privacy.md](privacy.md).
+
+`offset_bytes`, not `offset`: `OFFSET` is a reserved word in DuckDB.
 
 ## A caveat on `query_hash` representations
 

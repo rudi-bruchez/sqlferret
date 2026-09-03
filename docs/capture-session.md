@@ -265,3 +265,25 @@ end to end on the same file, twice.
 
 Which is the documented scenario at the top of this page: without capturing
 `sqlserver.query_hash`, timestamp-based manual correlation is the only path left.
+
+
+## `system_health`: nothing to set up, and a short memory
+
+`system_health` is an Extended Events session SQL Server starts with the engine. You do not create
+it, and Microsoft advises against altering it. Copy its `.xel` files and `sqlferret import` reads
+them like any other capture.
+
+What it costs you is history. The session writes to a rotating file target — four files of 5 MB by
+default — so it holds whatever has not been evicted yet, and on a busy server that is not long. On
+the capture this feature was designed against, 97.2 % of the events were a single repeated security
+error, and the diagnostics cycles that survived covered 14 hours at roughly one cycle every two and
+a half minutes.
+
+**A folder can hold more than one sampling series.** That same capture contained two sessions
+recording the same instance in parallel, offset by about 35 minutes. Interval-scoped values —
+`intervalLongIos`, `tasksCompletedWithinInterval` — are scoped to their own session's interval and
+do not add up across series. `export-health` detects the series and says how many it found; it
+never combines them.
+
+None of this is a misconfiguration to fix. It is what the session is, and the digest's coverage
+block exists so that you read the rest of it knowing that.

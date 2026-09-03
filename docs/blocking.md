@@ -1,5 +1,16 @@
 # Blocking and deadlocks
 
+> **Two sources since 0.3.0.** `blocking_reports.source` is `event` for a threshold-triggered
+> `blocked_process_report` and `diagnostics` for a snapshot lifted out of an `sp_server_diagnostics`
+> cycle. They are not the same measurement — one fires when a block exceeds the threshold, the other
+> is whatever was blocking at a fixed sampling instant — so counting them together lets a long block
+> be counted once by the first mechanism and once per cycle by the second.
+>
+> Everything in this document, and every query in it, covers `event` only. `export-blocking`,
+> `export-events` and `BlockingQueries` all filter. If you write your own SQL over these tables,
+> write the predicate as `coalesce(source, 'event') = 'event'`: a bare `source = 'event'` drops
+> every row imported before the column existed. For the diagnostics side, use `export-health`.
+
 Blocking analysis answers a question that timing data alone cannot: *which query shape is holding
 locks that everyone else is waiting on.* Not which query is slow, but which query makes other
 queries slow.

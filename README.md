@@ -164,6 +164,7 @@ dotnet run --project src/SqlFerret.Cli -- \
 | `export-events --project <dir> --out <dir>` | Raw blocked-process and deadlock XML, one file per event, plus a manifest. [→](docs/cli-reference.md#export-events) |
 | `query-store-import --project <dir>` | Snapshot a live database's Query Store. [→](docs/cli-reference.md#query-store-import) |
 | `obfuscate-plan …` | Anonymize `.sqlplan` files, reversibly. [→](docs/cli-reference.md#obfuscate-plan) |
+| `export-health …` | Digest of `sp_server_diagnostics` cycles from a `system_health` capture, coverage first. [→](docs/cli-reference.md#export-health) |
 
 There is no `--help`: run the CLI with no argument and it prints its usage line.
 

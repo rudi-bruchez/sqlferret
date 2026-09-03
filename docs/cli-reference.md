@@ -54,8 +54,14 @@ Recognized events:
 | `blocked_process_report` | `blocking_reports` + two `blocking_processes` rows |
 | `xml_deadlock_report` | `deadlock_reports` |
 | `query_post_execution_plan_profile` | `plan_profiles` + `plan_findings` + `.sqlplan` artifacts |
+| `sp_server_diagnostics_component_result` | `health_cycles` + `health_samples` and their child tables; any `blocked-process-report` inside `blockingTasks` also lands in `blocking_reports` with `source = 'diagnostics'` |
 
 Anything else is counted as `unmapped` and ignored.
+
+A diagnostics component this tool does not read — `events`, or an availability group name on an
+Always On instance — is counted in `events_server_diagnostics_unhandled`, keeps a `health_samples`
+row and gets no children. It is **not** a parse failure: on an Always On cluster that counter would
+otherwise fire on every cycle forever, and a counter that always fires says nothing.
 
 **Output.** A live gauge on stderr while running. On completion, stdout gets a single summary
 line whose counters are mutually exclusive and exhaustive across every event read:
@@ -221,6 +227,41 @@ Three outcomes are reported separately on `stderr` because they are not the same
 
 Already at the current version and without `--force`, the command reports `rien a faire` and
 changes nothing.
+
+---
+
+## `export-health`
+
+Emit the health digest from `sp_server_diagnostics` cycles.
+
+```text
+sqlferret export-health --project <dir> [--format json|md|both] [--out <file>] [--limit <n>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--format` | `md` | `json`, `md` or `both`. Any other value exits 1 rather than falling back |
+| `--out` | stdout | With `both`, writes `<stem>.md` and `<stem>.json`. Rejects `..` |
+| `--limit` | 10 | Rows per ranked section |
+
+**The coverage block comes first, and it is the point.** A `system_health` session is a rotating
+ring: what survives is whatever has not been evicted, and on a busy server that can be a fraction
+of the window you think you are looking at. Coverage reports the cycle count, the span, the median
+interval, the largest gap, how many sampling series were found, and what share of the capture's
+events are not diagnostics at all. Read it before you read anything below it.
+
+**Every number presented as activity is a delta over a stated span.** The counters in this source
+are cumulative since instance start, so a sum would rank uptime. Each wait row prints the span its
+delta actually covers, which is not the window span when a wait type entered or left the server's
+top-N list mid-capture. A counter that went backwards means the instance restarted; those intervals
+are dropped and counted, never netted off.
+
+Two things it does not do. It does not rank waits by duration — the source's two time columns are a
+frozen running maximum and a millisecond-rounded running mean, useless for a window ranking, so they
+are reported as instance-lifetime figures and nothing is ordered on them. And it is silent on a
+healthy server: an empty finding list is a result, and the digest says so rather than looking broken.
+
+A project with no diagnostics data at all gets a different message from a healthy one, and exits 0.
 
 ---
 

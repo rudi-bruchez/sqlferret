@@ -24,7 +24,7 @@ docs/                               user + contributor documentation (indexed by
 .agents/skills/                     agent skills, cross-runtime
 ```
 
-CLI commands, eight of them: `import`, `top-slow`, `query`, `reclassify`, `export-blocking`,
+CLI commands, nine of them: `import`, `top-slow`, `query`, `reclassify`, `export-blocking`,
 `export-events`, `query-store-import`, `obfuscate-plan`. Flags and exit codes:
 `docs/cli-reference.md`.
 
@@ -71,7 +71,7 @@ the parameter collection matches `name`. Every `Add` helper does `name.TrimStart
 
 ```bash
 dotnet build                                  # 0 warnings expected (verified)
-dotnet test                                   # 578 tests: 568 pass, 10 skip (see below)
+dotnet test                                   # 627 tests: 616 pass, 11 skip (see below)
 dotnet test --filter <TestClassName>          # focused
 dotnet format <path>                          # style; .editorconfig is the baseline
 ```
@@ -175,9 +175,14 @@ If you observe a violation in code the task does not touch, **report it and move
   `off` *and* `raw` — `IngestionService.VerbatimStatementTextAllowed`, mirrored by the
   `InputBufIsRaw` predicate in `Reclassifier`. The two must move together.
   See `docs/privacy.md`.
-- **Nothing silently dropped.** Unmapped, tokenize-failed, ingest-cleaned, blocking, deadlock and
-  plan-profile events are all counted on `ingestion_runs`. Counters stay mutually exclusive and
-  exhaustive. A new event type means a new counter.
+- **Nothing silently dropped.** Unmapped, tokenize-failed, ingest-cleaned, blocking, deadlock,
+  plan-profile and server-diagnostics events are all counted on `ingestion_runs`. Counters stay
+  mutually exclusive and exhaustive, and their sum equals `events_read`. A new event type means a
+  new counter.
+  Two columns count **sub-documents, not events**, and sit outside that sum:
+  `server_diagnostics_embedded_blocking` and `server_diagnostics_embedded_blocking_failures`, for
+  the `blocked-process-report` elements lifted out of a diagnostics cycle. Adding them to the
+  reconciliation query would make it exceed `events_read`.
 - **`QueryNormalizer.Version = 4`**, persisted on both `ingestion_runs` and `normalized_queries`.
   It versions **normalization and classification together**: bump it whenever `AstClassifier`
   returns a different answer for a given input, not only when the token rewriting changes.

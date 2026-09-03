@@ -20,6 +20,9 @@ situation.
 | `deadlock_reports.graph_xml` | The deadlock graph | Same gate, otherwise stored as `<redacted/>` |
 | `plan_profiles.statement_text` | Statement text inside `sqlferret.duckdb` itself | Not sanitized by `--sanitize-sql-text` |
 | `plans/**/*.sqlplan` | Showplan XML: schema, table, column and index names, and sometimes literal predicate values | `obfuscate-plan`, after the fact |
+| `health_pending_io.file_path` | Server-side file paths: instance name, drive layout, database file names | **Nothing.** Stored verbatim under every redaction mode, `full` included |
+| `health_cpu_requests.session_id`, `.command` | Session id and command class (`SELECT`, `BACKUP DATABASE`), not statement text | Nothing |
+| `health_memory_entries.description` | SQL Server's own memory counter names | Nothing |
 | `plans/**/*.digest.json` | Plan metrics plus a truncated `StatementText` | Not redacted |
 | `obfuscation_map` table and `*.map.json` | The reverse mapping from tokens to real identifiers | Nothing. This *is* the key. |
 
@@ -119,6 +122,19 @@ needs its own control. That control is `--sanitize-sql-text`, covered next.
    If you want both the raw blocking XML and sanitized statement text, you cannot have them in one
    project: import twice, under two policies.
 ---
+
+### The health tables sit outside the policy table
+
+`import` on a `system_health` capture writes eight `health_*` tables. Their contents come from
+SQL Server's own diagnostics, not from user queries, and **no redaction mode touches them**. That
+is deliberate — they hold counters, wait types and engine flags — with one consequence worth
+stating plainly: `health_pending_io.file_path` discloses your instance name, drive layout and
+database file names, and `--redaction full` does not remove it. If you share a project or an
+`export-health` digest, you share that.
+
+Blocking reports lifted out of a diagnostics cycle are the exception that proves the rule: they
+carry statement text, so they go through `IngestionService.PrepareProc` exactly like
+event-sourced reports and inherit both policies, with no separate gate.
 
 ## Redaction policies
 

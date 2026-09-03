@@ -280,6 +280,35 @@ Un multiplicateur entier supérieur à 1 révèle des structures reconstruites i
 
 ---
 
+# Le digest de santé : lire la couverture avant les conclusions
+
+`export-health` sort les cycles de `sp_server_diagnostics` d'une capture `system_health`. Deux
+pièges, et ils sont tous les deux invisibles dans les chiffres eux-mêmes.
+
+**La couverture d'abord, toujours.** `system_health` est un anneau qui tourne : ce qui reste est ce
+qui n'a pas encore été évincé. Le premier bloc du digest dit combien de cycles ont survécu, sur
+quelle durée, à quelle cadence, quel est le plus grand trou, et quelle part des événements de la
+capture n'est pas du diagnostic. Sur une capture réelle, 97,2 % des événements étaient une seule
+erreur de sécurité répétée. Un classement lu sans ce bloc passe pour un classement sur toute la
+période alors qu'il ne porte que sur les miettes.
+
+**Les compteurs sont cumulatifs depuis le démarrage de l'instance.** Les sommer classerait le temps
+de fonctionnement, pas l'activité. Le digest ne rend que des deltas, et il imprime à côté de chaque
+ligne la portée que ce delta couvre réellement — qui n'est pas celle de la fenêtre quand un type
+d'attente est entré ou sorti du top N du serveur en cours de route. Ne pas comparer deux deltas de
+portées différentes comme s'ils étaient la même mesure.
+
+Corollaire : les colonnes de temps d'attente ne servent à rien pour une fenêtre. Le maximum est un
+maximum courant dont le record est souvent antérieur à la capture, et la moyenne est arrondie à la
+milliseconde par la source, donc nulle pour les attentes les plus fréquentes. Elles sont là comme
+chiffres depuis le démarrage, et rien n'est classé dessus. Pour un classement par durée, c'est la
+capture de charge qui répond.
+
+Un digest vide sur un serveur sain est un **résultat**, pas une panne. Le message diffère de celui
+d'un projet qui n'a aucune donnée de diagnostic.
+
+---
+
 # Avant de faire sortir quoi que ce soit du projet
 
 `executions.sql_text_raw` est stocké brut par défaut — jamais expurgé, sauf si l'import a utilisé
