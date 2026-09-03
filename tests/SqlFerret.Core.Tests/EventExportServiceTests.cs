@@ -96,8 +96,8 @@ public class EventExportServiceTests
         try
         {
             using var db = DuckDbProject.Open(path);
-            Exec(db, "INSERT INTO blocking_reports VALUES (1,1, TIMESTAMP '2026-06-01 10:00:00', 1, 7, '<blocked-process-report>A</blocked-process-report>')");
-            Exec(db, "INSERT INTO blocking_reports VALUES (2,1, TIMESTAMP '2026-06-02 10:00:00', 1, 8, NULL)");
+            Exec(db, "INSERT INTO blocking_reports (report_id, run_id, captured_at, monitor_loop, database_id, raw_xml) VALUES (1,1, TIMESTAMP '2026-06-01 10:00:00', 1, 7, '<blocked-process-report>A</blocked-process-report>')");
+            Exec(db, "INSERT INTO blocking_reports (report_id, run_id, captured_at, monitor_loop, database_id, raw_xml) VALUES (2,1, TIMESTAMP '2026-06-02 10:00:00', 1, 8, NULL)");
 
             var svc = new EventExportService(db.Connection);
             var res = svc.Export(new EventExportOptions(
@@ -129,9 +129,9 @@ public class EventExportServiceTests
         {
             using var db = DuckDbProject.Open(path);
             // Two reports in db 7, one in db 9. Report 1 has fingerprint abc; report 2 has fingerprint xyz.
-            Exec(db, "INSERT INTO blocking_reports VALUES (1,1, TIMESTAMP '2026-06-01 10:00:00', 1, 7, '<r>one</r>')");
-            Exec(db, "INSERT INTO blocking_reports VALUES (2,1, TIMESTAMP '2026-06-02 10:00:00', 1, 7, '<r>two</r>')");
-            Exec(db, "INSERT INTO blocking_reports VALUES (3,1, TIMESTAMP '2026-06-03 10:00:00', 1, 9, '<r>three</r>')");
+            Exec(db, "INSERT INTO blocking_reports (report_id, run_id, captured_at, monitor_loop, database_id, raw_xml) VALUES (1,1, TIMESTAMP '2026-06-01 10:00:00', 1, 7, '<r>one</r>')");
+            Exec(db, "INSERT INTO blocking_reports (report_id, run_id, captured_at, monitor_loop, database_id, raw_xml) VALUES (2,1, TIMESTAMP '2026-06-02 10:00:00', 1, 7, '<r>two</r>')");
+            Exec(db, "INSERT INTO blocking_reports (report_id, run_id, captured_at, monitor_loop, database_id, raw_xml) VALUES (3,1, TIMESTAMP '2026-06-03 10:00:00', 1, 9, '<r>three</r>')");
             Exec(db, "INSERT INTO blocking_processes VALUES (1,'blocking',118,NULL,NULL,NULL,'Other',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'abc')");
             Exec(db, "INSERT INTO blocking_processes VALUES (2,'blocking',119,NULL,NULL,NULL,'Other',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'xyz')");
 
@@ -207,9 +207,9 @@ public class EventExportServiceTests
             using var db = DuckDbProject.Open(path);
             // 5 exportable blocking reports + 2 redacted (raw_xml NULL).
             for (int i = 1; i <= 5; i++)
-                Exec(db, $"INSERT INTO blocking_reports VALUES ({i},1, TIMESTAMP '2026-06-0{i} 10:00:00', 1, 7, '<r>{i}</r>')");
-            Exec(db, "INSERT INTO blocking_reports VALUES (6,1, TIMESTAMP '2026-06-06 10:00:00', 1, 7, NULL)");
-            Exec(db, "INSERT INTO blocking_reports VALUES (7,1, TIMESTAMP '2026-06-07 10:00:00', 1, 7, NULL)");
+                Exec(db, $"INSERT INTO blocking_reports (report_id, run_id, captured_at, monitor_loop, database_id, raw_xml) VALUES ({i},1, TIMESTAMP '2026-06-0{i} 10:00:00', 1, 7, '<r>{i}</r>')");
+            Exec(db, "INSERT INTO blocking_reports (report_id, run_id, captured_at, monitor_loop, database_id, raw_xml) VALUES (6,1, TIMESTAMP '2026-06-06 10:00:00', 1, 7, NULL)");
+            Exec(db, "INSERT INTO blocking_reports (report_id, run_id, captured_at, monitor_loop, database_id, raw_xml) VALUES (7,1, TIMESTAMP '2026-06-07 10:00:00', 1, 7, NULL)");
 
             var res = new EventExportService(db.Connection).Export(new EventExportOptions(
                 outDir, EventKind.Blocking, new QueryStoreWindow(null, null), null, null, 3));

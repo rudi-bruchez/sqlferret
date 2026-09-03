@@ -90,6 +90,7 @@ public sealed partial class DuckDbProject : IDisposable
               ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS sql_text_policy TEXT;
               ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS sql_text_sanitizer_version INTEGER;
               ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS sql_text_sanitize_failures BIGINT;
+              ALTER TABLE blocking_reports ADD COLUMN IF NOT EXISTS source TEXT;
               """;
             migrate.ExecuteNonQuery();
         }
@@ -271,10 +272,16 @@ public sealed partial class DuckDbProject : IDisposable
             using (var c = Connection.CreateCommand())
             {
                 c.Transaction = tx;
-                c.CommandText = "INSERT INTO blocking_reports VALUES ($id,$run,$ts,$loop,$db,$raw)";
+                // Liste de colonnes nommee, pas positionnelle : un INSERT positionnel casse a la
+                // premiere colonne ajoutee, et la migration ci-dessus en ajoute une.
+                c.CommandText = """
+                  INSERT INTO blocking_reports
+                        (report_id, run_id, captured_at, monitor_loop, database_id, raw_xml, source)
+                  VALUES ($id,$run,$ts,$loop,$db,$raw,$src)
+                  """;
                 Add(c, "$id", id); Add(c, "$run", runId); Add(c, "$ts", pr.Report.CapturedAt);
                 Add(c, "$loop", (object?)pr.Report.MonitorLoop); Add(c, "$db", (object?)pr.Report.DatabaseId);
-                Add(c, "$raw", (object?)pr.RawXml);
+                Add(c, "$raw", (object?)pr.RawXml); Add(c, "$src", pr.Source);
                 c.ExecuteNonQuery();
             }
             InsertBlockingProcess(tx, id, "blocked", pr.Blocked, pr.Report.CapturedAt);
