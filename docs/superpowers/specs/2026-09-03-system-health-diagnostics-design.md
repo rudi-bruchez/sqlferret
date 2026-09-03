@@ -8,7 +8,7 @@ Revision 2 follows an external review panel of five readers. Nine of its finding
 design rather than its wording; they are marked **[R2]** where they land. Revision 1 is in the
 git history. What changed, in one list:
 
-- `topWaits` is cumulative since instance start, not per-interval — measured. The digest's
+- `topWaits` counters are cumulative since instance start, and its two time columns cannot carry a
   headline aggregation in revision 1 was arithmetically wrong (§9).
 - `health_samples` had no cycle key, and a cycle's four events do **not** share a timestamp —
   measured. The coverage block would have reported 1 344 cycles instead of 336 (§6).
@@ -499,9 +499,25 @@ Two consequences that must be handled, not glossed:
 - **A counter that decreases means the instance restarted.** That interval is dropped and the
   count of dropped intervals is reported.
 
-Whether `averageWaitTime` and `maxWaitTime` are cumulative, interval-scoped or point-in-time is
-**unverified** — the measurement above covers `waits` only. The plan must settle it before those
-two columns are used in a ranking.
+**The two time columns cannot carry a window ranking at all (measured).** Over the same 147
+cycles:
+
+- `maxWaitTime` is **constant** for every wait type — not rising, frozen. That is what a running
+  maximum since instance start looks like when its record was set before the window. It is not the
+  worst wait observed during the capture and must never be presented as one.
+- `averageWaitTime` is a **cumulative average**, near-frozen because its denominators are in the
+  billions, and it sometimes *decreases* (`LCK_M_IX`: 1 rise against 5 falls) — which a running
+  maximum cannot do and a running mean can. It is also **rounded to whole milliseconds**, so it
+  reads `0` for the highest-frequency waits.
+
+Deriving a window mean as `(avg × waits)_last − (avg × waits)_first` is therefore arithmetic on a
+value already rounded to zero for exactly the waits that matter most.
+
+So the digest ranks waits **by count delta only**, and says so. Duration-based wait ranking is not
+recoverable from this source at useful precision; the workload capture is where that question is
+answered. `avg_wait_us` and `max_wait_us` are still stored — they are the instance-lifetime figures
+and are worth having — but they are labelled as since-startup values wherever they appear, and no
+ranking orders on them.
 
 **3. Memory pressure** — `outOfMemoryExceptions`, `processOutOfMemoryPeriod`,
 `isAnyPoolOutOfMemory`, and the memory-report entries that moved most across the window.
@@ -619,17 +635,15 @@ skips when absent.
 
 ## 15. Open questions
 
-1. **Are `averageWaitTime` and `maxWaitTime` cumulative?** `waits` is, measured. These two were not
-   measured and §9 item 2 depends on the answer. Settle before implementing the wait ranking.
-2. **The series-detection heuristic.** Grouping cycles into sampling series by observed spacing is
+1. **The series-detection heuristic.** Grouping cycles into sampling series by observed spacing is
    inference, not fact. What should the digest do when the spacing is irregular enough that the
    grouping is unreliable — refuse to report interval-scoped metrics, or report them with a
    warning? This design leans to refusing, and it is not settled.
-3. **Whether `export-events` should ever export diagnostics snapshots.** §5 says no. Someone
+2. **Whether `export-events` should ever export diagnostics snapshots.** §5 says no. Someone
    analysing a blocking incident might want them. Cheap to change later, and stated so that the
    decision is visible.
-4. **`state` values beyond `CLEAN` and `WARNING`** — only those two observed, and the string is
+3. **`state` values beyond `CLEAN` and `WARNING`** — only those two observed, and the string is
    stored verbatim so nothing can be lost, but no test can assert what has not been seen.
-5. **The other three positional inserts.** `executions`, `blocking_processes` and
+4. **The other three positional inserts.** `executions`, `blocking_processes` and
    `deadlock_reports` carry the same trap this change hits on `blocking_reports`. Out of scope
    here; worth a separate task before the next `ADD COLUMN`.
