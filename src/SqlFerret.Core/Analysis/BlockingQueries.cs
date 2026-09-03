@@ -4,16 +4,31 @@ using SqlFerret.Core.Model;
 
 namespace SqlFerret.Core.Analysis;
 
+/// <summary>
+/// Toutes les lectures se restreignent aux rapports declenches par seuil.
+/// <para><c>blocking_reports.source</c> distingue un <c>blocked_process_report</c>, declenche quand
+/// un blocage depasse le seuil, d'un instantane extrait d'un cycle sp_server_diagnostics pris a
+/// cadence fixe. Les compter ensemble ferait qu'un blocage durable serait compte une fois par le
+/// premier mecanisme et autant de fois qu'il y a eu de cycles par le second : tout classement par
+/// <c>count(*)</c> favoriserait silencieusement la source qui echantillonne le plus.</para>
+/// <para>Le predicat s'ecrit toujours <c>coalesce(source,'event')</c> : NULL designe une ligne
+/// anterieure a la migration, et un <c>source = 'event'</c> nu les perdrait toutes.</para>
+/// </summary>
 public class BlockingQueries(DuckDBConnection conn)
 {
+    /// <summary>Jointure a poser sur toute lecture de <c>blocking_processes</c>, qui ne porte pas
+    /// la colonne <c>source</c>.</summary>
+    private const string EventOnly =
+        "JOIN blocking_reports r ON r.report_id = bp.report_id AND coalesce(r.source, 'event') = 'event'";
+
     public BlockingOverview Overview()
     {
         using var c = conn.CreateCommand();
         c.CommandText = """
-          SELECT (SELECT count(*) FROM blocking_reports),
+          SELECT (SELECT count(*) FROM blocking_reports r WHERE coalesce(r.source,'event')='event'),
                  (SELECT count(*) FROM deadlock_reports),
-                 (SELECT min(captured_at) FROM blocking_reports),
-                 (SELECT max(captured_at) FROM blocking_reports)
+                 (SELECT min(captured_at) FROM blocking_reports r WHERE coalesce(r.source,'event')='event'),
+                 (SELECT max(captured_at) FROM blocking_reports r WHERE coalesce(r.source,'event')='event')
           """;
         using var r = c.ExecuteReader(); r.Read();
         return new BlockingOverview(r.GetInt64(0), r.GetInt64(1),
@@ -24,10 +39,12 @@ public class BlockingQueries(DuckDBConnection conn)
     {
         using var c = conn.CreateCommand();
         c.CommandText = """
-          SELECT wait_resource_type, count(*) AS cnt,
+          SELECT bp.wait_resource_type, count(*) AS cnt,
                  100.0 * count(*) / NULLIF(sum(count(*)) OVER (), 0) AS pct
-          FROM blocking_processes WHERE role='blocked'
-          GROUP BY wait_resource_type ORDER BY cnt DESC
+          FROM blocking_processes bp
+          JOIN blocking_reports r ON r.report_id = bp.report_id
+          WHERE bp.role='blocked' AND coalesce(r.source,'event')='event'
+          GROUP BY bp.wait_resource_type ORDER BY cnt DESC
           """;
         using var r = c.ExecuteReader();
         var list = new List<LocalityStat>();
@@ -36,13 +53,13 @@ public class BlockingQueries(DuckDBConnection conn)
     }
 
     public IReadOnlyList<ContentionStat> TopObjects(int limit)
-        => CountBy($"SELECT CAST(object_id AS TEXT), count(*) FROM blocking_processes WHERE role='blocked' AND object_id IS NOT NULL GROUP BY object_id ORDER BY 2 DESC LIMIT {limit}");
+        => CountBy($"SELECT CAST(bp.object_id AS TEXT), count(*) FROM blocking_processes bp {EventOnly} WHERE bp.role='blocked' AND bp.object_id IS NOT NULL GROUP BY bp.object_id ORDER BY 2 DESC LIMIT {limit}");
 
     public IReadOnlyList<ContentionStat> LockModes()
-        => CountBy("SELECT COALESCE(lock_mode,'(none)'), count(*) FROM blocking_processes WHERE role='blocked' GROUP BY 1 ORDER BY 2 DESC");
+        => CountBy($"SELECT COALESCE(bp.lock_mode,'(none)'), count(*) FROM blocking_processes bp {EventOnly} WHERE bp.role='blocked' GROUP BY 1 ORDER BY 2 DESC");
 
     public IReadOnlyList<ContentionStat> IsolationLevels()
-        => CountBy("SELECT COALESCE(isolation_level,'(none)'), count(*) FROM blocking_processes WHERE role='blocked' GROUP BY 1 ORDER BY 2 DESC");
+        => CountBy($"SELECT COALESCE(bp.isolation_level,'(none)'), count(*) FROM blocking_processes bp {EventOnly} WHERE bp.role='blocked' GROUP BY 1 ORDER BY 2 DESC");
 
     public IReadOnlyList<BlockingStat> TopBlockers(int limit) => Top(ProcessRole.Blocking, limit);
     public IReadOnlyList<BlockingStat> TopBlocked(int limit) => Top(ProcessRole.Blocked, limit);
@@ -64,6 +81,7 @@ public class BlockingQueries(DuckDBConnection conn)
                  COALESCE(nq.normalized_sql, bp.inputbuf, '(none)') AS sql,
                  count(*) AS cnt
           FROM blocking_processes bp
+          {EventOnly}
           LEFT JOIN normalized_queries nq ON nq.normalized_hash = bp.inputbuf_fingerprint
           WHERE bp.role = '{roleStr}' AND bp.inputbuf_fingerprint IS NOT NULL
           GROUP BY bp.inputbuf_fingerprint, sql ORDER BY cnt DESC LIMIT {limit}
@@ -78,10 +96,13 @@ public class BlockingQueries(DuckDBConnection conn)
     {
         using var c = conn.CreateCommand();
         c.CommandText = """
-          SELECT COALESCE(quantile_cont(wait_time_us, 0.5),0),
-                 COALESCE(quantile_cont(wait_time_us, 0.95),0),
-                 COALESCE(max(wait_time_us),0)
-          FROM blocking_processes WHERE role='blocked' AND wait_time_us IS NOT NULL
+          SELECT COALESCE(quantile_cont(bp.wait_time_us, 0.5),0),
+                 COALESCE(quantile_cont(bp.wait_time_us, 0.95),0),
+                 COALESCE(max(bp.wait_time_us),0)
+          FROM blocking_processes bp
+          JOIN blocking_reports r ON r.report_id = bp.report_id
+          WHERE bp.role='blocked' AND bp.wait_time_us IS NOT NULL
+            AND coalesce(r.source,'event')='event'
           """;
         using var r = c.ExecuteReader(); r.Read();
         return new WaitTimeDist((long)r.GetDouble(0), (long)r.GetDouble(1), r.GetInt64(2));
@@ -89,29 +110,36 @@ public class BlockingQueries(DuckDBConnection conn)
 
     public IReadOnlyList<ChainStat> Chains()
     {
-        // Edges: within a report, blocked.spid waits on blocking.spid. Head = a blocking spid that is
-        // never itself blocked in the same monitor_loop. Depth via recursive CTE over (loop, from->to).
+        // Une chaine vit a l'interieur d'UN rapport, donc la CTE se cle sur report_id et non sur
+        // monitor_loop. Deux rapports sans rapport partageant une valeur de monitor_loop
+        // fabriquaient une chaine qui n'a jamais existe — et un filtre sur `source` n'y pouvait
+        // rien, la fabrication ayant lieu dans la CTE avant tout regroupement. report_id n'est
+        // jamais NULL, ce qui supprime aussi l'echec silencieux d'un monitorLoop absent, ou
+        // NULL = NULL est inconnu et arretait la recursion a la profondeur 1.
         using var c = conn.CreateCommand();
         c.CommandText = """
           WITH RECURSIVE edges AS (
-            SELECT r.monitor_loop AS loop, b.spid AS blocked_spid, k.spid AS blocking_spid
+            SELECT r.report_id AS grp, r.monitor_loop AS loop,
+                   b.spid AS blocked_spid, k.spid AS blocking_spid
             FROM blocking_reports r
             JOIN blocking_processes b ON b.report_id=r.report_id AND b.role='blocked'
             JOIN blocking_processes k ON k.report_id=r.report_id AND k.role='blocking'
+            WHERE coalesce(r.source, 'event') = 'event'
           ),
           heads AS (
-            SELECT DISTINCT loop, blocking_spid AS spid FROM edges e
-            WHERE NOT EXISTS (SELECT 1 FROM edges x WHERE x.loop=e.loop AND x.blocked_spid=e.blocking_spid)
+            SELECT DISTINCT grp, loop, blocking_spid AS spid FROM edges e
+            WHERE NOT EXISTS (SELECT 1 FROM edges x WHERE x.grp=e.grp AND x.blocked_spid=e.blocking_spid)
           ),
           walk AS (
-            SELECT loop, spid AS head, spid AS cur, 1 AS depth FROM heads
+            SELECT grp, loop, spid AS head, spid AS cur, 1 AS depth FROM heads
             UNION ALL
-            SELECT w.loop, w.head, e.blocked_spid, w.depth+1
-            FROM walk w JOIN edges e ON e.loop=w.loop AND e.blocking_spid=w.cur
+            SELECT w.grp, w.loop, w.head, e.blocked_spid, w.depth+1
+            FROM walk w JOIN edges e ON e.grp=w.grp AND e.blocking_spid=w.cur
             WHERE w.depth < 64
           )
-          SELECT loop, max(depth) AS depth, head, (SELECT count(*) FROM edges e WHERE e.loop=walk.loop) AS edges
-          FROM walk GROUP BY loop, head ORDER BY depth DESC
+          SELECT loop, max(depth) AS depth, head,
+                 (SELECT count(*) FROM edges e WHERE e.grp=walk.grp) AS edges
+          FROM walk GROUP BY grp, loop, head ORDER BY depth DESC
           """;
         using var r = c.ExecuteReader();
         var list = new List<ChainStat>();
@@ -128,7 +156,8 @@ public class BlockingQueries(DuckDBConnection conn)
           SELECT r.report_id, r.captured_at, r.monitor_loop, r.database_id
           FROM blocking_reports r
           JOIN blocking_processes bp ON bp.report_id=r.report_id AND bp.role='blocking'
-          WHERE bp.inputbuf_fingerprint = $fp ORDER BY r.captured_at LIMIT $l
+          WHERE bp.inputbuf_fingerprint = $fp AND coalesce(r.source, 'event') = 'event'
+          ORDER BY r.captured_at LIMIT $l
           """;
         Add(c, "$fp", fingerprint); Add(c, "$l", limit);
         var ids = new List<(long id, DateTime ts, int? loop, int? db)>();

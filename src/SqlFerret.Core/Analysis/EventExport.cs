@@ -76,6 +76,10 @@ public sealed class EventExportService(DuckDBConnection conn)
 
         // One pass for both counts: matched = exportable rows (ignores --limit, so it exposes
         // truncation); skipped = redacted/absent. The reader below is the only LIMIT-capped query.
+        // export-events rend les documents XE d'origine : un instantane de cycle de diagnostics
+        // n'en est pas un, et le compter dans `matched` le ferait passer pour un evenement.
+        extra += " AND coalesce(r.source, 'event') = 'event'";
+
         var (matched, skipped) = CountMatchedSkipped(
             "blocking_reports r", $"{where}{extra}", "r.raw_xml IS NOT NULL", "r.raw_xml IS NULL", binds);
 
