@@ -50,13 +50,42 @@ public class BlockingSourceIsolationTests
     }
 
     /// <summary>
-    /// Deux incidences sans rapport partageant un monitor_loop ne forment pas une chaine.
-    /// Un filtre sur `source` ne corrige pas ce cas : la fabrication a lieu dans la CTE, avant
-    /// tout regroupement. Profondeur 2 pour une paire isolee — `heads` part a 1, la recursion
-    /// ajoute 1 ; une chaine fabriquee vaudrait 3.
+    /// SQL Server emet un rapport par processus BLOQUE, donc une chaine 83 -> 72 -> 61 arrive
+    /// comme deux rapports partageant leur monitor_loop. Les recomposer est la raison d'etre de
+    /// Chains(), et c'est ce que la premiere ecriture de ce test avait detruit en se clant sur
+    /// report_id : un rapport ne porte qu'une arete, donc la profondeur plafonnait a 2 et le test
+    /// epinglait le bug comme resultat attendu.
     /// </summary>
     [Fact]
-    public void Chains_does_not_fabricate_a_chain_across_unrelated_reports()
+    public void Chains_reconstructs_a_chain_that_spans_two_reports()
+    {
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "masked");
+            db.InsertBlockingBatch(runId, [
+                Report(42, 61, 72, "event"),   // 72 bloque 61
+                Report(42, 72, 83, "event"),   // 83 bloque 72
+            ]);
+
+            var chains = new BlockingQueries(db.Connection).Chains();
+
+            var deepest = chains.MaxBy(ch => ch.Depth)!;
+            Assert.Equal(3, deepest.Depth);
+            Assert.Equal(83, deepest.HeadSpid);
+            Assert.Equal(2L, deepest.EdgeCount);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    /// <summary>
+    /// Les instantanes de diagnostics ne rejoignent jamais une chaine d'evenements, meme quand
+    /// leurs spids s'enchainent parfaitement : ce sont deux mecanismes qui numerotent leurs
+    /// boucles dans le meme espace d'entiers sans aucun rapport entre eux.
+    /// </summary>
+    [Fact]
+    public void Chains_never_links_an_event_report_to_a_diagnostics_snapshot()
     {
         var path = TempDb();
         try
@@ -65,13 +94,37 @@ public class BlockingSourceIsolationTests
             long runId = db.BeginRun("logs/", 1, 0, "masked");
             db.InsertBlockingBatch(runId, [
                 Report(42, 61, 72, "event"),
-                Report(42, 72, 83, "event"),
+                Report(42, 72, 83, "diagnostics"),
             ]);
 
             var chains = new BlockingQueries(db.Connection).Chains();
 
-            Assert.NotEmpty(chains);
+            // Seule l'arete 'event' subsiste : profondeur 2, une arete.
+            var ch = Assert.Single(chains);
+            Assert.Equal(2, ch.Depth);
+            Assert.Equal(1L, ch.EdgeCount);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    /// <summary>Deux incidents distincts, boucles distinctes : aucune chaine ne les relie.</summary>
+    [Fact]
+    public void Chains_does_not_link_reports_from_different_monitor_loops()
+    {
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "masked");
+            db.InsertBlockingBatch(runId, [
+                Report(42, 61, 72, "event"),
+                Report(99, 72, 83, "event"),
+            ]);
+
+            var chains = new BlockingQueries(db.Connection).Chains();
+
             Assert.All(chains, ch => Assert.Equal(2, ch.Depth));
+            Assert.All(chains, ch => Assert.Equal(1L, ch.EdgeCount));
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }

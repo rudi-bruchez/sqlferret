@@ -304,6 +304,11 @@ milliseconde par la source, donc nulle pour les attentes les plus fréquentes. E
 chiffres depuis le démarrage, et rien n'est classé dessus. Pour un classement par durée, c'est la
 capture de charge qui répond.
 
+**Une cadence irrégulière est signalée, pas résolue.** Un dossier peut contenir deux sessions
+enregistrant le même serveur ; la capture ne dit pas quel cycle appartient à laquelle. Le digest le
+dit et tait `intervalLongIos`, seul compteur qui en dépende. Ne pas conclure à partir d'un
+`intervalLongIos` absent : il est tu, pas nul.
+
 Un digest vide sur un serveur sain est un **résultat**, pas une panne. Le message diffère de celui
 d'un projet qui n'a aucune donnée de diagnostic.
 

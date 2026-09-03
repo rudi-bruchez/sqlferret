@@ -10,7 +10,9 @@ public record HealthDigestResult(
     HealthCoverage Coverage, IReadOnlyList<string> Notes,
     IReadOnlyList<StateCount> NonCleanStates, IReadOnlyList<WaitDelta> TopWaits,
     IReadOnlyList<MemoryMovement> MemoryMovers, IReadOnlyList<HealthScalar> WorkerPressure,
-    IReadOnlyList<(string Name, long Delta)> StabilitySignals,
+    IReadOnlyList<ScalarDelta> StabilitySignals,
+    IReadOnlyList<ScalarDelta> MemoryPressure,
+    IReadOnlyList<ScalarDelta> IoCounters,
     IReadOnlyList<PendingIoRow> WorstPendingIo,
     IReadOnlyList<DiagnosticsBlockingRow> DiagnosticsBlocking);
 
@@ -31,10 +33,19 @@ public class HealthDigest(DuckDBConnection conn)
         ["pendingTasks", "workersIdle", "workersCreated", "maxWorkers",
          "oldestPendingTaskWaitingTimeUs"];
 
+    /// <summary>Spec §9 item 4 : « from SYSTEM ». Uniquement des scalaires du composant SYSTEM.</summary>
     private static readonly string[] StabilityCounters =
         ["spinlockBackoffs", "latchWarnings", "nonYieldingTasksReported", "pageFaults",
          "totalDumpRequests", "intervalDumpRequests", "writeAccessViolationCount",
-         "outOfMemoryExceptions", "totalLongIos", "ioLatchTimeouts"];
+         "BadPagesDetected", "BadPagesFixed"];
+
+    /// <summary>Spec §9 item 3, la partie scalaire, du composant RESOURCE.</summary>
+    private static readonly string[] MemoryCounters =
+        ["outOfMemoryExceptions", "processOutOfMemoryPeriodUs", "isAnyPoolOutOfMemory"];
+
+    /// <summary>Spec §9 item 6, la partie scalaire, du composant IO_SUBSYSTEM.</summary>
+    private static readonly string[] IoCounterNames =
+        ["totalLongIos", "intervalLongIos", "ioLatchTimeouts"];
 
     public HealthDigestEnvelope Build(int limit = 10)
     {
@@ -47,24 +58,33 @@ public class HealthDigest(DuckDBConnection conn)
             notes.Add("This project holds no diagnostics samples. Import a system_health capture, or "
                     + "check that the capture actually contains sp_server_diagnostics_component_result.");
             return new HealthDigestEnvelope(SchemaVersion, DateTime.UtcNow,
-                new HealthDigestResult(coverage, notes, [], [], [], [], [], [], []));
+                new HealthDigestResult(coverage, notes, [], [], [], [], [], [], [], [], []));
         }
 
-        if (coverage.Series.Count > 1)
-            notes.Add($"{coverage.Series.Count} sampling series detected. Interval-scoped metrics "
-                    + "(intervalLongIos, tasksCompletedWithinInterval) are not combined across them: "
-                    + "each is scoped to its own session's interval. Rankings below use the longest "
-                    + "series only.");
+        if (coverage.CadenceIsIrregular)
+            notes.Add("The interval between cycles is not homogeneous. The usual cause is that this "
+                    + "capture folder holds more than one session recording the same server. "
+                    + "Interval-scoped counters (intervalLongIos) are suppressed below, because they "
+                    + "are scoped to their own session's interval and this tool cannot tell which "
+                    + "cycle belongs to which session. Everything else below is unaffected: the "
+                    + "counters are cumulative per instance and the gauges are point-in-time, so a "
+                    + "last-minus-first across interleaved samples of one server stays correct.");
 
-        // Une seule serie : un delta calcule a travers deux series entrelacees comparerait des
-        // instants sans rapport.
-        var main = coverage.Series.OrderByDescending(s => s.Cycles).First().SeriesKey;
+        var main = coverage.Series.Count > 0 ? coverage.Series[0].SeriesKey : "1";
 
         var nonClean = q.NonCleanStates();
         var waits = q.WaitDeltas(main, limit);
         var memory = q.MemoryMovers(main, limit);
         var workers = q.ScalarGauges(WorkerGauges);
         var stability = q.ScalarDeltas(main, StabilityCounters).Where(x => x.Delta > 0).ToList();
+        var memoryPressure = q.ScalarDeltas(main, MemoryCounters).Where(x => x.Delta > 0).ToList();
+        // intervalLongIos est rattache a l'intervalle de SA session. Quand la cadence est
+        // irreguliere, on ne sait pas a quelle session chaque cycle appartient : on le tait plutot
+        // que de rendre un chiffre dont personne ne peut dire ce qu'il mesure.
+        var ioNames = coverage.CadenceIsIrregular
+            ? IoCounterNames.Where(n => n != "intervalLongIos").ToArray()
+            : IoCounterNames;
+        var ioCounters = q.ScalarDeltas(main, ioNames).Where(x => x.Delta > 0).ToList();
         var pendingIo = q.WorstPendingIo(limit);
         var diagBlocking = q.DiagnosticsBlocking(limit);
 
@@ -78,7 +98,7 @@ public class HealthDigest(DuckDBConnection conn)
                     + "window. Those intervals are dropped from the delta and counted, not netted "
                     + "off — a restart must not read as a quiet period.");
 
-        if (nonClean.Count == 0 && stability.Count == 0)
+        if (nonClean.Count == 0 && stability.Count == 0 && memoryPressure.Count == 0)
             notes.Add("No component left CLEAN and no stability signal moved. On a healthy server "
                     + "this is the expected result, not missing data.");
 
@@ -93,7 +113,7 @@ public class HealthDigest(DuckDBConnection conn)
 
         return new HealthDigestEnvelope(SchemaVersion, DateTime.UtcNow,
             new HealthDigestResult(coverage, notes, nonClean, waits, memory, workers, stability,
-                pendingIo, diagBlocking));
+                memoryPressure, ioCounters, pendingIo, diagBlocking));
     }
 
     public static string ToMarkdown(HealthDigestEnvelope e)
@@ -150,6 +170,9 @@ public class HealthDigest(DuckDBConnection conn)
         sb.AppendLine();
 
         sb.AppendLine("## Memory").AppendLine();
+        foreach (var s in d.MemoryPressure) sb.AppendLine($"- `{s.Name}`: +{s.Delta}");
+        if (d.MemoryPressure.Count == 0) sb.AppendLine("No memory pressure counter moved.");
+        sb.AppendLine();
         if (d.MemoryMovers.Count == 0) sb.AppendLine("No memory report entries.");
         else foreach (var m in d.MemoryMovers)
             sb.AppendLine($"- `{m.Description}` ({m.ReportName}): {m.First.ToString("F0", inv)} to "
@@ -166,6 +189,11 @@ public class HealthDigest(DuckDBConnection conn)
         sb.AppendLine("## Stability signals").AppendLine();
         if (d.StabilitySignals.Count == 0) sb.AppendLine("Nothing moved.");
         else foreach (var (name, delta) in d.StabilitySignals) sb.AppendLine($"- `{name}`: +{delta}");
+        sb.AppendLine();
+
+        sb.AppendLine("## I/O").AppendLine();
+        if (d.IoCounters.Count == 0) sb.AppendLine("No I/O counter moved.");
+        else foreach (var s in d.IoCounters) sb.AppendLine($"- `{s.Name}`: +{s.Delta}");
         sb.AppendLine();
 
         sb.AppendLine("## Worst pending I/O").AppendLine();

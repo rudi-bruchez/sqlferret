@@ -110,16 +110,26 @@ public class BlockingQueries(DuckDBConnection conn)
 
     public IReadOnlyList<ChainStat> Chains()
     {
-        // Une chaine vit a l'interieur d'UN rapport, donc la CTE se cle sur report_id et non sur
-        // monitor_loop. Deux rapports sans rapport partageant une valeur de monitor_loop
-        // fabriquaient une chaine qui n'a jamais existe — et un filtre sur `source` n'y pouvait
-        // rien, la fabrication ayant lieu dans la CTE avant tout regroupement. report_id n'est
-        // jamais NULL, ce qui supprime aussi l'echec silencieux d'un monitorLoop absent, ou
-        // NULL = NULL est inconnu et arretait la recursion a la profondeur 1.
+        // La CTE se cle sur (source, monitor_loop).
+        //
+        // Surtout PAS sur report_id : SQL Server emet un rapport par processus BLOQUE, et
+        // InsertBlockingBatch ecrit exactement un `blocked` et un `blocking` par rapport. Se cler
+        // sur report_id donne donc une arete par groupe, toujours, et plafonne la profondeur a 2 —
+        // ce qui supprime la reconstruction de chaine, qui est la raison d'etre de cette requete.
+        // Une chaine 83 -> 72 -> 61 arrive comme deux rapports partageant leur monitor_loop, et
+        // c'est precisement a cela que monitor_loop sert.
+        //
+        // `source` entre dans la cle parce que les deux mecanismes numerotent leurs boucles dans
+        // le meme espace d'entiers sans aucun rapport entre eux ; le WHERE ci-dessous restreint en
+        // plus aux rapports declenches par seuil.
+        //
+        // Reste un risque assume, anterieur a ce chantier : deux incidents sans rapport, eloignes
+        // dans le temps, peuvent partager une valeur de monitor_loop et se voir relies. C'est le
+        // seul groupement que la source nous donne.
         using var c = conn.CreateCommand();
         c.CommandText = """
           WITH RECURSIVE edges AS (
-            SELECT r.report_id AS grp, r.monitor_loop AS loop,
+            SELECT coalesce(r.source, 'event') AS src, r.monitor_loop AS loop,
                    b.spid AS blocked_spid, k.spid AS blocking_spid
             FROM blocking_reports r
             JOIN blocking_processes b ON b.report_id=r.report_id AND b.role='blocked'
@@ -127,19 +137,23 @@ public class BlockingQueries(DuckDBConnection conn)
             WHERE coalesce(r.source, 'event') = 'event'
           ),
           heads AS (
-            SELECT DISTINCT grp, loop, blocking_spid AS spid FROM edges e
-            WHERE NOT EXISTS (SELECT 1 FROM edges x WHERE x.grp=e.grp AND x.blocked_spid=e.blocking_spid)
+            SELECT DISTINCT src, loop, blocking_spid AS spid FROM edges e
+            WHERE NOT EXISTS (SELECT 1 FROM edges x
+                              WHERE x.src=e.src AND x.loop IS NOT DISTINCT FROM e.loop
+                                AND x.blocked_spid=e.blocking_spid)
           ),
           walk AS (
-            SELECT grp, loop, spid AS head, spid AS cur, 1 AS depth FROM heads
+            SELECT src, loop, spid AS head, spid AS cur, 1 AS depth FROM heads
             UNION ALL
-            SELECT w.grp, w.loop, w.head, e.blocked_spid, w.depth+1
-            FROM walk w JOIN edges e ON e.grp=w.grp AND e.blocking_spid=w.cur
+            SELECT w.src, w.loop, w.head, e.blocked_spid, w.depth+1
+            FROM walk w JOIN edges e
+              ON e.src=w.src AND e.loop IS NOT DISTINCT FROM w.loop AND e.blocking_spid=w.cur
             WHERE w.depth < 64
           )
           SELECT loop, max(depth) AS depth, head,
-                 (SELECT count(*) FROM edges e WHERE e.grp=walk.grp) AS edges
-          FROM walk GROUP BY grp, loop, head ORDER BY depth DESC
+                 (SELECT count(*) FROM edges e
+                   WHERE e.src=walk.src AND e.loop IS NOT DISTINCT FROM walk.loop) AS edges
+          FROM walk GROUP BY src, loop, head ORDER BY depth DESC
           """;
         using var r = c.ExecuteReader();
         var list = new List<ChainStat>();

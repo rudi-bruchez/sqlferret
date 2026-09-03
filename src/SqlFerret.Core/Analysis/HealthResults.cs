@@ -13,10 +13,16 @@ public record HealthSeries(
 /// a concevoir ceci : 98,8 %, dont 97,2 % pour une seule erreur de securite en boucle. C'est ce
 /// chiffre qui dit au lecteur ce que vaut le reste du digest.
 /// </param>
+/// <param name="CadenceIsIrregular">
+/// Les ecarts entre cycles ne sont pas homogenes. La cause la plus courante est que le dossier
+/// contient plus d'une session enregistrant le meme serveur — cas observe sur une capture reelle.
+/// Ce champ dit ce qui est observable ; il ne pretend pas attribuer chaque cycle a une session,
+/// ce que la capture ne permet pas.
+/// </param>
 public record HealthCoverage(
     long Cycles, DateTime? First, DateTime? Last, double SpanMinutes,
     double MedianIntervalMin, double LargestGapMin, double NonDiagnosticsShare,
-    IReadOnlyList<HealthSeries> Series);
+    bool CadenceIsIrregular, IReadOnlyList<HealthSeries> Series);
 
 /// <param name="SpanMinutes">
 /// La duree que ce delta couvre reellement, qui n'est pas celle de la fenetre : seuls les N
@@ -48,6 +54,13 @@ public record WaitDelta(
 public record HealthScalar(string Name, double? Min, double? Median, double? P95, double? Max, long Samples);
 
 public record StateCount(string Component, string State, long Cycles);
+
+/// <summary>
+/// Un record et non un tuple : System.Text.Json ne serialise que des proprietes, et un ValueTuple
+/// n'expose qu'Item1/Item2 en champs — le digest JSON sortait des objets vides. C'est aussi ce que
+/// CLAUDE.md demande, « record over tuples for multi-field values ».
+/// </summary>
+public record ScalarDelta(string Name, long Delta);
 
 /// <param name="Change">
 /// Dernier moins premier, signe. Le classement se fait sur la valeur absolue : une chute de

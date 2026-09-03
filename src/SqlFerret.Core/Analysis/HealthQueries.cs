@@ -15,7 +15,7 @@ public class HealthQueries(DuckDBConnection conn)
     {
         long cycles = 0;
         DateTime? first = null, last = null;
-        double span = 0, median = 0, largest = 0;
+        double span = 0, median = 0, largest = 0, smallest = 0;
 
         using (var c = conn.CreateCommand())
         {
@@ -28,7 +28,8 @@ public class HealthQueries(DuckDBConnection conn)
               )
               SELECT count(*), min(cycle_at), max(cycle_at),
                      coalesce(date_diff('millisecond', min(cycle_at), max(cycle_at)) / 60000.0, 0),
-                     coalesce(quantile_cont(gap, 0.5), 0), coalesce(max(gap), 0)
+                     coalesce(quantile_cont(gap, 0.5), 0), coalesce(max(gap), 0),
+                     coalesce(min(gap), 0)
               FROM g
               """;
             using var r = c.ExecuteReader();
@@ -40,6 +41,7 @@ public class HealthQueries(DuckDBConnection conn)
                 span = r.GetDouble(3);
                 median = r.GetDouble(4);
                 largest = r.GetDouble(5);
+                smallest = r.GetDouble(6);
             }
         }
 
@@ -84,7 +86,12 @@ public class HealthQueries(DuckDBConnection conn)
             }
         }
 
-        return new HealthCoverage(cycles, first, last, span, median, largest, share, series);
+        // Ecarts heterogenes : le plus souvent deux sessions enregistrant le meme serveur. On le
+        // signale sans pretendre attribuer chaque cycle a l'une d'elles.
+        bool irregular = cycles >= 4 && smallest > 0 && largest / smallest > 2.5;
+
+        return new HealthCoverage(
+            cycles, first, last, span, median, largest, share, irregular, series);
     }
 
     /// <summary>
@@ -168,7 +175,7 @@ public class HealthQueries(DuckDBConnection conn)
     }
 
     /// <summary>Compteurs cumulatifs : dernier moins premier, dans une seule serie.</summary>
-    public IReadOnlyList<(string Name, long Delta)> ScalarDeltas(
+    public IReadOnlyList<ScalarDelta> ScalarDeltas(
         string seriesKey, IReadOnlyList<string> names)
     {
         using var c = conn.CreateCommand();
@@ -183,9 +190,9 @@ public class HealthQueries(DuckDBConnection conn)
           """;
         Bind(c, "$sk", seriesKey); Bind(c, "$names", names.ToList());
 
-        var list = new List<(string, long)>();
+        var list = new List<ScalarDelta>();
         using var r = c.ExecuteReader();
-        while (r.Read()) list.Add((r.GetString(0), r.GetInt64(1)));
+        while (r.Read()) list.Add(new ScalarDelta(r.GetString(0), r.GetInt64(1)));
         return list;
     }
 
@@ -194,9 +201,12 @@ public class HealthQueries(DuckDBConnection conn)
     {
         using var c = conn.CreateCommand();
         c.CommandText = """
+          -- Pas de filtre sur `handled` : `state` est le seul champ que l'outil comprend pour
+          -- TOUT composant, et ne pas savoir lire un payload n'est pas une raison de jeter l'etat.
+          -- Un composant de groupe de disponibilite en WARNING doit remonter.
           SELECT component, state, count(*) AS cycles
           FROM health_samples
-          WHERE state IS NOT NULL AND upper(state) <> 'CLEAN' AND handled
+          WHERE state IS NOT NULL AND upper(state) <> 'CLEAN'
           GROUP BY component, state
           ORDER BY cycles DESC, component
           """;

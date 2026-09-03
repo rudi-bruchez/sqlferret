@@ -280,10 +280,15 @@ error, and the diagnostics cycles that survived covered 14 hours at roughly one 
 a half minutes.
 
 **A folder can hold more than one sampling series.** That same capture contained two sessions
-recording the same instance in parallel, offset by about 35 minutes. Interval-scoped values —
-`intervalLongIos`, `tasksCompletedWithinInterval` — are scoped to their own session's interval and
-do not add up across series. `export-health` detects the series and says how many it found; it
-never combines them.
+recording the same instance in parallel, offset by about 35 minutes — which, taken modulo the
+5-minute period, is an effective offset of 30 seconds, so their cycles alternate.
+
+`export-health` does **not** try to say which cycle belongs to which session: nothing in the capture
+records that, and every heuristic tried for it was wrong in a way that mattered. It reports that the
+cadence is irregular, and suppresses the one counter that depends on the session —
+`intervalLongIos`. Everything else is unaffected, because the counters are cumulative per instance
+and the gauges are point-in-time: a last-minus-first across interleaved samples of one server is
+still the right answer.
 
 None of this is a misconfiguration to fix. It is what the session is, and the digest's coverage
 block exists so that you read the rest of it knowing that.

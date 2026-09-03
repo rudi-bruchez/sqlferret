@@ -355,7 +355,7 @@ Written by `import` from a `system_health` capture. Empty for a workload-only ca
 | `cycle_id` | BIGINT | |
 | `run_id` | BIGINT | |
 | `cycle_at` | TIMESTAMP | The earliest of the cycle's component timestamps |
-| `series_key` | TEXT | Sampling series. A capture folder can hold **more than one session** recording the same server; interval-scoped metrics never combine across series |
+| `series_key` | TEXT | Currently always `1`. A capture folder can hold more than one session recording the same server, but nothing in the capture says which cycle belongs to which session, so no split is attempted. The digest reports the irregular cadence instead |
 
 `health_samples` — one row per component per cycle.
 

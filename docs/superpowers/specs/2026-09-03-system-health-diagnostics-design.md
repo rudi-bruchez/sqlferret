@@ -642,7 +642,14 @@ skips when absent.
 
 ## 15. Open questions
 
-1. **The series-detection heuristic.** Grouping cycles into sampling series by observed spacing is
+1. **The series-detection heuristic — settled, in the negative.** Two heuristics were implemented
+   and both were wrong in ways that mattered: keying on the second-of-minute split one session into
+   sixty series as soon as its cadence was not a whole number of minutes, and greedy alternation cut
+   in half whichever session started first. The implementation now attempts no split: it reports the
+   irregular cadence and suppresses `intervalLongIos`, the only value that depends on the session.
+   Reopening this needs a signal the capture does not currently provide.
+
+2. **The original wording, kept for the record.** Grouping cycles into sampling series by observed spacing is
    inference, not fact. What should the digest do when the spacing is irregular enough that the
    grouping is unreliable — refuse to report interval-scoped metrics, or report them with a
    warning? This design leans to refusing, and it is not settled.

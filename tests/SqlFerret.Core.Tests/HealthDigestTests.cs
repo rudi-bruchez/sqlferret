@@ -16,6 +16,12 @@ public class HealthDigestTests
             [new HealthWait(false, "byCount", "CXPACKET", counter, 2_000, 5_026_000)],
             [], [], [], [], []);
 
+    private static ServerDiagnosticsSample Io(DateTime ts, long counter) =>
+        new(ts, "IO_SUBSYSTEM", "CLEAN", DiagnosticsOutcome.Parsed,
+            [new HealthMetric("totalLongIos", null, counter, null),
+             new HealthMetric("intervalLongIos", null, counter, null)],
+            [], [], [], [], [], []);
+
     [Fact]
     public void A_project_with_no_health_data_says_so_rather_than_reporting_an_empty_ranking()
     {
@@ -35,29 +41,40 @@ public class HealthDigestTests
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 
+    /// <summary>
+    /// Une cadence heterogene — typiquement deux sessions enregistrant le meme serveur — est
+    /// signalee, et le seul compteur qui depend de la session est tu. Le digest ne pretend pas
+    /// savoir quel cycle appartient a quelle session, parce que la capture ne le dit pas.
+    /// </summary>
     [Fact]
-    public void More_than_one_series_is_announced_in_the_notes()
+    public void An_irregular_cadence_is_announced_and_suppresses_the_interval_counter()
     {
         var a = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
-        var b = new DateTime(2026, 9, 3, 0, 52, 06, DateTimeKind.Utc);
         var path = TempDb();
         try
         {
             using var db = DuckDbProject.Open(path);
             long runId = db.BeginRun("logs/", 1, 0, "masked");
+            // Deux sessions a 5 min, decalees de 30 s : les ecarts alternent 0,5 / 4,5 min.
             List<HealthCycle> cycles = [];
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < 6; i++)
             {
-                cycles.Add(new HealthCycle(a.AddMinutes(5 * i), "34", [Qp(a.AddMinutes(5 * i), 100 + i)]));
-                cycles.Add(new HealthCycle(b.AddMinutes(5 * i), "06", [Qp(b.AddMinutes(5 * i), 200 + i)]));
+                var t1 = a.AddMinutes(5 * i);
+                var t2 = t1.AddSeconds(30);
+                cycles.Add(new HealthCycle(t1, "1", [Io(t1, 100 + i)]));
+                cycles.Add(new HealthCycle(t2, "1", [Io(t2, 200 + i)]));
             }
             db.InsertHealthCycles(runId, cycles);
 
             var e = new HealthDigest(db.Connection).Build();
 
-            Assert.Equal(2, e.Digest.Coverage.Series.Count);
+            Assert.True(e.Digest.Coverage.CadenceIsIrregular);
             Assert.Contains(e.Digest.Notes,
-                n => n.Contains("sampling series", StringComparison.OrdinalIgnoreCase));
+                n => n.Contains("not homogeneous", StringComparison.OrdinalIgnoreCase));
+            // totalLongIos est cumulatif par instance : il reste. intervalLongIos depend de la
+            // session : il disparait.
+            Assert.Contains(e.Digest.IoCounters, x => x.Name == "totalLongIos");
+            Assert.DoesNotContain(e.Digest.IoCounters, x => x.Name == "intervalLongIos");
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
@@ -88,6 +105,39 @@ public class HealthDigestTests
                                       "## Worker pressure", "## Stability signals",
                                       "## Worst pending I/O", "## Blocking seen in diagnostics cycles" })
                 Assert.Contains(h, md, StringComparison.Ordinal);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    /// <summary>
+    /// L'enveloppe JSON est la raison d'etre de §8, et rien ne l'assertait : un ValueTuple
+    /// n'expose Item1/Item2 qu'en CHAMPS, et System.Text.Json ne serialise que des proprietes,
+    /// donc la section sortait en objets vides. Invisible en Markdown, qui la rendait bien.
+    /// </summary>
+    [Fact]
+    public void The_json_envelope_carries_every_section_with_its_values()
+    {
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "masked");
+            db.InsertHealthCycles(runId, [
+                new HealthCycle(at,               "34", [Qp(at, 1_000)]),
+                new HealthCycle(at.AddMinutes(5), "34", [Qp(at.AddMinutes(5), 1_500)]),
+            ]);
+
+            var envelope = new HealthDigest(db.Connection).Build();
+            var json = System.Text.Json.JsonSerializer.Serialize(envelope,
+                new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+
+            Assert.Contains("\"SchemaVersion\": 1", json);
+            // Le nom ET la valeur, pas un objet vide.
+            Assert.Contains("spinlockBackoffs", json);
+            Assert.Contains("\"Delta\": 500", json);
+            Assert.Contains("CXPACKET", json);
+            Assert.DoesNotContain("{},", json);
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
