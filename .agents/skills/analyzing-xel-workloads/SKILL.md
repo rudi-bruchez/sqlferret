@@ -187,7 +187,7 @@ rien signaler.
 | Piège | Quoi faire |
 |---|---|
 | Les durées paraissent absurdement grandes | Toute colonne `*_us` est en **microsecondes**. `/1e3` pour des ms, `/1e6` pour des s. Ne jamais supposer des ms. |
-| `export-events` annonce `skipped` | Le XML de blocage/deadlock n'est conservé que pour les runs importés avec `--redaction off`. Avec toute autre politique il n'a jamais été écrit. Réimporter la capture. |
+| `export-events` annonce `skipped` | Le XML de blocage/deadlock n'est conservé que pour les runs importés avec `--redaction off` **et** `--sanitize-sql-text raw` (il porte les input buffers en clair). Sinon il n'a jamais été écrit. Réimporter la capture. |
 | Une jointure sur `query_hash` ne rend rien | Trois formats texte différents : `executions.query_hash` en décimal, `plan_profiles.query_hash` en hexa nu, `qds_queries.query_hash` en hexa préfixé `0x`. Normaliser en hexa majuscule nu avant de comparer. |
 | Les plans ne se corrèlent pas aux exécutions | La capture a omis l'ACTION `sqlserver.query_hash`. Aucun code ne corrige cela — il faut une nouvelle capture. `import` avertit sur stderr le cas échéant. |
 | Grouper les plans par texte d'instruction | `plan_profiles.statement_text` est **tronqué par le moteur** et peut être quasi vide. Jamais comme clé : utiliser `plan_hash`. |

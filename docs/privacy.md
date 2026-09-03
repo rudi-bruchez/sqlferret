@@ -13,10 +13,10 @@ situation.
 | Artifact | Contains | Controlled by |
 |---|---|---|
 | `executions.sql_text_raw` | The statement as captured, including any inlined literals | `--sanitize-sql-text` (default `raw`: always stored) |
-| `normalized_queries.normalized_sql` | The statement shape; literals `?`. Real literals on tokenize failure unless sanitized | Executions path: `--sanitize-sql-text`. Blocking path: `--redaction` (see point 5 below) |
+| `normalized_queries.normalized_sql` | The statement shape; literals `?`. Real literals on tokenize failure unless sanitized | Both policies, whichever is stricter |
 | `execution_parameters.value_text` | Extracted RPC / `sp_executesql` parameter values | The redaction policy |
-| `blocking_reports.raw_xml` | The full blocked-process report, including both input buffers | Retained only when redaction is `off` |
-| `blocking_processes.inputbuf` | The input buffer text | Same gate |
+| `blocking_reports.raw_xml` | The full blocked-process report, including both input buffers | Retained only under `--redaction off` **and** `--sanitize-sql-text raw` |
+| `blocking_processes.inputbuf` | The input buffer text | Same gate; otherwise stored normalized |
 | `deadlock_reports.graph_xml` | The deadlock graph | Same gate, otherwise stored as `<redacted/>` |
 | `plan_profiles.statement_text` | Statement text inside `sqlferret.duckdb` itself | Not sanitized by `--sanitize-sql-text` |
 | `plans/**/*.sqlplan` | Showplan XML: schema, table, column and index names, and sometimes literal predicate values | `obfuscate-plan`, after the fact |
@@ -102,24 +102,22 @@ needs its own control. That control is `--sanitize-sql-text`, covered next.
      sanitized.
    - `plans/**/*.digest.json` — a truncated `StatementText` this option does not touch.
    - `.sqlplan` files — statement text until `obfuscate-plan` rewrites them.
-5. **`--redaction off` and `--sanitize-sql-text literals` combine into a misleading project.**
-   `off` retains the raw input buffer and the raw blocking/deadlock XML regardless of statement
-   sanitization — the two flags are deliberately orthogonal. So one command can produce a project
-   whose `executions.sql_text_raw` is sanitized while `blocking_processes.inputbuf` and
-   `blocking_reports.raw_xml` still hold real statement text and literals. See the sharp edge in
-   `off` below — it applies here too.
+5. **Statement text obeys the stricter of the two policies, so `off` plus `literals` costs you
+   the blocking XML.** An input buffer is statement text, so `--sanitize-sql-text` governs it as
+   much as `--redaction` does. The two compose rather than ignoring each other: verbatim statement
+   text is retained only when redaction is `off` **and** the text policy is `raw`.
 
-   This also reaches `normalized_queries.normalized_sql`, and it is easy to miss because that
-   table is the one this feature was built to protect. `normalized_queries` is written from two
-   places: the executions path (governed by `--sanitize-sql-text`) and the blocking path, via
-   `IngestionService.PrepareProc`, which is governed by `--redaction` and never consults
-   `--sanitize-sql-text`. Under `off`, `PrepareProc` passes the blocked-process input buffer's
-   normalized text through untouched, and if that buffer failed to tokenize — common, since SQL
-   Server truncates input buffers — real literals from it land in `normalized_sql`. So
-   `--redaction off --sanitize-sql-text literals`, a supported combination, can leave every row of
-   `SELECT run_id, sql_text_policy FROM ingestion_runs` reading `literals` while
-   `normalized_queries` still carries real literal values from a blocked process.
+   The consequence is that `--redaction off --sanitize-sql-text literals` retains **no**
+   `blocking_reports.raw_xml` and stores `<redacted/>` for `deadlock_reports.graph_xml`, exactly
+   as a `masked` import would. `blocking_processes.inputbuf` is still stored, normalized. The
+   reason is blunt: those two columns hold whole XML documents whose `inputbuf` nodes carry the
+   literals, and nothing here rewrites XML. Retaining them under a policy that asked for literals
+   to go would contradict that policy from the next column over, so the honest answer is not to
+   retain them. `export-events` therefore has nothing to export from such a run — see
+   [cli-reference.md](cli-reference.md#export-events).
 
+   If you want both the raw blocking XML and sanitized statement text, you cannot have them in one
+   project: import twice, under two policies.
 ---
 
 ## Redaction policies
@@ -160,9 +158,10 @@ setting for parameters.
 But the same value simultaneously **enables** retention of blocked-process XML, deadlock graphs
 and input buffers, because those are only kept when nothing is being redacted. So:
 
-- `--redaction off` → no parameter values, **full blocking and deadlock XML on disk**, and —
-  if a blocked-process input buffer failed to tokenize — **real literals in
-  `normalized_queries.normalized_sql`**, regardless of `--sanitize-sql-text`
+- `--redaction off` (with the default `--sanitize-sql-text raw`) → no parameter values, **full
+  blocking and deadlock XML on disk**, and the input buffers verbatim
+- `--redaction off --sanitize-sql-text literals` → no parameter values, **no blocking or deadlock
+  XML**, input buffers stored normalized
 - `--redaction masked` → masked parameter values, **no blocking or deadlock XML at all**
 
 Which means `export-events` only ever has something to export from runs imported with `off`. If
@@ -172,8 +171,9 @@ deliberate refusal, not a bug.
 If you need both parameter privacy and blocking XML, you currently have to import twice, into two
 projects, under two policies.
 
-`--sanitize-sql-text` does not change this. `off` plus `literals` is a real, supported
-combination, and it is easy to misread as "fully sanitized" — it is not. See point 5 above.
+`--sanitize-sql-text literals` narrows `off` rather than widening it: it takes the blocking and
+deadlock XML away too. `off` plus `literals` is a real, supported combination — it is the private
+one, and it is the one that leaves `export-events` nothing to do. See point 5 above.
 
 ---
 

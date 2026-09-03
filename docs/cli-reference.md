@@ -41,7 +41,7 @@ sqlferret import <path> --project <dir> [--redaction off|hash|masked|full]
 | `<path>` | required, positional | A single `.xel` file, or a directory. A directory is expanded to its top-level `*.xel` files, sorted by name (which is rollover order). |
 | `--project <dir>` | required | Project directory. |
 | `--redaction <mode>` | project config, default `masked` | Parameter-value redaction policy for this run. See [privacy.md](privacy.md). |
-| `--sanitize-sql-text <raw\|literals>` | project config, default `raw` | Statement text written to `sql_text_raw` and `normalized_sql`. `literals` collapses inlined literals to `?`; identifiers are kept, except a double-quoted token, which also collapses (ambiguous without `QUOTED_IDENTIFIER`; bracketed identifiers are unaffected — see [privacy.md](privacy.md)), including inside an unwrapped `sp_executesql` inner statement — the inner query is the only part of an `sp_executesql` call this keeps; every other argument collapses to `?` too. Only the positional literal form (`exec sp_executesql N'...', ...`) is unwrapped — a named `@stmt = N'...'` argument, a statement passed in a variable, or a bracketed `[sp_executesql]` call all fall back to a full collapse, safely. Reads `ingest.sqlTextSanitization` from the project config when not passed. An invalid value exits 1. Independent of `--redaction`. See [privacy.md](privacy.md). |
+| `--sanitize-sql-text <raw\|literals>` | project config, default `raw` | Statement text written to `sql_text_raw` and `normalized_sql`. `literals` collapses inlined literals to `?`; identifiers are kept, except a double-quoted token, which also collapses (ambiguous without `QUOTED_IDENTIFIER`; bracketed identifiers are unaffected — see [privacy.md](privacy.md)), including inside an unwrapped `sp_executesql` inner statement — the inner query is the only part of an `sp_executesql` call this keeps; every other argument collapses to `?` too. Only the positional literal form (`exec sp_executesql N'...', ...`) is unwrapped — a named `@stmt = N'...'` argument, a statement passed in a variable, or a bracketed `[sp_executesql]` call all fall back to a full collapse, safely. Reads `ingest.sqlTextSanitization` from the project config when not passed. An invalid value exits 1. Also governs the blocking input buffer and, with `--redaction`, whether the raw blocking/deadlock XML is retained at all — the stricter of the two policies wins. See [privacy.md](privacy.md). |
 
 A run imported at `literals` cannot produce estimated plans later — the stored statement text is
 not valid T-SQL. See [execution-plans.md](execution-plans.md#estimated-plans).
@@ -280,9 +280,10 @@ Prints a JSON summary on stdout:
  "deadlock":{"written":3,"skipped":0,"matched":3}}
 ```
 
-**`skipped` is the one to watch.** XML is only present for runs imported with `--redaction off`.
-Anything else and the XML was never stored, so those events are skipped and stderr tells you to
-re-import. `matched` above `written` means `--limit` truncated the result, and stderr says by how
+**`skipped` is the one to watch.** XML is only present for runs imported with `--redaction off`
+**and** the default `--sanitize-sql-text raw`. The XML documents carry the input buffers verbatim,
+so a run that asked for literals to be collapsed does not retain them either. Anything else and
+the XML was never stored, so those events are skipped and stderr tells you to re-import. `matched` above `written` means `--limit` truncated the result, and stderr says by how
 much.
 
 `--fingerprint` and `--database` are ignored for deadlocks; passing them while deadlocks are in

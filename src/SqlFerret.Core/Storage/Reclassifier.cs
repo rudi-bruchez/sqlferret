@@ -72,7 +72,11 @@ public sealed class Reclassifier(DuckDbProject db)
             // Une ligne ingestion_runs absente (projet de test, provenance perdue) vaut
             // « exploitable » : c'est le comportement historique.
             const string ExecutionIsRaw = "(er.run_id IS NULL OR coalesce(er.sql_text_policy, 'raw') = 'raw')";
-            const string InputBufIsRaw = "(brp.report_id IS NULL OR rr.run_id IS NULL OR rr.redaction_policy = 'off')";
+            // Miroir exact d'IngestionService.PrepareProc : l'input buffer n'est verbatim que si
+            // les deux politiques l'autorisent. Les deux conditions doivent bouger ensemble.
+            const string InputBufIsRaw =
+                "(brp.report_id IS NULL OR rr.run_id IS NULL OR " +
+                "(rr.redaction_policy = 'off' AND coalesce(rr.sql_text_policy, 'raw') = 'raw'))";
             var select = $"""
               SELECT n.normalized_hash,
                      coalesce(any_value(e.sql_text_raw) FILTER (WHERE {ExecutionIsRaw}),

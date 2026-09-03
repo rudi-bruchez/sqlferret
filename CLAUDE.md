@@ -164,9 +164,13 @@ If you observe a violation in code the task does not touch, **report it and move
   `.env`; a missing `.env` is a silent no-op.
 - **Redaction before any parameter value reaches disk.** `RedactionPolicy` (off/hash/masked/full,
   plus per-name sensitive overrides) is applied in `IngestionService` before `PreparedParameter`
-  is built. Note: `off` discards parameter values *and* is the only mode that retains raw
+  is built. Note: `off` discards parameter values *and* is a necessary condition for retaining raw
   blocking/deadlock XML. Redaction covers parameter values; `--sanitize-sql-text` covers statement
-  text (`sql_text_raw` / `normalized_sql`). The two are independent — neither implies the other.
+  text (`sql_text_raw` / `normalized_sql`). They are independent for parameters, but **compose for
+  statement text**: an input buffer is statement text, so `blocking_processes.inputbuf`,
+  `blocking_reports.raw_xml` and `deadlock_reports.graph_xml` are kept verbatim only under
+  `off` *and* `raw` — `IngestionService.VerbatimStatementTextAllowed`, mirrored by the
+  `InputBufIsRaw` predicate in `Reclassifier`. The two must move together.
   See `docs/privacy.md`.
 - **Nothing silently dropped.** Unmapped, tokenize-failed, ingest-cleaned, blocking, deadlock and
   plan-profile events are all counted on `ingestion_runs`. Counters stay mutually exclusive and

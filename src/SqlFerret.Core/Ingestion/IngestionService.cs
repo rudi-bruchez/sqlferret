@@ -12,6 +12,18 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
     private readonly RedactionPolicy _redaction = new(options.Redaction);
     private readonly Func<ExecutionEvent, bool> _ingestKeep = FilterCompiler.ToIngestPredicate(options.Filters);
 
+    /// <summary>
+    /// Le texte d'instruction n'est conservé verbatim que si les <b>deux</b> politiques
+    /// l'autorisent. Gouverne les trois colonnes qui portent un input buffer en clair :
+    /// <c>blocking_processes.inputbuf</c>, <c>blocking_reports.raw_xml</c> et
+    /// <c>deadlock_reports.graph_xml</c>. Les deux XML ne sont pas sanitisables sans réécrire
+    /// chaque nœud <c>inputbuf</c> du document ; tant que ce n'est pas fait, <c>literals</c> ne
+    /// peut que refuser de les conserver — les garder contredirait la politique demandée depuis
+    /// une colonne voisine.
+    /// </summary>
+    private bool VerbatimStatementTextAllowed =>
+        options.Redaction == RedactionMode.Off && options.SqlText == SqlTextSanitization.Raw;
+
     public IngestionResult Ingest(string sourcePath,
         IEnumerable<(IXeEventData ev, string fileName, long offset)> events,
         int filesCount = 1, long bytesTotal = 0,
@@ -44,8 +56,9 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
                     var xml = EventMapper.ExtractBlockingXml(ev);
                     var rep = xml is null ? null : BlockingReportParser.Parse(xml, ev.Timestamp);
                     if (rep is null) { blockingParseFailures++; continue; }
-                    // Mirror deadlock gating: keep the raw XML only when nothing is redacted.
-                    var rawXml = options.Redaction == RedactionMode.Off ? xml : null;
+                    // Le XML brut porte les input buffers en clair : meme porte que
+                    // PrepareProc, donc meme condition.
+                    var rawXml = VerbatimStatementTextAllowed ? xml : null;
                     project.InsertBlockingBatch(runId, [Prepare(rep, rawXml)]);
                     blocking++;
                 }
@@ -54,7 +67,7 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
                     var xml = EventMapper.ExtractDeadlockXml(ev);
                     var dl = xml is null ? null : DeadlockReportParser.Parse(xml, ev.Timestamp);
                     if (dl is null) { blockingParseFailures++; continue; }
-                    project.InsertDeadlockBatch(runId, [dl with { GraphXmlRedacted = options.Redaction == RedactionMode.Off ? dl.GraphXmlRedacted : "<redacted/>" }]);
+                    project.InsertDeadlockBatch(runId, [dl with { GraphXmlRedacted = VerbatimStatementTextAllowed ? dl.GraphXmlRedacted : "<redacted/>" }]);
                     deadlocks++;
                 }
                 continue;
@@ -123,26 +136,43 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
 
     private const string FallbackRedactedPlaceholder = "(unparseable inputbuf; redacted)";
 
+    /// <summary>
+    /// L'input buffer est du texte d'instruction : il relève de <c>--sanitize-sql-text</c> autant
+    /// que de la rédaction. Les deux politiques se <b>composent</b> plutôt que de s'ignorer — le
+    /// verbatim n'est conservé que si la rédaction est <c>off</c> <i>et</i> la politique de texte
+    /// <c>raw</c>. Prises séparément, chacune laissait un trou : <c>--sanitize-sql-text literals</c>
+    /// n'était pas consulté ici du tout, si bien qu'un import
+    /// <c>--redaction off --sanitize-sql-text literals</c> écrivait l'input buffer littéral, à
+    /// rebours de ce que la politique demandée annonçait.
+    /// <para>Composer dans ce sens, et pas l'inverse, garantit que la sanitisation ne peut jamais
+    /// relâcher ce que la rédaction retenait : le comportement par défaut ne bouge pas.</para>
+    /// </summary>
     private PreparedBlockingProcess PrepareProc(BlockingProcess p)
     {
         if (string.IsNullOrEmpty(p.InputBufRaw))
             return new PreparedBlockingProcess(p, null, null);
         var nq = QueryNormalizer.Normalize(p.InputBufRaw);
-        if (options.Redaction == RedactionMode.Off)
+        var keyed = p with { InputBufFingerprint = nq.NormalizedHash };
+
+        if (VerbatimStatementTextAllowed)
         {
-            // Off: store raw, no masking
-            return new PreparedBlockingProcess(p with { InputBufFingerprint = nq.NormalizedHash }, nq, p.InputBufRaw);
+            // Les deux politiques autorisent le verbatim : stocker tel quel, sans masquage.
+            return new PreparedBlockingProcess(keyed, nq, p.InputBufRaw);
         }
         if (nq.TokenizeFailed)
         {
-            // Tokenize failed under non-Off redaction: FallbackCollapse left literals unmasked.
-            // Replace both the stored inputbuf and the NormalizedSql with a safe placeholder.
-            // NormalizedHash (a non-reversible hash) is safe to persist — keep it for fingerprint joins.
-            var safeNq = nq with { NormalizedSql = FallbackRedactedPlaceholder };
-            return new PreparedBlockingProcess(p with { InputBufFingerprint = nq.NormalizedHash }, safeNq, FallbackRedactedPlaceholder);
+            // FallbackCollapse a laissé les littéraux intacts. On remplace l'input buffer stocké
+            // *et* le NormalizedSql par un substitut : les deux vivent dans le même fichier et se
+            // rejoignent sur la même empreinte, corriger l'un seul déplacerait la fuite.
+            // NormalizedHash, non réversible, est conservé pour les jointures d'empreinte.
+            var failedNq = nq with { NormalizedSql = FallbackRedactedPlaceholder };
+            return new PreparedBlockingProcess(keyed, failedNq, FallbackRedactedPlaceholder);
         }
-        // Successful tokenization: ScriptDom already stripped literals from nq.NormalizedSql
-        return new PreparedBlockingProcess(p with { InputBufFingerprint = nq.NormalizedHash }, nq, nq.NormalizedSql);
+        // Tokenisation réussie : ScriptDom a déjà retiré les littéraux. On stocke la variante
+        // QI-collapsed et non NormalizedSql — sous SET QUOTED_IDENTIFIER OFF, "alice@example.com"
+        // est une valeur que NormalizedSql laisserait passer. Voir NormalizedQuery.QiCollapsedSql.
+        var safeNq = nq with { NormalizedSql = nq.QiCollapsedSql };
+        return new PreparedBlockingProcess(keyed, safeNq, safeNq.NormalizedSql);
     }
 
     private List<PreparedParameter> RedactParams(ExecutionEvent e)

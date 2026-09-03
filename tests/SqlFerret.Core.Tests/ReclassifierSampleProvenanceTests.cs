@@ -197,6 +197,33 @@ public class ReclassifierSampleProvenanceTests
     }
 
     [Fact]
+    public void Blocking_inputbuf_of_a_redaction_off_run_sanitized_at_literals_is_counted_apart()
+    {
+        var path = NewProjectPath();
+        try
+        {
+            using (var db = DuckDbProject.Open(path))
+            {
+                // Les deux politiques se composent a l'ingestion : `off` seule ne suffit plus a
+                // garantir un input buffer verbatim des lors que le texte est sanitise.
+                SeedRun(db, 1, "off", "literals");
+                SeedSignature(db, "hb", "SELECT");
+                SeedBlocking(db, 1, "select WidgetId from AppSchema.Widget where GadgetCode = ?", "hb");
+            }
+
+            using (var db = DuckDbProject.Open(path))
+            {
+                var r = new Reclassifier(db).Run();
+
+                Assert.Equal(1L, r.RowsUnusableSample);
+                Assert.Equal(0L, r.Unclassified);
+                Assert.Equal("SELECT", KindOf(db, "hb"));
+            }
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
     public void Force_does_not_reclassify_an_unusable_sample_either()
     {
         var path = NewProjectPath();
