@@ -7,19 +7,19 @@ pre-1.0: the minor version moves for features and for behaviour changes alike. T
 surface is still moving, and 1.0 would promise a command and flag stability this tool is
 not ready to make.
 
-This file starts at 0.2.0, the first tagged release. `0.1.0` exists in
-`Directory.Build.props` and in the `ToolVersion` of any project directory created by a
-build from early September, but it was never tagged and no binaries were ever published
-for it. Earlier work is recorded in the git history, which is the honest record of it;
-reconstructing per-release entries after the fact would mean inventing boundaries the
-repository never had.
+This file starts at 0.2.0, the first *published* release. `v0.1.0` is a real tag, and the
+version it declares is recorded in the `ToolVersion` of any project directory created by a
+build from early September — but no release was ever published for it and no binaries were
+ever built, because the release workflow did not exist yet. Earlier work is recorded in the
+git history, which is the honest record of it; reconstructing per-release entries after the
+fact would mean inventing boundaries the repository never had.
 
 The version is written into every project directory's `project.json` as `ToolVersion`, so
 an audit can always name the build that produced it.
 
 ## [0.2.0] - 2026-09-03
 
-First tagged release, with binaries. Five platforms, self-contained: nothing to install,
+First published release, with binaries. Five platforms, self-contained: nothing to install,
 no .NET runtime, no agent on the SQL Server.
 
 ### Added
