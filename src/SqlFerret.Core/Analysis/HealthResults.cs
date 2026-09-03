@@ -17,3 +17,32 @@ public record HealthCoverage(
     long Cycles, DateTime? First, DateTime? Last, double SpanMinutes,
     double MedianIntervalMin, double LargestGapMin, double NonDiagnosticsShare,
     IReadOnlyList<HealthSeries> Series);
+
+/// <param name="SpanMinutes">
+/// La duree que ce delta couvre reellement, qui n'est pas celle de la fenetre : seuls les N
+/// premiers types d'attente apparaissent par cycle, donc un type qui entre ou sort de la liste a
+/// un delta calcule sur une portion. Comparer un delta sur 40 minutes a un delta sur 14 heures
+/// comme s'ils etaient la meme mesure serait la meme erreur d'un cran plus bas, d'ou son
+/// transport jusqu'a l'affichage.
+/// </param>
+/// <param name="LifetimeAvgWaitUs">
+/// Moyenne cumulee depuis le demarrage de l'instance, arrondie a la milliseconde par la source :
+/// mesure, elle vaut 0 pour les attentes les plus frequentes. Transportee, jamais classee dessus.
+/// </param>
+/// <param name="LifetimeMaxWaitUs">
+/// Maximum courant depuis le demarrage. Mesure : constant sur 147 cycles pour chaque type
+/// d'attente, son record ayant ete etabli avant la fenetre. Ce n'est PAS la pire attente de la
+/// capture et il ne doit jamais etre presente comme telle.
+/// </param>
+/// <param name="RestartIntervalsDropped">
+/// Nombre d'intervalles ou le compteur a recule, ce qui ne peut signifier qu'un redemarrage
+/// d'instance. Ecartes du delta et comptes : les ramener a zero en silence ferait passer un
+/// redemarrage pour une periode calme.
+/// </param>
+public record WaitDelta(
+    string WaitType, bool Preemptive, string Ranking, long WaitsDelta,
+    double SpanMinutes, double PerMinute, long LifetimeAvgWaitUs, long LifetimeMaxWaitUs,
+    long RestartIntervalsDropped);
+
+/// <summary>Jauge instantanee : min / mediane / p95 / max, jamais une somme.</summary>
+public record HealthScalar(string Name, double? Min, double? Median, double? P95, double? Max, long Samples);
