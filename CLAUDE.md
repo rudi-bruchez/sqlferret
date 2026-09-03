@@ -201,6 +201,19 @@ If you observe a violation in code the task does not touch, **report it and move
   `QueryPlanHash` inside `<StmtSimple>`), but correlating with `executions` requires
   `sqlserver.query_hash` on the completion events. **`<StmtSimple StatementText>` is never a key**
   — the engine truncates it, and it can be near-empty. See `docs/capture-session.md`.
+- **Every claim about SQL Server behaviour carries its source.** A statement about what the engine
+  emits, what values a field can take, at what cadence, or whether a counter is cumulative or
+  instantaneous is written in one of three forms and never a fourth: *measured* (naming the
+  capture and what was counted), *documented* (linking Microsoft Learn), or *unverified* (said
+  plainly, so a reader knows not to build on it). This is a shape requirement, not a ban on
+  writing quickly.
+  A measurement describes the server that produced it, never the engine: "the four components
+  observed here" and "the four components" are different claims, and only the first is earned by
+  counting. The gap is invisible once the sentence is finished, which is why the form is the
+  guard. Two errors in the System Health spec came through it — a component set that is five plus
+  one per availability group, and a cadence read off the wrong parameter — both caught by one
+  query to the Microsoft Learn MCP server after the fact, either of which would have been caught
+  before it by asking the question the form forces.
 
 ## C# 14 baseline
 
