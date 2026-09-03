@@ -72,6 +72,17 @@ public static class EventMapper
 
     public static string? ExtractShowplanXml(IXeEventData ev) => Str(ev.Fields, "showplan_xml");
 
+    /// <summary>
+    /// Egalite stricte, pas un Contains : meme raison que pour IsPlanProfile — un evenement voisin
+    /// ne doit pas etre route ici par accident.
+    /// </summary>
+    public static bool IsServerDiagnostics(string name) =>
+        name.Equals("sp_server_diagnostics_component_result", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Champs de l'evenement de diagnostics : component, state, data.</summary>
+    public static (string? Component, string? State, string? Data) ExtractDiagnostics(IXeEventData ev) =>
+        (Str(ev.Fields, "component"), Str(ev.Fields, "state"), Str(ev.Fields, "data"));
+
     private static string? Str(IReadOnlyDictionary<string, object?> d, string k) =>
         d.TryGetValue(k, out var v) && v is not null ? v.ToString() : null;
     private static bool Bool(IReadOnlyDictionary<string, object?> d, string k) =>

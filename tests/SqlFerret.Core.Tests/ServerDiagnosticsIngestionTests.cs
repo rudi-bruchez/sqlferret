@@ -1,0 +1,166 @@
+// tests/SqlFerret.Core.Tests/ServerDiagnosticsIngestionTests.cs
+using SqlFerret.Core.Ingestion;
+using SqlFerret.Core.Parameters;
+using SqlFerret.Core.Storage;
+using Xunit;
+
+public class ServerDiagnosticsIngestionTests
+{
+    private static string TempDb() => Path.Combine(Path.GetTempPath(), $"sf_{Guid.NewGuid():N}.duckdb");
+
+    private static (IXeEventData, string, long) Diag(string component, string? xml, DateTime ts) =>
+        (new FakeEvent("sp_server_diagnostics_component_result", ts,
+            new Dictionary<string, object?> { ["component"] = component, ["state"] = "CLEAN", ["data"] = xml },
+            new Dictionary<string, object?>()),
+         "system_health_0_1.xel", 0);
+
+    private const string Qp = """<queryProcessing maxWorkers="9600" workersIdle="10"/>""";
+    private const string Io = """<ioSubsystem totalLongIos="7"/>""";
+
+    [Fact]
+    public void The_three_counters_are_exclusive_and_account_for_every_event()
+    {
+        var at = new DateTime(2026, 9, 3, 8, 26, 34, DateTimeKind.Utc);
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            var res = new IngestionService(db, new IngestionOptions(RedactionMode.Masked, []))
+                .Ingest("logs/", [
+                    Diag("QUERY_PROCESSING", Qp, at),
+                    Diag("IO_SUBSYSTEM", Io, at.AddTicks(2393)),
+                    Diag("events", "<events/>", at.AddTicks(3000)),        // unhandled
+                    Diag("QUERY_PROCESSING", null, at.AddMinutes(5)),      // failed
+                ]);
+
+            Assert.Equal(4, res.Read);
+            Assert.Equal(2, res.ServerDiagnostics);
+            Assert.Equal(1, res.ServerDiagnosticsUnhandled);
+            Assert.Equal(1, res.ServerDiagnosticsParseFailures);
+            Assert.Equal(0, res.Unmapped);   // plus rien ne tombe dans le fourre-tout
+
+            // Les compteurs d'EVENEMENTS se reconcilient exactement avec events_read. Les
+            // compteurs de sous-documents n'y entrent pas.
+            Assert.Equal(res.Read,
+                res.Mapped + res.Unmapped + res.Cleaned + res.Blocking + res.Deadlocks
+                + res.PlanProfiles + res.ServerDiagnostics + res.ServerDiagnosticsUnhandled
+                + res.ServerDiagnosticsParseFailures);
+            Assert.Equal(0, res.Blocking);   // aucun blocked_process_report dans ce flux
+
+            using var c = db.Connection.CreateCommand();
+            c.CommandText = """
+              SELECT events_server_diagnostics, events_server_diagnostics_unhandled,
+                     server_diagnostics_parse_failures
+              FROM ingestion_runs WHERE run_id = $r
+              """;
+            var p = c.CreateParameter(); p.ParameterName = "r"; p.Value = res.RunId; c.Parameters.Add(p);
+            using var r = c.ExecuteReader();
+            Assert.True(r.Read());
+            Assert.Equal(2L, r.GetInt64(0));
+            Assert.Equal(1L, r.GetInt64(1));
+            Assert.Equal(1L, r.GetInt64(2));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void Cycles_are_grouped_and_persisted()
+    {
+        var at = new DateTime(2026, 9, 3, 8, 26, 34, DateTimeKind.Utc);
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            new IngestionService(db, new IngestionOptions(RedactionMode.Masked, []))
+                .Ingest("logs/", [Diag("QUERY_PROCESSING", Qp, at), Diag("IO_SUBSYSTEM", Io, at.AddTicks(2393))]);
+
+            using var c = db.Connection.CreateCommand();
+            c.CommandText = "SELECT count(*) FROM health_cycles";
+            Assert.Equal(1L, Convert.ToInt64(c.ExecuteScalar()));
+            c.CommandText = "SELECT count(*) FROM health_samples";
+            Assert.Equal(2L, Convert.ToInt64(c.ExecuteScalar()));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    private static string? FindSystemHealthCapture()
+    {
+        var dir = AppContext.BaseDirectory;
+        for (int i = 0; i < 8 && dir is not null; i++, dir = Path.GetDirectoryName(dir))
+        {
+            var sample = Path.Combine(dir, "sample");
+            if (!Directory.Exists(sample)) continue;
+            return Directory.GetFiles(sample, "system_health*.xel").OrderBy(f => f).FirstOrDefault();
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Bout en bout sur une vraie capture, quand il y en a une sous sample/. Le gate suit la
+    /// convention du depot : absent en clone propre, donc ignore.
+    /// </summary>
+    [SkippableFact]
+    public void A_real_system_health_capture_yields_cycles_and_reconciles()
+    {
+        var capture = FindSystemHealthCapture();
+        Skip.If(capture is null, "no system_health capture under sample/");
+
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            var res = new IngestionService(db, new IngestionOptions(RedactionMode.Masked, []))
+                .Ingest(capture!, new XelReader().Read([capture!]));
+
+            Assert.True(res.ServerDiagnostics > 0, "la capture devrait contenir des diagnostics");
+            Assert.Equal(res.Read,
+                res.Mapped + res.Unmapped + res.Cleaned + res.Blocking + res.Deadlocks
+                + res.PlanProfiles + res.ServerDiagnostics + res.ServerDiagnosticsUnhandled
+                + res.ServerDiagnosticsParseFailures);
+
+            using var c = db.Connection.CreateCommand();
+            c.CommandText = "SELECT count(*) FROM health_cycles";
+            Assert.True(Convert.ToInt64(c.ExecuteScalar()) > 0);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void An_embedded_blocking_report_counts_as_a_sub_document_not_as_an_event()
+    {
+        var at = new DateTime(2026, 9, 3, 8, 26, 34, DateTimeKind.Utc);
+        const string withBlocking = """
+        <queryProcessing maxWorkers="9600">
+          <blockingTasks>
+            <blocked-process-report monitorLoop="11881">
+              <blocked-process><process spid="61" waittime="4100"><inputbuf>exec AppSchema.WidgetRecalc</inputbuf></process></blocked-process>
+              <blocking-process><process spid="72"><inputbuf>update AppSchema.Widget</inputbuf></process></blocking-process>
+            </blocked-process-report>
+          </blockingTasks>
+        </queryProcessing>
+        """;
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            var res = new IngestionService(db, new IngestionOptions(RedactionMode.Masked, []))
+                .Ingest("logs/", [Diag("QUERY_PROCESSING", withBlocking, at)]);
+
+            Assert.Equal(1, res.ServerDiagnostics);
+            Assert.Equal(1, res.EmbeddedBlocking);
+            // events_blocking compte les evenements blocked_process_report. Un rapport integre est
+            // un fragment d'un evenement de diagnostics, pas un evenement : l'y compter ferait
+            // depasser events_read a la somme de reconciliation.
+            Assert.Equal(0, res.Blocking);
+            Assert.Equal(res.Read,
+                res.Mapped + res.Unmapped + res.Cleaned + res.Blocking + res.Deadlocks
+                + res.PlanProfiles + res.ServerDiagnostics + res.ServerDiagnosticsUnhandled
+                + res.ServerDiagnosticsParseFailures);
+
+            using var c = db.Connection.CreateCommand();
+            c.CommandText = "SELECT source FROM blocking_reports";
+            Assert.Equal("diagnostics", (string?)c.ExecuteScalar());
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+}

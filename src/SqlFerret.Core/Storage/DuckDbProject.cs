@@ -123,6 +123,11 @@ public sealed partial class DuckDbProject : IDisposable
               ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS sql_text_sanitizer_version INTEGER;
               ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS sql_text_sanitize_failures BIGINT;
               ALTER TABLE blocking_reports ADD COLUMN IF NOT EXISTS source TEXT;
+              ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS events_server_diagnostics BIGINT;
+              ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS events_server_diagnostics_unhandled BIGINT;
+              ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS server_diagnostics_parse_failures BIGINT;
+              ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS server_diagnostics_embedded_blocking BIGINT;
+              ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS server_diagnostics_embedded_blocking_failures BIGINT;
               """;
             migrate.ExecuteNonQuery();
         }
@@ -168,8 +173,12 @@ public sealed partial class DuckDbProject : IDisposable
             tokenize_failures, events_blocking, events_deadlocks, blocking_parse_failures,
             normalizer_version, redaction_policy,
             events_plan_profiles, plan_parse_failures, plan_write_failures,
-            sql_text_policy, sql_text_sanitizer_version, sql_text_sanitize_failures)
-          VALUES ($id,$src,$fc,$bt, now(), NULL, 0,0,0,0,0,0,0,0, $nv, $rp, 0,0,0, $stp, $stv, 0)
+            sql_text_policy, sql_text_sanitizer_version, sql_text_sanitize_failures,
+            events_server_diagnostics, events_server_diagnostics_unhandled,
+            server_diagnostics_parse_failures,
+            server_diagnostics_embedded_blocking, server_diagnostics_embedded_blocking_failures)
+          VALUES ($id,$src,$fc,$bt, now(), NULL, 0,0,0,0,0,0,0,0, $nv, $rp, 0,0,0, $stp, $stv, 0,
+                  0,0,0,0,0)
           """;
         Add(c, "$id", runId); Add(c, "$src", sourcePath); Add(c, "$fc", filesCount);
         Add(c, "$bt", bytesTotal); Add(c, "$nv", QueryNormalizer.Version); Add(c, "$rp", redactionPolicy);
@@ -247,7 +256,10 @@ public sealed partial class DuckDbProject : IDisposable
     public void FinishRun(long runId, long read, long mapped, long unmapped, long cleaned,
         long tokenizeFailures, long blocking, long deadlocks, long blockingParseFailures,
         long planProfiles = 0, long planParseFailures = 0, long planWriteFailures = 0,
-        long sqlTextSanitizeFailures = 0)
+        long sqlTextSanitizeFailures = 0,
+        long serverDiagnostics = 0, long serverDiagnosticsUnhandled = 0,
+        long serverDiagnosticsParseFailures = 0,
+        long embeddedBlocking = 0, long embeddedBlockingFailures = 0)
     {
         using var c = Connection.CreateCommand();
         c.CommandText = """
@@ -255,7 +267,11 @@ public sealed partial class DuckDbProject : IDisposable
             events_unmapped=$u, events_cleaned=$c, tokenize_failures=$tf,
             events_blocking=$bl, events_deadlocks=$dl, blocking_parse_failures=$bpf,
             events_plan_profiles=$pp, plan_parse_failures=$ppf, plan_write_failures=$pwf,
-            sql_text_sanitize_failures=$stsf
+            sql_text_sanitize_failures=$stsf,
+            events_server_diagnostics=$sd, events_server_diagnostics_unhandled=$sdu,
+            server_diagnostics_parse_failures=$sdf,
+            server_diagnostics_embedded_blocking=$eb,
+            server_diagnostics_embedded_blocking_failures=$ebf
           WHERE run_id=$id
           """;
         Add(c, "$r", read); Add(c, "$m", mapped); Add(c, "$u", unmapped); Add(c, "$c", cleaned);
@@ -263,6 +279,9 @@ public sealed partial class DuckDbProject : IDisposable
         Add(c, "$bpf", blockingParseFailures);
         Add(c, "$pp", planProfiles); Add(c, "$ppf", planParseFailures); Add(c, "$pwf", planWriteFailures);
         Add(c, "$stsf", sqlTextSanitizeFailures);
+        Add(c, "$sd", serverDiagnostics); Add(c, "$sdu", serverDiagnosticsUnhandled);
+        Add(c, "$sdf", serverDiagnosticsParseFailures);
+        Add(c, "$eb", embeddedBlocking); Add(c, "$ebf", embeddedBlockingFailures);
         Add(c, "$id", runId);
         c.ExecuteNonQuery();
     }

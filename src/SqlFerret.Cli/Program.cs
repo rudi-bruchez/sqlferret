@@ -131,7 +131,12 @@ switch (args[0])
                 $"blocking={result.Blocking} deadlocks={result.Deadlocks} blockingParseFailures={result.BlockingParseFailures} " +
                 $"planProfiles={result.PlanProfiles} planParseFailures={result.PlanParseFailures} " +
                 $"planWriteFailures={result.PlanWriteFailures} " +
-                $"sqlTextSanitizeFailures={result.SqlTextSanitizeFailures}");
+                $"sqlTextSanitizeFailures={result.SqlTextSanitizeFailures} " +
+                $"serverDiagnostics={result.ServerDiagnostics} " +
+                $"serverDiagnosticsUnhandled={result.ServerDiagnosticsUnhandled} " +
+                $"serverDiagnosticsParseFailures={result.ServerDiagnosticsParseFailures} " +
+                $"embeddedBlocking={result.EmbeddedBlocking} " +
+                $"embeddedBlockingFailures={result.EmbeddedBlockingFailures}");
 
             if (db.PlanCorrelationWarning(result.RunId) is { } planWarning)
                 Console.Error.WriteLine(planWarning);

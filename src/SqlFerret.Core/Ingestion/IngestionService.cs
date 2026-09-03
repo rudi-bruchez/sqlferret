@@ -35,6 +35,9 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
 
         long read = 0, mapped = 0, unmapped = 0, cleaned = 0, tokenizeFailures = 0;
         long sqlTextSanitizeFailures = 0;
+        long serverDiagnostics = 0, serverDiagnosticsUnhandled = 0, serverDiagnosticsParseFailures = 0;
+        long embeddedBlocking = 0, embeddedBlockingFailures = 0;
+        var diagSamples = new List<ServerDiagnosticsSample>();
         long blocking = 0, deadlocks = 0, blockingParseFailures = 0;
         long planProfiles = 0, planParseFailures = 0, planWriteFailures = 0;
         var planWriter = new SqlFerret.Core.Plans.PlanArtifactWriter(options.PlanProfileDir);
@@ -94,6 +97,34 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
                 continue;
             }
 
+            if (EventMapper.IsServerDiagnostics(ev.Name))
+            {
+                var (comp, state, data) = EventMapper.ExtractDiagnostics(ev);
+                var sample = ServerDiagnosticsParser.TryParse(comp, state, data, ev.Timestamp);
+
+                switch (sample.Outcome)
+                {
+                    case DiagnosticsOutcome.Parsed: serverDiagnostics++; break;
+                    case DiagnosticsOutcome.Unhandled: serverDiagnosticsUnhandled++; break;
+                    default: serverDiagnosticsParseFailures++; break;
+                }
+                diagSamples.Add(sample);
+
+                // Les rapports de blocage integres passent par PrepareProc comme les autres :
+                // meme porte de confidentialite, meme empreinte d'inputbuf, aucun code nouveau.
+                // Ils sont comptes a part : un rapport integre est un fragment de CET evenement,
+                // pas un blocked_process_report, et l'ajouter a `blocking` ferait depasser
+                // events_read a la somme de reconciliation.
+                foreach (var reportXml in sample.EmbeddedBlockingXml)
+                {
+                    var rep = BlockingReportParser.Parse(reportXml, ev.Timestamp);
+                    if (rep is null) { embeddedBlockingFailures++; continue; }
+                    project.InsertBlockingBatch(runId, [Prepare(rep, null) with { Source = "diagnostics" }]);
+                    embeddedBlocking++;
+                }
+                continue;
+            }
+
             var e = EventMapper.Map(ev, fileName, offset);
             if (e.EventClass == EventClass.Unknown || string.IsNullOrEmpty(e.SqlTextRaw)) { unmapped++; continue; }
             if (!_ingestKeep(e)) { cleaned++; continue; }
@@ -119,14 +150,20 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
         }
         if (buffer.Count > 0) project.InsertBatch(runId, buffer);
         if (planBuffer.Count > 0) project.InsertPlanProfileBatch(runId, planBuffer);
+        if (diagSamples.Count > 0)
+            project.InsertHealthCycles(runId, HealthCycleGrouper.Group(diagSamples));
 
         progress?.Report(new IngestionProgress(read, mapped, unmapped, cleaned, tokenizeFailures, currentFile));
         project.FinishRun(runId, read, mapped, unmapped, cleaned, tokenizeFailures,
             blocking, deadlocks, blockingParseFailures, planProfiles, planParseFailures, planWriteFailures,
-            sqlTextSanitizeFailures);
+            sqlTextSanitizeFailures,
+            serverDiagnostics, serverDiagnosticsUnhandled, serverDiagnosticsParseFailures,
+            embeddedBlocking, embeddedBlockingFailures);
         return new IngestionResult(runId, read, mapped, unmapped, cleaned, tokenizeFailures,
             blocking, deadlocks, blockingParseFailures, planProfiles, planParseFailures, planWriteFailures,
-            sqlTextSanitizeFailures);
+            sqlTextSanitizeFailures,
+            serverDiagnostics, serverDiagnosticsUnhandled, serverDiagnosticsParseFailures,
+            embeddedBlocking, embeddedBlockingFailures);
     }
 
     private PreparedBlockingReport Prepare(BlockingReport rep, string? rawXml)
