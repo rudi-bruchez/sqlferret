@@ -24,7 +24,7 @@ public class DuckDbProjectSchemaTests
     }
 
     [Fact]
-    public void Normalized_queries_carries_target_object_and_v2()
+    public void Normalized_queries_carries_target_object_and_pins_the_normalizer_version()
     {
         var path = Path.Combine(Path.GetTempPath(), $"sf-{Guid.NewGuid():N}.duckdb");
         try

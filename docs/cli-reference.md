@@ -201,16 +201,23 @@ re-import because the classification is recomputed from the statement text alrea
 for a construct it previously left as `OTHER`, and you want those rows replayed.
 
 ```text
-reclassify: v1 -> v3 | examined=8421 changed=1180 unchanged=7241 unclassified=12 withoutSample=3
+reclassify: v1 -> v4 | examined=8421 changed=1180 unchanged=7241 unclassified=12 withoutSample=3 unusableSample=0
 ```
 
-Two outcomes are reported separately on `stderr` because they are not the same problem:
+Three outcomes are reported separately on `stderr` because they are not the same problem:
 
 - **unclassified** — the text was parsed but no visitor claimed it, or it could not be parsed at
   all. `--force` will replay these once the classifier learns the construct.
 - **withoutSample** — no source text was retained for that signature, neither an execution nor a
   blocking input buffer, so there is nothing to reclassify. Its classification is left untouched;
   `--force` cannot help, only a re-import can.
+- **unusableSample** — text was retained, but it is already normalized, so it is not T-SQL any
+  more: `where c = ?` does not parse, and reclassifying from it would degrade the row to `OTHER`.
+  Two provenances produce this, and only the provenance can tell — never the text itself: an
+  execution from a run imported with `--sanitize-sql-text literals`, and a blocking input buffer
+  from any run not imported with `--redaction off`. These rows are left untouched; `--force` will
+  not touch them either. Only a re-import from the capture, at a policy that retains the statement
+  text, makes them classifiable.
 
 Already at the current version and without `--force`, the command reports `rien a faire` and
 changes nothing.

@@ -52,7 +52,7 @@ One row per `import`. The provenance and quality record for everything that run 
 | `events_blocking`, `events_deadlocks` | BIGINT | |
 | `blocking_parse_failures` | BIGINT | |
 | `events_plan_profiles`, `plan_parse_failures`, `plan_write_failures` | BIGINT | |
-| `normalizer_version` | INTEGER | Currently 1 |
+| `normalizer_version` | INTEGER | `QueryNormalizer.Version`, currently 4 |
 | `redaction_policy` | TEXT | The policy in force for this run |
 | `sql_text_policy` | TEXT | `raw` or `literals`. **NULL means a run imported before this column existed — read it as `raw`.** |
 | `sql_text_sanitizer_version` | INTEGER | `SqlTextSanitizer.Version`, currently 1. NULL for pre-versioning runs. |

@@ -505,7 +505,7 @@ switch (args[0])
 
             Console.WriteLine(r.RowsExamined == 0
                 ? $"reclassify: rien a faire (deja en v{r.ToVersion})"
-                : $"reclassify: v{r.FromVersion} -> v{r.ToVersion} | examined={r.RowsExamined} changed={r.RowsChanged} unchanged={r.RowsUnchanged} unclassified={r.Unclassified} withoutSample={r.RowsWithoutSample}");
+                : $"reclassify: v{r.FromVersion} -> v{r.ToVersion} | examined={r.RowsExamined} changed={r.RowsChanged} unchanged={r.RowsUnchanged} unclassified={r.Unclassified} withoutSample={r.RowsWithoutSample} unusableSample={r.RowsUnusableSample}");
 
             if (r.RowsChanged > 0)
                 Console.WriteLine("note: des lignes autrefois 'OTHER' portent desormais un statement_kind DDL");
@@ -516,6 +516,8 @@ switch (args[0])
                 Console.Error.WriteLine($"warning: {r.Unclassified} instruction(s) non typee(s) — texte non analysable ou construction sans visiteur; --force les rejouera apres une evolution du classifieur");
             if (r.RowsWithoutSample > 0)
                 Console.Error.WriteLine($"warning: {r.RowsWithoutSample} signature(s) sans texte source conserve (ni execution ni inputbuf de blocage) — leur classification est laissee telle quelle; --force n'y changera rien, seul un reimport le pourrait");
+            if (r.RowsUnusableSample > 0)
+                Console.Error.WriteLine($"warning: {r.RowsUnusableSample} signature(s) dont le seul texte conserve est deja normalise (import en --sanitize-sql-text literals, ou inputbuf de blocage hors --redaction off) — non reclassees pour ne pas les degrader en OTHER; seul un reimport depuis la capture le permettrait");
             return 0;
         }
     default:

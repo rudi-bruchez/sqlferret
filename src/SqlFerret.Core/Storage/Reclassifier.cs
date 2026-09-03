@@ -15,10 +15,16 @@ namespace SqlFerret.Core.Storage;
 /// leur version est tout de même portée : c'est ce qui fait converger le traitement, sans quoi
 /// chaque passe les retrouverait et l'avertissement de version périmée ne s'éteindrait jamais.
 /// L'hôte doit donc les annoncer pour ce qu'elles sont — un réimport, pas un <c>--force</c>.</para>
+/// <para><c>RowsUnusableSample</c> compte celles dont le seul texte conservé est <b>déjà
+/// normalisé</b> : <c>where c = ?</c> n'est pas du T-SQL, le parsing échoue et les reclasser les
+/// dégraderait en <c>OTHER</c>. Compté à part de <c>Unclassified</c>, qui décrit une instruction
+/// que le classifieur ne sait pas typer ; ici c'est l'échantillon qui est inexploitable, pas
+/// l'instruction. Même traitement que <c>RowsWithoutSample</c> : classification intacte, version
+/// portée, réimport comme seul recours.</para>
 /// </summary>
 public sealed record ReclassifyResult(
     long RowsExamined, long RowsChanged, long RowsUnchanged,
-    long Unclassified, long RowsWithoutSample,
+    long Unclassified, long RowsWithoutSample, long RowsUnusableSample,
     int FromVersion, int ToVersion);
 
 /// <summary>
@@ -30,6 +36,20 @@ public sealed record ReclassifyResult(
 /// <c>blocking_processes.inputbuf</c>. Les signatures issues d'un rapport de blocage n'ont pas
 /// d'exécution : sans ce second recours, elles étaient comptées « sans échantillon » et n'étaient
 /// jamais reclassées, alors que leur texte est là et parfaitement analysable.</para>
+/// <para>Encore faut-il que le texte conservé soit du T-SQL et non de la sortie du normaliseur.
+/// Deux provenances ne le garantissent pas, et rien dans le texte lui-même ne permet de trancher —
+/// seule la provenance le dit :
+/// <list type="bullet">
+/// <item><c>executions.sql_text_raw</c> d'un run importé en <c>--sanitize-sql-text literals</c>
+/// (<c>ingestion_runs.sql_text_policy</c>) ;</item>
+/// <item><c>blocking_processes.inputbuf</c>, qu'<c>IngestionService.PrepareProc</c> stocke normalisé
+/// pour toute politique de rédaction autre que <c>off</c> (<c>ingestion_runs.redaction_policy</c>).
+/// </item>
+/// </list>
+/// Un échantillon exploitable est donc préféré à un échantillon normalisé pour une même signature ;
+/// à défaut, la signature est comptée dans <c>RowsUnusableSample</c> et laissée intacte. Un run
+/// dont on ne retrouve pas la ligne <c>ingestion_runs</c> est réputé exploitable : c'est le
+/// comportement historique, et supposer l'inverse dégraderait des projets sains.</para>
 /// </summary>
 public sealed class Reclassifier(DuckDbProject db)
 {
@@ -37,19 +57,34 @@ public sealed class Reclassifier(DuckDbProject db)
     {
         var target = QueryNormalizer.Version;
 
-        var pending = new List<(string Hash, string? Sample, string Kind, string? Table, string? Obj, int Ver)>();
+        var pending = new List<(string Hash, string? Sample, bool AnyText, string Kind, string? Table, string? Obj, int Ver)>();
         using (var read = db.Connection.CreateCommand())
         {
             // coalesce(any_value(...), any_value(...)) et non any_value(coalesce(...)) : les deux
             // jointures ne ramènent pas les mêmes lignes, et une signature de blocage n'a aucune
             // ligne côté executions. L'agrégation reste dans le SQL, elle ne remonte pas en C#.
+            //
+            // Les FILTER écartent les échantillons déjà normalisés : le premier coalesce ne ramène
+            // donc que du T-SQL analysable, et le second dit si un texte — fût-il inexploitable —
+            // existait. Les trois jointures ajoutées portent sur des clés primaires : elles
+            // élargissent la ligne, elles ne la multiplient pas.
+            //
+            // Une ligne ingestion_runs absente (projet de test, provenance perdue) vaut
+            // « exploitable » : c'est le comportement historique.
+            const string ExecutionIsRaw = "(er.run_id IS NULL OR coalesce(er.sql_text_policy, 'raw') = 'raw')";
+            const string InputBufIsRaw = "(brp.report_id IS NULL OR rr.run_id IS NULL OR rr.redaction_policy = 'off')";
             var select = $"""
               SELECT n.normalized_hash,
-                     coalesce(any_value(e.sql_text_raw), any_value(b.inputbuf)),
+                     coalesce(any_value(e.sql_text_raw) FILTER (WHERE {ExecutionIsRaw}),
+                              any_value(b.inputbuf)     FILTER (WHERE {InputBufIsRaw})),
+                     coalesce(any_value(e.sql_text_raw), any_value(b.inputbuf)) IS NOT NULL,
                      n.statement_kind, n.primary_table, n.target_object, n.normalizer_version
               FROM normalized_queries n
               LEFT JOIN executions e ON e.normalized_hash = n.normalized_hash
+              LEFT JOIN ingestion_runs er ON er.run_id = e.run_id
               LEFT JOIN blocking_processes b ON b.inputbuf_fingerprint = n.normalized_hash
+              LEFT JOIN blocking_reports brp ON brp.report_id = b.report_id
+              LEFT JOIN ingestion_runs rr ON rr.run_id = brp.run_id
               {(force ? "" : $"WHERE n.normalizer_version < {target}")}
               GROUP BY n.normalized_hash, n.statement_kind, n.primary_table,
                        n.target_object, n.normalizer_version
@@ -59,13 +94,14 @@ public sealed class Reclassifier(DuckDbProject db)
             while (rd.Read())
                 pending.Add((rd.GetString(0),
                              rd.IsDBNull(1) ? null : rd.GetString(1),
-                             rd.IsDBNull(2) ? "OTHER" : rd.GetString(2),
-                             rd.IsDBNull(3) ? null : rd.GetString(3),
+                             !rd.IsDBNull(2) && rd.GetBoolean(2),
+                             rd.IsDBNull(3) ? "OTHER" : rd.GetString(3),
                              rd.IsDBNull(4) ? null : rd.GetString(4),
-                             rd.GetInt32(5)));
+                             rd.IsDBNull(5) ? null : rd.GetString(5),
+                             rd.GetInt32(6)));
         }
 
-        long changed = 0, unchanged = 0, unclassified = 0, noSample = 0;
+        long changed = 0, unchanged = 0, unclassified = 0, noSample = 0, unusable = 0;
         var from = pending.Count == 0 ? target : pending.Min(p => p.Ver);
 
         using var tx = db.Connection.BeginTransaction();
@@ -74,7 +110,11 @@ public sealed class Reclassifier(DuckDbProject db)
             string kind; string? table; string? obj;
             if (p.Sample is null)
             {
-                noSample++;
+                // Aucun texte du tout, ou seulement du texte déjà normalisé : dans les deux cas
+                // la classification est laissée telle quelle et seule la version est portée. Les
+                // deux compteurs restent distincts parce que le remède diffère à peine — réimport
+                // dans les deux cas — mais le diagnostic à afficher, lui, n'est pas le même.
+                if (p.AnyText) unusable++; else noSample++;
                 kind = p.Kind; table = p.Table; obj = p.Obj;   // inchangé, mais version portée
             }
             else
@@ -102,7 +142,8 @@ public sealed class Reclassifier(DuckDbProject db)
         }
         tx.Commit();
 
-        return new ReclassifyResult(pending.Count, changed, unchanged, unclassified, noSample, from, target);
+        return new ReclassifyResult(
+            pending.Count, changed, unchanged, unclassified, noSample, unusable, from, target);
 
         static void Bind(System.Data.Common.DbCommand c, string name, object? value)
         {

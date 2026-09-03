@@ -83,7 +83,8 @@ public class ReclassifierTests
             using var db = DuckDbProject.Open(path);
             var r = new Reclassifier(db).Run();
             Assert.Equal(r.RowsExamined,
-                r.RowsChanged + r.RowsUnchanged + r.Unclassified + r.RowsWithoutSample);
+                r.RowsChanged + r.RowsUnchanged + r.Unclassified + r.RowsWithoutSample +
+                r.RowsUnusableSample);
         }
         finally { File.Delete(path); }
     }
