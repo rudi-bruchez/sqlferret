@@ -1,0 +1,144 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (must already exist)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+
+      # The tag and Directory.Build.props must agree, or the release would ship binaries
+      # whose project.json records a ToolVersion nobody can find. That version is
+      # provenance — it names the build that produced an audit — so a mismatch is not
+      # cosmetic. Cheaper to fail here than to discover it in a support thread.
+      - name: Check the tag matches Directory.Build.props
+        env:
+          # Bound through env rather than interpolated into the script: ${{ }} is expanded
+          # by the runner before bash parses the line, so an input containing shell
+          # metacharacters would become script rather than a value.
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          tag="$RELEASE_TAG"
+          file="v$(sed -n 's|.*<Version>\(.*\)</Version>.*|\1|p' Directory.Build.props | tr -d '[:space:]')"
+          if [ "$tag" != "$file" ]; then
+            echo "tag $tag does not match Directory.Build.props ($file)"; exit 1
+          fi
+          echo "version=${tag#v}" >> "$GITHUB_ENV"
+
+      # Ten tests skip here and that is expected, not a silent hole: seven need a real
+      # capture under sample/ (gitignored, production data, never committed) and two need
+      # SQLFERRET_TEST_CONN pointing at a SQL Server. Neither exists on a runner.
+      - name: Test
+        run: dotnet test --configuration Release
+
+      # .NET publishes any RID from any host as long as ReadyToRun is off, so one runner
+      # produces every target — the same reasoning that makes a build matrix wasteful for
+      # a Go project. Verified beforehand that all five RIDs resolve their native
+      # libduckdb: DuckDB.NET.Bindings.Full ships linux-x64, linux-arm64, win-x64,
+      # win-arm64 and a generic `osx` asset that the RID graph hands to both macOS
+      # architectures.
+      #
+      # Self-contained but NOT single-file. DuckDB and SqlClient reach their native
+      # libraries through DllImport, and single-file would move those into a
+      # self-extracting bundle — the exact "the native DLL does not sit next to the
+      # managed one" failure the project has already paid for once. A folder costs a
+      # bigger download and nothing else.
+      - name: Build
+        run: |
+          set -eu
+          mkdir -p dist
+          for target in linux/x64 linux/arm64 osx/x64 osx/arm64 win/x64; do
+            os="${target%/*}"; arch="${target#*/}"
+            rid="${os}-${arch}"
+            name="sqlferret_${version}_${os}_${arch}"
+            stage="staging/${name}"
+            echo "building $name"
+
+            rm -rf "$stage"
+            mkdir -p "$stage/bin"
+            for proj in Cli Tui; do
+              dotnet publish "src/SqlFerret.${proj}" \
+                --configuration Release \
+                --runtime "$rid" \
+                --self-contained true \
+                -p:PublishReadyToRun=false \
+                --output "$stage/bin" \
+                --nologo --verbosity quiet
+            done
+
+            # The documented command is `sqlferret import ...`, but the apphost is named
+            # after its project. Renaming it at build time is not available: AssemblyName
+            # is a global property, so it reaches SqlFerret.Core too and the publish fails
+            # on a duplicate output path. Two-line launchers cost nothing and let the
+            # README's commands work verbatim from an unpacked archive.
+            if [ "$os" = "win" ]; then
+              printf '@echo off\r\n"%%~dp0bin\\SqlFerret.Cli.exe" %%*\r\n' > "$stage/sqlferret.cmd"
+              printf '@echo off\r\n"%%~dp0bin\\SqlFerret.Tui.exe" %%*\r\n' > "$stage/sqlferret-tui.cmd"
+            else
+              printf '#!/bin/sh\nexec "$(dirname "$0")/bin/SqlFerret.Cli" "$@"\n' > "$stage/sqlferret"
+              printf '#!/bin/sh\nexec "$(dirname "$0")/bin/SqlFerret.Tui" "$@"\n' > "$stage/sqlferret-tui"
+              chmod +x "$stage/sqlferret" "$stage/sqlferret-tui" \
+                       "$stage/bin/SqlFerret.Cli" "$stage/bin/SqlFerret.Tui"
+            fi
+
+            cp LICENSE README.md "$stage/"
+
+            if [ "$os" = "win" ]; then
+              (cd staging && zip -qr "../dist/${name}.zip" "$name")
+            else
+              tar czf "dist/${name}.tar.gz" -C staging "$name"
+            fi
+            rm -rf "$stage"
+          done
+          (cd dist && sha256sum * > "sqlferret_${version}_checksums.txt")
+          ls -lh dist
+
+      # Smoke-test the artifact most users will download, not the tree it was built from.
+      # `reclassify` on a fresh directory creates the project and opens DuckDB, and
+      # `query` reads it back: between them they prove the native library actually loads
+      # out of the archive, which is the one thing a cross-published self-contained build
+      # can plausibly get wrong.
+      - name: Verify the linux archive
+        run: |
+          set -eu
+          tmp=$(mktemp -d)
+          tar xzf "dist/sqlferret_${version}_linux_x64.tar.gz" -C "$tmp"
+          app="$tmp/sqlferret_${version}_linux_x64/sqlferret"
+          work=$(mktemp -d)/wl
+
+          "$app" reclassify --project "$work" | grep -q 'rien a faire'
+          "$app" query --project "$work" --sql "SELECT count(*) AS n FROM ingestion_runs" | grep -q '^0$'
+          test -f "$work/sqlferret.duckdb"
+          echo "archive verified"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          tag="$RELEASE_TAG"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* \
+              --title "$tag" \
+              --generate-notes
+          fi

@@ -91,8 +91,11 @@ dotnet run --project src/SqlFerret.Cli -- top-slow --project /tmp/wl --limit 20
 dotnet run --project src/SqlFerret.Tui -- /tmp/wl
 ```
 
-**There is no CI in this repository.** Nothing validates a change except the commands above,
-run locally.
+**There is no CI on push or pull request.** Nothing validates an ordinary change except the
+commands above, run locally. The one workflow, `.github/workflows/release.yml`, fires on a `v*`
+tag: it checks the tag against `Directory.Build.props`, runs the suite, cross-publishes the five
+RIDs from a single Linux runner and smoke-tests the linux-x64 archive before publishing. It is a
+release gate, not a development one — a broken `main` stays broken until someone tags it.
 
 ## Running the tool on a real trace
 

@@ -68,6 +68,11 @@ exemples-plans/
 *.sqlplan
 *.SQLPlan
 
+# Release artifacts built by .github/workflows/release.yml, or by running its Build step
+# locally. Tens of megabytes per platform; they belong to a GitHub release, not to git.
+dist/
+staging/
+
 # Agent skills live in .agents/skills (committed, cross-runtime). .claude/skills holds a
 # local junction/symlink to them for Claude Code; the link itself is not committed.
 /.claude/skills/
