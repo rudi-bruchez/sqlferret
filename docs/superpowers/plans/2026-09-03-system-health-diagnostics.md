@@ -10,6 +10,27 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-03-system-health-diagnostics-design.md` (revision 2). Read it. This plan argues from it and does not repeat its reasoning.
 
+**Revision 2 of this plan**, after an external review. Ten defects, six of them mine and invisible
+to my own self-review because it checked spec coverage a whole section at a time — §9 was ticked as
+"covered by Tasks 8–11" while four of its seven digest sections had no query at all, and two tables
+were written by Task 6 and read by nobody. What changed:
+
+- Task 2's test asserted the wrong chain depth: `heads` starts at 1 and the recursive term adds 1,
+  so an isolated blocked/blocking pair is depth 2. The test failed both before *and* after the fix,
+  which makes it worthless as a TDD gate.
+- Task 6 incremented `blocking`, i.e. `events_blocking`, once per embedded report, while the event
+  was already counted in `serverDiagnostics`. That breaks the mutual-exclusivity invariant and makes
+  the published reconciliation query exceed `events_read`.
+- Task 9 dropped two spec requirements: the restart interval is *dropped and counted*, not clamped
+  to zero, and the ranking is `byCount` only.
+- Task 10 (new) adds the four §9 sections that had no query: non-clean cycles, memory movement,
+  I/O, and blocking seen in diagnostics cycles.
+- Task 12's CLI code named two helpers that do not exist (`ArgValue`, `IsSafeOutputPath`); the real
+  ones are `Arg(name, fallback)` and `BlockingDigestMarkdown.HasTraversal`. It also dropped
+  `--format both`.
+- Task 3 gains the assertion §7 requires on `cpuIntensiveRequests/@command`; Task 6 gains the
+  environment-gated integration test §13 requires.
+
 ## Global Constraints
 
 - **Microseconds everywhere in Core.** Durations stored as `*_us` (`long`). The source reports milliseconds for `averageWaitTime`, `maxWaitTime`, `cpuTimeMs`, `pendingRequest/@duration` and `oldestPendingTaskWaitingTime`. Convert at parse time. Never convert units outside the parser.
@@ -228,7 +249,11 @@ public class BlockingSourceIsolationTests
             ]);
 
             var chains = new BlockingQueries(db.Connection).Chains();
-            Assert.All(chains, ch => Assert.Equal(1, ch.Depth));
+            // Depth 2, pas 1 : `heads` initialise a 1 et le terme recursif ajoute 1, donc une paire
+            // isolee bloque/bloquant vaut 2. Une chaine fabriquee a travers les deux rapports
+            // vaudrait 3 — c'est cette valeur-la que le test doit exclure.
+            Assert.NotEmpty(chains);
+            Assert.All(chains, ch => Assert.Equal(2, ch.Depth));
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
@@ -238,7 +263,7 @@ public class BlockingSourceIsolationTests
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `dotnet test tests/SqlFerret.Core.Tests --filter BlockingSourceIsolationTests`
-Expected: FAIL. First test reports 4 where 1 is expected. Second reports a depth-3 chain that never existed.
+Expected: FAIL. The first test reports 4 where 1 is expected. The second reports a depth-3 chain that never existed — the fabrication — where 2 is expected.
 
 - [ ] **Step 3: Add the join and the filter to the seven process-only methods**
 
@@ -249,7 +274,11 @@ JOIN blocking_reports r ON r.report_id = b.report_id
 WHERE coalesce(r.source, 'event') = 'event'
 ```
 
-using whatever alias the method already gives `blocking_processes`, and merging into an existing `WHERE` with `AND` where one exists. `Overview` and `SampleReports` already read `blocking_reports`; add the predicate to their existing `WHERE`.
+using whatever alias the method already gives `blocking_processes`, and merging into an existing `WHERE` with `AND` where one exists.
+
+`SampleReports` already reads `blocking_reports`; add the predicate to its existing `WHERE`.
+`Overview` has **no** `WHERE` — it is a single `SELECT` of scalar subqueries. The predicate goes
+*inside each subquery*, not appended to the statement.
 
 - [ ] **Step 4: Re-key the `Chains()` CTE**
 
@@ -385,6 +414,12 @@ public class ServerDiagnosticsParserTests
 
         Assert.Equal(1_200_000L, Assert.Single(s.CpuRequests).CpuTimeUs);
         Assert.Equal("0x1F", s.CpuRequests[0].TaskAddress);
+        // Spec §7 : `command` est une CLASSE de commande, pas du texte d'instruction, et c'est la
+        // raison pour laquelle il est stocke tel quel sans passer par le sanitizer. Epingler la
+        // forme ici : si une version future de SQL Server y met du SQL, le test tombe et la
+        // decision est reexaminee au lieu d'etre absorbee en silence.
+        Assert.Equal("SELECT", s.CpuRequests[0].Command);
+        Assert.DoesNotContain(" FROM ", s.CpuRequests[0].Command!, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(("WidgetRecalc", 3L), (s.PendingTasks[0].EntryPoint, s.PendingTasks[0].TaskCount));
         Assert.Empty(s.EmbeddedBlockingXml);
     }
@@ -1101,6 +1136,14 @@ public class ServerDiagnosticsIngestionTests
             Assert.Equal(1, res.ServerDiagnosticsParseFailures);
             Assert.Equal(0, res.Unmapped);   // plus rien ne tombe dans le fourre-tout
 
+            // Les compteurs d'evenements se reconcilient EXACTEMENT avec events_read. Les
+            // compteurs de sous-documents n'y entrent pas.
+            Assert.Equal(res.Read,
+                res.Mapped + res.Unmapped + res.Cleaned + res.Blocking + res.Deadlocks
+                + res.PlanProfiles + res.ServerDiagnostics + res.ServerDiagnosticsUnhandled
+                + res.ServerDiagnosticsParseFailures);
+            Assert.Equal(0, res.Blocking);   // aucun blocked_process_report dans ce flux
+
             using var c = db.Connection.CreateCommand();
             c.CommandText = """
               SELECT events_server_diagnostics, events_server_diagnostics_unhandled,
@@ -1161,6 +1204,8 @@ public static bool IsServerDiagnostics(string name) =>
 ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS events_server_diagnostics BIGINT;
 ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS events_server_diagnostics_unhandled BIGINT;
 ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS server_diagnostics_parse_failures BIGINT;
+ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS server_diagnostics_embedded_blocking BIGINT;
+ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS server_diagnostics_embedded_blocking_failures BIGINT;
 ```
 
 `BeginRun`'s `INSERT` already lists columns; add the three names and `0,0,0` to its `VALUES`.
@@ -1173,7 +1218,8 @@ public void FinishRun(long runId, long read, long mapped, long unmapped, long cl
     long planProfiles = 0, long planParseFailures = 0, long planWriteFailures = 0,
     long sqlTextSanitizeFailures = 0,
     long serverDiagnostics = 0, long serverDiagnosticsUnhandled = 0,
-    long serverDiagnosticsParseFailures = 0)
+    long serverDiagnosticsParseFailures = 0,
+    long embeddedBlocking = 0, long embeddedBlockingFailures = 0)
 ```
 
 ```sql
@@ -1192,7 +1238,9 @@ public record IngestionResult(long RunId, long Read, long Mapped, long Unmapped,
     long PlanProfiles = 0, long PlanParseFailures = 0, long PlanWriteFailures = 0,
     long SqlTextSanitizeFailures = 0,
     long ServerDiagnostics = 0, long ServerDiagnosticsUnhandled = 0,
-    long ServerDiagnosticsParseFailures = 0);
+    long ServerDiagnosticsParseFailures = 0,
+    // Sous-documents, pas des evenements : hors de la somme de reconciliation.
+    long EmbeddedBlocking = 0, long EmbeddedBlockingFailures = 0);
 ```
 
 - [ ] **Step 4: Wire the branch in `IngestionService.Ingest`**
@@ -1201,8 +1249,22 @@ Declare beside the other counters:
 
 ```csharp
 long serverDiagnostics = 0, serverDiagnosticsUnhandled = 0, serverDiagnosticsParseFailures = 0;
+long embeddedBlocking = 0, embeddedBlockingFailures = 0;
 var diagSamples = new List<ServerDiagnosticsSample>();
 ```
+
+**The embedded reports get their own two counters, and they are not event counters.** An embedded
+`<blocked-process-report>` is a sub-document of one XE event, not an event. Incrementing `blocking`
+(which is `ingestion_runs.events_blocking`, the count of `blocked_process_report` *events*) would
+count one `sp_server_diagnostics_component_result` event twice — once in `serverDiagnostics` and
+again per embedded report — and the reconciliation query published in `docs/data-model.md` would
+exceed `events_read`. Same for `blockingParseFailures`.
+
+So: `server_diagnostics_embedded_blocking` and `server_diagnostics_embedded_blocking_failures`,
+two more `BIGINT` columns on `ingestion_runs` added in the same migration block, carried on
+`IngestionResult` and `FinishRun` alongside the other three, and **excluded from the event
+reconciliation sum** — the documentation task must say so where it publishes that query, or the
+next reader will add them and break it.
 
 Add the branch immediately after the plan-profile branch and before `EventMapper.Map`:
 
@@ -1225,9 +1287,9 @@ if (EventMapper.IsServerDiagnostics(ev.Name))
     foreach (var reportXml in sample.EmbeddedBlockingXml)
     {
         var rep = BlockingReportParser.Parse(reportXml, ev.Timestamp);
-        if (rep is null) { blockingParseFailures++; continue; }
+        if (rep is null) { embeddedBlockingFailures++; continue; }
         project.InsertBlockingBatch(runId, [Prepare(rep, null) with { Source = "diagnostics" }]);
-        blocking++;
+        embeddedBlocking++;   // sous-document, pas un evenement : jamais `blocking++`
     }
     continue;
 }
@@ -1263,7 +1325,59 @@ Expected: PASS, both.
 Run: `dotnet build && dotnet test`
 Expected: PASS, 0 warnings.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 8: Add the environment-gated end-to-end test (spec §13)**
+
+Append to `ServerDiagnosticsIngestionTests`. It skips when `sample/` is absent, like `XelReaderTests`.
+
+```csharp
+    private static string? FindSystemHealthCapture()
+    {
+        var dir = AppContext.BaseDirectory;
+        for (int i = 0; i < 8 && dir is not null; i++, dir = Path.GetDirectoryName(dir))
+        {
+            var sample = Path.Combine(dir, "sample");
+            if (!Directory.Exists(sample)) continue;
+            return Directory.GetFiles(sample, "system_health*.xel").OrderBy(f => f).FirstOrDefault();
+        }
+        return null;
+    }
+
+    [SkippableFact]
+    public void A_real_system_health_capture_yields_cycles_and_no_unmapped_diagnostics()
+    {
+        var capture = FindSystemHealthCapture();
+        Skip.If(capture is null, "no system_health capture under sample/");
+
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            var res = new ImportRunner(db, new IngestionOptions(RedactionMode.Masked, []))
+                .Run(capture!);
+
+            Assert.True(res.ServerDiagnostics > 0, "the capture should contain diagnostics events");
+            Assert.Equal(res.Read,
+                res.Mapped + res.Unmapped + res.Cleaned + res.Blocking + res.Deadlocks
+                + res.PlanProfiles + res.ServerDiagnostics + res.ServerDiagnosticsUnhandled
+                + res.ServerDiagnosticsParseFailures);
+
+            using var c = db.Connection.CreateCommand();
+            c.CommandText = "SELECT count(*) FROM health_cycles";
+            Assert.True(Convert.ToInt64(c.ExecuteScalar()) > 0);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+```
+
+Adjust the `ImportRunner` call to whatever its actual entry point is — read
+`src/SqlFerret.Core/Ingestion/ImportRunner.cs` first; if its shape does not fit, call
+`XelReader().Read([capture])` and feed `IngestionService.Ingest` directly, as the other tests do.
+
+Run: `dotnet test tests/SqlFerret.Core.Tests --filter ServerDiagnosticsIngestionTests`
+Expected: PASS, with this one SKIPPED (`sample/` is absent in a clean clone). The skip count rises
+from 10 to 11; update `CLAUDE.md` in Task 13.
+
+- [ ] **Step 9: Commit**
 
 ```bash
 dotnet format sqlferret.sln --include src/SqlFerret.Core/Ingestion/EventMapper.cs src/SqlFerret.Core/Ingestion/IngestionService.cs src/SqlFerret.Core/Ingestion/IngestionResult.cs src/SqlFerret.Core/Storage/DuckDbProject.cs src/SqlFerret.Cli/Program.cs tests/SqlFerret.Core.Tests/ServerDiagnosticsIngestionTests.cs
@@ -1602,7 +1716,8 @@ git commit -m "feat(analysis): HealthQueries.Coverage, series-aware"
 - Produces:
   ```csharp
   public record WaitDelta(string WaitType, bool Preemptive, string Ranking, long WaitsDelta,
-                          double SpanMinutes, double PerMinute, long LifetimeAvgWaitUs, long LifetimeMaxWaitUs);
+                          double SpanMinutes, double PerMinute, long LifetimeAvgWaitUs,
+                          long LifetimeMaxWaitUs, long RestartIntervalsDropped);
   public record HealthScalar(string Name, double? Min, double? Median, double? P95, double? Max, long Samples);
   // on HealthQueries:
   public IReadOnlyList<WaitDelta> WaitDeltas(string seriesKey, int limit = 10);
@@ -1695,8 +1810,9 @@ public class HealthWaitDeltaTests
                 new HealthCycle(at.AddMinutes(5), "34", [Qp(at.AddMinutes(5), W("CXPACKET", 10))]),
             ]);
 
-            Assert.All(new HealthQueries(db.Connection).WaitDeltas("34"),
-                       d => Assert.True(d.WaitsDelta >= 0));
+            var d = Assert.Single(new HealthQueries(db.Connection).WaitDeltas("34"));
+            Assert.Equal(0L, d.WaitsDelta);            // le pas negatif est ecarte, pas compense
+            Assert.Equal(1L, d.RestartIntervalsDropped);
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
@@ -1723,9 +1839,15 @@ Append to `HealthResults.cs`:
 /// Moyenne cumulee depuis le demarrage de l'instance, arrondie a la milliseconde par la source :
 /// elle vaut 0 pour les attentes les plus frequentes. Transportee, jamais classee dessus.
 /// </param>
+/// <param name="RestartIntervalsDropped">
+/// Nombre d'intervalles ou le compteur a recule, ce qui ne peut signifier qu'un redemarrage
+/// d'instance. Ils sont ecartes du delta et comptes : les ramener a zero en silence ferait passer
+/// un redemarrage pour une periode calme.
+/// </param>
 public record WaitDelta(
     string WaitType, bool Preemptive, string Ranking, long WaitsDelta,
-    double SpanMinutes, double PerMinute, long LifetimeAvgWaitUs, long LifetimeMaxWaitUs);
+    double SpanMinutes, double PerMinute, long LifetimeAvgWaitUs, long LifetimeMaxWaitUs,
+    long RestartIntervalsDropped);
 
 public record HealthScalar(string Name, double? Min, double? Median, double? P95, double? Max, long Samples);
 ```
@@ -1740,28 +1862,35 @@ Append to `HealthQueries`:
         using var c = conn.CreateCommand();
         c.CommandText = """
           WITH w AS (
-            SELECT hw.wait_type, hw.preemptive, hw.ranking, hw.waits,
+            SELECT hw.wait_type, hw.preemptive, hw.waits,
                    hw.avg_wait_us, hw.max_wait_us, y.cycle_at
             FROM health_waits hw
             JOIN health_samples s ON s.sample_id = hw.sample_id
             JOIN health_cycles  y ON y.cycle_id  = s.cycle_id
-            WHERE y.series_key = $sk
+            -- byCount uniquement : le classement porte sur un delta de COMPTE, et melanger les
+            -- deux classements ferait apparaitre deux fois le meme type d'attente dans le top N.
+            WHERE y.series_key = $sk AND hw.ranking = 'byCount'
+          ),
+          d AS (
+            SELECT wait_type, preemptive, cycle_at, waits, avg_wait_us, max_wait_us,
+                   waits - lag(waits) OVER (PARTITION BY wait_type, preemptive ORDER BY cycle_at) AS step
+            FROM w
           ),
           b AS (
-            SELECT wait_type, preemptive, ranking,
-                   arg_min(waits, cycle_at) AS first_waits,
-                   arg_max(waits, cycle_at) AS last_waits,
+            SELECT wait_type, preemptive,
+                   -- Somme des seuls pas croissants. Un pas negatif ne peut signifier qu'un
+                   -- redemarrage d'instance : on l'ecarte et on le compte, au lieu de le
+                   -- compenser, ce qui ferait passer un redemarrage pour une periode calme.
+                   coalesce(sum(step) FILTER (WHERE step >= 0), 0) AS delta,
+                   count(*) FILTER (WHERE step < 0)                AS restarts,
                    min(cycle_at) AS first_at, max(cycle_at) AS last_at,
                    arg_max(avg_wait_us, cycle_at) AS avg_us,
                    arg_max(max_wait_us, cycle_at) AS max_us
-            FROM w GROUP BY wait_type, preemptive, ranking
+            FROM d GROUP BY wait_type, preemptive
           )
-          SELECT wait_type, preemptive, ranking,
-                 -- Un compteur qui recule signifie un redemarrage d'instance, pas une activite
-                 -- negative : le delta est ramene a zero plutot que rendu tel quel.
-                 greatest(last_waits - first_waits, 0) AS delta,
+          SELECT wait_type, preemptive, 'byCount' AS ranking, delta,
                  date_diff('millisecond', first_at, last_at) / 60000.0 AS span_min,
-                 avg_us, max_us
+                 avg_us, max_us, restarts
           FROM b
           ORDER BY delta DESC
           LIMIT $lim
@@ -1775,7 +1904,7 @@ Append to `HealthQueries`:
             long delta = r.GetInt64(3);
             double span = r.GetDouble(4);
             list.Add(new WaitDelta(r.GetString(0), r.GetBoolean(1), r.GetString(2), delta, span,
-                span > 0 ? delta / span : 0, r.GetInt64(5), r.GetInt64(6)));
+                span > 0 ? delta / span : 0, r.GetInt64(5), r.GetInt64(6), r.GetInt64(7)));
         }
         return list;
     }
@@ -1851,7 +1980,363 @@ git commit -m "feat(analysis): wait deltas over a stated span, and gauge/counter
 
 ---
 
-### Task 10: `HealthDigest` and its versioned envelope
+### Task 10: The four §9 sections that had no query
+
+Revision 1 of this plan created `health_memory_entries` and `health_pending_io` in Task 5, wrote
+them in Task 6, and never read them. Spec §9 items 1, 3, 6 and 7 had no implementation at all.
+
+**Files:**
+- Modify: `src/SqlFerret.Core/Analysis/HealthResults.cs`
+- Modify: `src/SqlFerret.Core/Analysis/HealthQueries.cs`
+- Modify: `tests/SqlFerret.Core.Tests/HealthQueriesCoverageTests.cs` (Step 5 changes `HealthCoverage`)
+- Test: `tests/SqlFerret.Core.Tests/HealthQueriesSectionsTests.cs` (create)
+
+**Interfaces:**
+- Consumes: the tables from Task 5, the private `Bind` helper from Task 9.
+- Produces, on `HealthQueries`:
+  ```csharp
+  public IReadOnlyList<StateCount> NonCleanStates();
+  public IReadOnlyList<MemoryMovement> MemoryMovers(string seriesKey, int limit = 10);
+  public IReadOnlyList<PendingIoRow> WorstPendingIo(int limit = 10);
+  public IReadOnlyList<DiagnosticsBlockingRow> DiagnosticsBlocking(int limit = 10);
+  ```
+- Produces: `HealthCoverage` gains `double NonDiagnosticsShare` (Step 5).
+
+- [ ] **Step 1: Write the failing tests**
+
+```csharp
+// tests/SqlFerret.Core.Tests/HealthQueriesSectionsTests.cs
+using SqlFerret.Core.Analysis;
+using SqlFerret.Core.Ingestion;
+using SqlFerret.Core.Model;
+using SqlFerret.Core.Storage;
+using Xunit;
+
+public class HealthQueriesSectionsTests
+{
+    private static string TempDb() => Path.Combine(Path.GetTempPath(), $"sf_{Guid.NewGuid():N}.duckdb");
+
+    private static ServerDiagnosticsSample Sample(
+        DateTime ts, string comp, string state,
+        IReadOnlyList<HealthMemoryEntry>? mem = null, IReadOnlyList<HealthPendingIo>? io = null) =>
+        new(ts, comp, state, DiagnosticsOutcome.Parsed, [], [], [], [], io ?? [], mem ?? [], []);
+
+    [Fact]
+    public void Non_clean_states_are_counted_by_component()
+    {
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "masked");
+            db.InsertHealthCycles(runId, [
+                new HealthCycle(at, "34", [
+                    Sample(at, "QUERY_PROCESSING", "WARNING"),
+                    Sample(at, "SYSTEM", "CLEAN"),
+                    Sample(at, "RESOURCE", "CLEAN")]),
+                new HealthCycle(at.AddMinutes(5), "34", [
+                    Sample(at.AddMinutes(5), "QUERY_PROCESSING", "WARNING")]),
+            ]);
+
+            var rows = new HealthQueries(db.Connection).NonCleanStates();
+
+            var r = Assert.Single(rows);
+            Assert.Equal(("QUERY_PROCESSING", "WARNING", 2L), (r.Component, r.State, r.Cycles));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void Memory_movers_report_the_change_across_the_window_not_the_last_value()
+    {
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        HealthMemoryEntry E(string d, double v) => new("Process/System Counts", "Value", d, v, null);
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "masked");
+            db.InsertHealthCycles(runId, [
+                new HealthCycle(at, "34", [Sample(at, "RESOURCE", "CLEAN",
+                    mem: [E("Available Physical Memory", 8000), E("Stable", 100)])]),
+                new HealthCycle(at.AddMinutes(5), "34", [Sample(at.AddMinutes(5), "RESOURCE", "CLEAN",
+                    mem: [E("Available Physical Memory", 2000), E("Stable", 100)])]),
+            ]);
+
+            var rows = new HealthQueries(db.Connection).MemoryMovers("34");
+
+            var top = rows[0];
+            Assert.Equal("Available Physical Memory", top.Description);
+            Assert.Equal(8000d, top.First, 3);
+            Assert.Equal(2000d, top.Last, 3);
+            Assert.Equal(-6000d, top.Change, 3);
+            // Classement sur l'amplitude : une chute de memoire disponible est au moins aussi
+            // interessante qu'une hausse, et ne garder que les hausses cacherait le cas cherche.
+            Assert.True(Math.Abs(top.Change) >= Math.Abs(rows[^1].Change));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void The_worst_pending_io_is_reported_with_its_file()
+    {
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "masked");
+            db.InsertHealthCycles(runId, [
+                new HealthCycle(at, "34", [Sample(at, "IO_SUBSYSTEM", "CLEAN",
+                    io: [new HealthPendingIo(900_000, "X:/AppDb/AppDb.mdf", "0x5", 4096),
+                         new HealthPendingIo(4_100_000, "X:/AppDb/AppDb_log.ldf", "0x6", 8192)])]),
+            ]);
+
+            var rows = new HealthQueries(db.Connection).WorstPendingIo();
+
+            Assert.Equal(4_100_000L, rows[0].DurationUs);
+            Assert.EndsWith("AppDb_log.ldf", rows[0].FilePath);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void Diagnostics_sourced_blocking_is_reported_and_event_sourced_is_not()
+    {
+        BlockingProcess Proc(int spid, long? waitUs) =>
+            new(spid, 0, "suspended", "KEY: 5:1 (x)", WaitResourceType.Key, null, null, waitUs,
+                "S", "read committed (2)", 1, "SampleApp", "WS1", "svc",
+                "exec AppSchema.WidgetRecalc @WidgetId=1", "fp_" + spid);
+
+        PreparedBlockingReport Rep(int loop, string source)
+        {
+            var rep = new BlockingReport(new DateTime(2026, 9, 3), loop, 5,
+                Proc(61, 3_000_000L), Proc(72, null));
+            return new PreparedBlockingReport(rep,
+                new PreparedBlockingProcess(rep.Blocked, null, "exec AppSchema.WidgetRecalc @WidgetId=1"),
+                new PreparedBlockingProcess(rep.Blocking, null, "update AppSchema.Widget"),
+                RawXml: null, Source: source);
+        }
+
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "masked");
+            db.InsertBlockingBatch(runId, [Rep(42, "event"), Rep(43, "diagnostics")]);
+
+            var rows = new HealthQueries(db.Connection).DiagnosticsBlocking();
+
+            var r = Assert.Single(rows);
+            Assert.Equal(61, r.BlockedSpid);
+            Assert.Equal(72, r.BlockingSpid);
+            Assert.Equal(3_000_000L, r.WaitTimeUs);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `dotnet test tests/SqlFerret.Core.Tests --filter HealthQueriesSectionsTests`
+Expected: FAIL — `NonCleanStates` does not exist.
+
+- [ ] **Step 3: Add the records**
+
+Append to `HealthResults.cs`:
+
+```csharp
+public record StateCount(string Component, string State, long Cycles);
+
+/// <param name="Change">
+/// Dernier moins premier, signe. Le classement se fait sur la valeur absolue : une chute de
+/// memoire disponible est au moins aussi interessante qu'une hausse.
+/// </param>
+public record MemoryMovement(
+    string ReportName, string? Unit, string Description, double First, double Last, double Change);
+
+public record PendingIoRow(DateTime CapturedAt, long? DurationUs, string? FilePath, string? Handle);
+
+/// <summary>
+/// Instantane pris pendant un cycle de diagnostics, jamais un rapport declenche par seuil : les
+/// deux ne se comptent pas ensemble, et l'hote doit le dire quand il les affiche.
+/// </summary>
+public record DiagnosticsBlockingRow(
+    DateTime CapturedAt, int? BlockedSpid, int? BlockingSpid, long? WaitTimeUs,
+    string? WaitResourceType, string? BlockedInputBuf);
+```
+
+- [ ] **Step 4: Add the four queries**
+
+Append to `HealthQueries`:
+
+```csharp
+    /// <summary>Spec §9 item 1. Un etat autre que CLEAN est le premier endroit ou regarder.</summary>
+    public IReadOnlyList<StateCount> NonCleanStates()
+    {
+        using var c = conn.CreateCommand();
+        c.CommandText = """
+          SELECT component, state, count(*) AS cycles
+          FROM health_samples
+          WHERE state IS NOT NULL AND upper(state) <> 'CLEAN' AND handled
+          GROUP BY component, state
+          ORDER BY cycles DESC, component
+          """;
+        var list = new List<StateCount>();
+        using var r = c.ExecuteReader();
+        while (r.Read()) list.Add(new StateCount(r.GetString(0), r.GetString(1), r.GetInt64(2)));
+        return list;
+    }
+
+    /// <summary>
+    /// Spec §9 item 3. Une seule serie : comparer un premier et un dernier a travers deux series
+    /// entrelacees comparerait deux instants sans rapport.
+    /// </summary>
+    public IReadOnlyList<MemoryMovement> MemoryMovers(string seriesKey, int limit = 10)
+    {
+        using var c = conn.CreateCommand();
+        c.CommandText = """
+          WITH e AS (
+            SELECT m.report_name, m.unit, m.description, m.value_num, y.cycle_at
+            FROM health_memory_entries m
+            JOIN health_samples s ON s.sample_id = m.sample_id
+            JOIN health_cycles  y ON y.cycle_id  = s.cycle_id
+            WHERE y.series_key = $sk AND m.value_num IS NOT NULL
+          )
+          SELECT report_name, any_value(unit), description,
+                 arg_min(value_num, cycle_at) AS first_v,
+                 arg_max(value_num, cycle_at) AS last_v
+          FROM e GROUP BY report_name, description
+          ORDER BY abs(arg_max(value_num, cycle_at) - arg_min(value_num, cycle_at)) DESC
+          LIMIT $lim
+          """;
+        Bind(c, "$sk", seriesKey); Bind(c, "$lim", limit);
+        var list = new List<MemoryMovement>();
+        using var r = c.ExecuteReader();
+        while (r.Read())
+        {
+            double first = r.GetDouble(3), last = r.GetDouble(4);
+            list.Add(new MemoryMovement(r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1),
+                r.GetString(2), first, last, last - first));
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// Spec §9 item 6. file_path est stocke verbatim et n'est retire par aucune politique de
+    /// redaction : l'hote qui l'affiche doit le dire.
+    /// </summary>
+    public IReadOnlyList<PendingIoRow> WorstPendingIo(int limit = 10)
+    {
+        using var c = conn.CreateCommand();
+        c.CommandText = """
+          SELECT s.captured_at, i.duration_us, i.file_path, i.handle
+          FROM health_pending_io i
+          JOIN health_samples s ON s.sample_id = i.sample_id
+          ORDER BY i.duration_us DESC NULLS LAST
+          LIMIT $lim
+          """;
+        Bind(c, "$lim", limit);
+        var list = new List<PendingIoRow>();
+        using var r = c.ExecuteReader();
+        while (r.Read())
+            list.Add(new PendingIoRow(r.GetDateTime(0), r.IsDBNull(1) ? null : r.GetInt64(1),
+                r.IsDBNull(2) ? null : r.GetString(2), r.IsDBNull(3) ? null : r.GetString(3)));
+        return list;
+    }
+
+    /// <summary>
+    /// Spec §9 item 7. Les instantanes de diagnostics uniquement, jamais melanges aux rapports
+    /// declenches par seuil.
+    /// </summary>
+    public IReadOnlyList<DiagnosticsBlockingRow> DiagnosticsBlocking(int limit = 10)
+    {
+        using var c = conn.CreateCommand();
+        c.CommandText = """
+          SELECT r.captured_at, b.spid, k.spid, b.wait_time_us, b.wait_resource_type, b.inputbuf
+          FROM blocking_reports r
+          JOIN blocking_processes b ON b.report_id = r.report_id AND b.role = 'blocked'
+          JOIN blocking_processes k ON k.report_id = r.report_id AND k.role = 'blocking'
+          WHERE coalesce(r.source, 'event') = 'diagnostics'
+          ORDER BY b.wait_time_us DESC NULLS LAST
+          LIMIT $lim
+          """;
+        Bind(c, "$lim", limit);
+        var list = new List<DiagnosticsBlockingRow>();
+        using var r = c.ExecuteReader();
+        while (r.Read())
+            list.Add(new DiagnosticsBlockingRow(r.GetDateTime(0),
+                r.IsDBNull(1) ? null : r.GetInt32(1), r.IsDBNull(2) ? null : r.GetInt32(2),
+                r.IsDBNull(3) ? null : r.GetInt64(3), r.IsDBNull(4) ? null : r.GetString(4),
+                r.IsDBNull(5) ? null : r.GetString(5)));
+        return list;
+    }
+```
+
+- [ ] **Step 5: Add the non-diagnostics event share to `Coverage`**
+
+Spec §9's coverage block asks for "the share of the capture's events that are not diagnostics" —
+the number that told the reader 97.2 % of the measured capture was one flooded ring buffer.
+
+Extend the record in `HealthResults.cs`:
+
+```csharp
+public record HealthCoverage(
+    long Cycles, DateTime? First, DateTime? Last, double SpanMinutes,
+    double MedianIntervalMin, double LargestGapMin, double NonDiagnosticsShare,
+    IReadOnlyList<HealthSeries> Series);
+```
+
+In `Coverage()`, before the `return`:
+
+```csharp
+        double share = 0;
+        using (var e = conn.CreateCommand())
+        {
+            e.CommandText = """
+              SELECT coalesce(sum(events_read), 0)::DOUBLE,
+                     (coalesce(sum(events_server_diagnostics), 0)
+                    + coalesce(sum(events_server_diagnostics_unhandled), 0)
+                    + coalesce(sum(server_diagnostics_parse_failures), 0))::DOUBLE
+              FROM ingestion_runs
+              """;
+            using var r2 = e.ExecuteReader();
+            if (r2.Read())
+            {
+                double read = r2.GetDouble(0), diag = r2.GetDouble(1);
+                share = read > 0 ? (read - diag) / read : 0;
+            }
+        }
+```
+
+and pass `share` as the seventh argument of `HealthCoverage`.
+
+`HealthQueriesCoverageTests` constructs nothing positionally, but add one assertion to
+`Coverage_reports_cycles_span_median_and_the_largest_gap`:
+
+```csharp
+            Assert.Equal(0d, cov.NonDiagnosticsShare, 3);   // aucun run ingere dans ce test
+```
+
+- [ ] **Step 6: Run the tests**
+
+Run: `dotnet test tests/SqlFerret.Core.Tests --filter "HealthQueriesSectionsTests|HealthQueriesCoverageTests"`
+Expected: PASS.
+
+- [ ] **Step 7: Run the full suite and commit**
+
+```bash
+dotnet build && dotnet test
+dotnet format sqlferret.sln --include src/SqlFerret.Core/Analysis/HealthResults.cs src/SqlFerret.Core/Analysis/HealthQueries.cs tests/SqlFerret.Core.Tests/HealthQueriesSectionsTests.cs tests/SqlFerret.Core.Tests/HealthQueriesCoverageTests.cs
+git add -A
+git commit -m "feat(analysis): non-clean states, memory movement, worst pending I/O, diagnostics blocking"
+```
+
+---
+
+### Task 11: `HealthDigest` and its versioned envelope
 
 **Files:**
 - Create: `src/SqlFerret.Core/Analysis/HealthDigest.cs`
@@ -1861,8 +2346,11 @@ git commit -m "feat(analysis): wait deltas over a stated span, and gauge/counter
 - Produces:
   ```csharp
   public record HealthDigestResult(HealthCoverage Coverage, IReadOnlyList<string> Notes,
-      IReadOnlyList<WaitDelta> TopWaits, IReadOnlyList<HealthScalar> WorkerPressure,
-      IReadOnlyList<(string Name, long Delta)> StabilitySignals);
+      IReadOnlyList<StateCount> NonCleanStates, IReadOnlyList<WaitDelta> TopWaits,
+      IReadOnlyList<MemoryMovement> MemoryMovers, IReadOnlyList<HealthScalar> WorkerPressure,
+      IReadOnlyList<(string Name, long Delta)> StabilitySignals,
+      IReadOnlyList<PendingIoRow> WorstPendingIo,
+      IReadOnlyList<DiagnosticsBlockingRow> DiagnosticsBlocking);
   public record HealthDigestEnvelope(int SchemaVersion, DateTime GeneratedAt, HealthDigestResult Digest);
   public class HealthDigest(DuckDBConnection conn) {
       public const int SchemaVersion = 1;
@@ -1956,6 +2444,11 @@ public class HealthDigestTests
             var waitsAt = md.IndexOf("## Waits", StringComparison.Ordinal);
             Assert.True(coverageAt >= 0 && waitsAt > coverageAt, "Coverage must come first");
             Assert.Contains("since instance start", md, StringComparison.OrdinalIgnoreCase);
+            // Les sept sections de la spec §9 sont toutes rendues, pas seulement celles qui ont
+            // des donnees : une section absente se lit comme une section sans probleme.
+            foreach (var h in new[] { "## Memory", "## Worst pending I/O",
+                                      "## Blocking seen in diagnostics cycles" })
+                Assert.Contains(h, md, StringComparison.Ordinal);
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
@@ -1977,10 +2470,14 @@ using DuckDB.NET.Data;
 
 namespace SqlFerret.Core.Analysis;
 
+/// <summary>Les sept sections de la spec §9, dans son ordre, la couverture en tete.</summary>
 public record HealthDigestResult(
     HealthCoverage Coverage, IReadOnlyList<string> Notes,
-    IReadOnlyList<WaitDelta> TopWaits, IReadOnlyList<HealthScalar> WorkerPressure,
-    IReadOnlyList<(string Name, long Delta)> StabilitySignals);
+    IReadOnlyList<StateCount> NonCleanStates, IReadOnlyList<WaitDelta> TopWaits,
+    IReadOnlyList<MemoryMovement> MemoryMovers, IReadOnlyList<HealthScalar> WorkerPressure,
+    IReadOnlyList<(string Name, long Delta)> StabilitySignals,
+    IReadOnlyList<PendingIoRow> WorstPendingIo,
+    IReadOnlyList<DiagnosticsBlockingRow> DiagnosticsBlocking);
 
 public record HealthDigestEnvelope(int SchemaVersion, DateTime GeneratedAt, HealthDigestResult Digest);
 
@@ -2011,7 +2508,7 @@ public class HealthDigest(DuckDBConnection conn)
             notes.Add("This project holds no diagnostics samples. Import a system_health capture, "
                     + "or check that the capture actually contains sp_server_diagnostics_component_result.");
             return new HealthDigestEnvelope(SchemaVersion, DateTime.UtcNow,
-                new HealthDigestResult(coverage, notes, [], [], []));
+                new HealthDigestResult(coverage, notes, [], [], [], [], [], [], []));
         }
 
         if (coverage.Series.Count > 1)
@@ -2034,8 +2531,22 @@ public class HealthDigest(DuckDBConnection conn)
             notes.Add("No stability signal moved during the window. On a healthy server this is the "
                     + "expected result, not missing data.");
 
+        var nonClean = q.NonCleanStates();
+        var memory = q.MemoryMovers(main, limit);
+        var pendingIo = q.WorstPendingIo(limit);
+        var diagBlocking = q.DiagnosticsBlocking(limit);
+
+        if (pendingIo.Count > 0)
+            notes.Add("Pending-I/O rows carry the server's own file paths. They are stored verbatim "
+                    + "under every redaction mode and no flag removes them: treat this digest as "
+                    + "disclosing instance and database file layout.");
+        if (diagBlocking.Count > 0)
+            notes.Add("Blocking below is what the server happened to be doing at a sampling instant, "
+                    + "not a threshold-triggered report. It is not comparable with export-blocking.");
+
         return new HealthDigestEnvelope(SchemaVersion, DateTime.UtcNow,
-            new HealthDigestResult(coverage, notes, waits, workers, stability));
+            new HealthDigestResult(coverage, notes, nonClean, waits, memory, workers, stability,
+                pendingIo, diagBlocking));
     }
 
     public static string ToMarkdown(HealthDigestEnvelope e)
@@ -2084,6 +2595,28 @@ public class HealthDigest(DuckDBConnection conn)
         sb.AppendLine("## Stability signals").AppendLine();
         if (d.StabilitySignals.Count == 0) sb.AppendLine("Nothing moved.");
         else foreach (var (name, delta) in d.StabilitySignals) sb.AppendLine($"- `{name}`: +{delta}");
+        sb.AppendLine();
+
+        sb.AppendLine("## Memory").AppendLine();
+        if (d.MemoryMovers.Count == 0) sb.AppendLine("No memory report entries.");
+        else foreach (var m in d.MemoryMovers)
+            sb.AppendLine($"- `{m.Description}` ({m.ReportName}): {m.First.ToString("F0", inv)} → "
+                        + $"{m.Last.ToString("F0", inv)} ({m.Change:+#;-#;0} {m.Unit})");
+        sb.AppendLine();
+
+        sb.AppendLine("## Worst pending I/O").AppendLine();
+        if (d.WorstPendingIo.Count == 0) sb.AppendLine("None recorded.");
+        else foreach (var i in d.WorstPendingIo)
+            sb.AppendLine($"- {(i.DurationUs / 1000.0)?.ToString("F0", inv)} ms — `{i.FilePath}` "
+                        + $"at {i.CapturedAt:u}");
+        sb.AppendLine();
+
+        sb.AppendLine("## Blocking seen in diagnostics cycles").AppendLine();
+        if (d.DiagnosticsBlocking.Count == 0) sb.AppendLine("None.");
+        else foreach (var b in d.DiagnosticsBlocking)
+            sb.AppendLine($"- spid {b.BlockedSpid} blocked by {b.BlockingSpid} for "
+                        + $"{(b.WaitTimeUs / 1000.0)?.ToString("F0", inv)} ms "
+                        + $"({b.WaitResourceType}) at {b.CapturedAt:u}");
 
         return sb.ToString();
     }
@@ -2105,13 +2638,21 @@ git commit -m "feat(analysis): HealthDigest, coverage first, deltas over a state
 
 ---
 
-### Task 11: `export-health`
+### Task 12: `export-health`
 
 **Files:**
 - Modify: `src/SqlFerret.Cli/Program.cs` (new `case`, usage line)
 - Test: `tests/SqlFerret.Core.Tests/CliExportHealthTests.cs` (create)
 
-**Interfaces:** consumes `HealthDigest`. `--limit` (not `--top`); `--out` rejects traversal, the same check `export-blocking` uses.
+**Interfaces:** consumes `HealthDigest`. `--limit` (not `--top`); `--out` rejects traversal via the
+same helper `export-blocking` uses.
+
+The two helpers this task needs already exist and are **not** named what an earlier revision of this
+plan guessed. Read them before writing the case:
+- `string Arg(string name, string? fallback = null)` — a local function in `Program.cs:19`. It reads
+  `args` from the enclosing scope; it does **not** take an `args` parameter.
+- `SqlFerret.Cli.BlockingDigestMarkdown.HasTraversal(string path)` — used at `Program.cs:164` and
+  `:258`. There is no `IsSafeOutputPath`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2149,6 +2690,16 @@ public class CliExportHealthTests
             Assert.Equal(0, code);
             Assert.Contains("Coverage", output, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("no diagnostics", output, StringComparison.OrdinalIgnoreCase);
+
+            // `both` est dans la spec §9 et doit produire les deux, pas retomber sur Markdown.
+            var (code2, out2, _) = Run("export-health", "--project", dir, "--format", "both");
+            Assert.Equal(0, code2);
+            Assert.Contains("Coverage", out2, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("schemaVersion", out2, StringComparison.OrdinalIgnoreCase);
+
+            var (code3, _, err3) = Run("export-health", "--project", dir, "--format", "xml");
+            Assert.NotEqual(0, code3);
+            Assert.Contains("--format", err3);
         }
         finally { if (Directory.Exists(dir)) Directory.Delete(dir, true); }
     }
@@ -2182,40 +2733,62 @@ In `Program.cs`, beside `export-blocking`:
         {
             var project = OpenProject();
             if (project is null) return 1;
-            var format = ArgValue(args, "--format") ?? "md";
-            var outPath = ArgValue(args, "--out");
-            if (outPath is not null && !IsSafeOutputPath(outPath))
+
+            var format = Arg("--format", "md")!;
+            if (format is not ("json" or "md" or "both"))
+            {
+                Console.Error.WriteLine("error: --format must be json, md or both");
+                return 1;
+            }
+            var outPath = Arg("--out", "")!;
+            if (outPath.Length > 0 && SqlFerret.Cli.BlockingDigestMarkdown.HasTraversal(outPath))
             {
                 Console.Error.WriteLine("error: --out must not contain '..'");
                 return 1;
             }
-            if (!int.TryParse(ArgValue(args, "--limit"), out var limit) || limit <= 0) limit = 10;
+            if (!int.TryParse(Arg("--limit"), out var limit) || limit <= 0) limit = 10;
 
             using var db = project.OpenDb();
             var envelope = new SqlFerret.Core.Analysis.HealthDigest(db.Connection).Build(limit);
 
-            var text = format switch
+            var json = System.Text.Json.JsonSerializer.Serialize(envelope,
+                           new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            var md = SqlFerret.Core.Analysis.HealthDigest.ToMarkdown(envelope);
+
+            // `both` ecrit deux fichiers quand --out est donne, et concatene sur stdout sinon —
+            // meme comportement qu'export-blocking, dont cette commande copie la forme.
+            if (outPath.Length == 0)
             {
-                "json" => System.Text.Json.JsonSerializer.Serialize(envelope,
-                              new System.Text.Json.JsonSerializerOptions { WriteIndented = true }),
-                _ => SqlFerret.Core.Analysis.HealthDigest.ToMarkdown(envelope),
-            };
-            if (outPath is null) Console.WriteLine(text);
-            else { File.WriteAllText(outPath, text); Console.WriteLine($"written: {outPath}"); }
+                Console.WriteLine(format switch { "json" => json, "md" => md, _ => md + "
+" + json });
+            }
+            else if (format == "both")
+            {
+                var stem = Path.Combine(Path.GetDirectoryName(outPath) ?? "",
+                                        Path.GetFileNameWithoutExtension(outPath));
+                File.WriteAllText(stem + ".md", md);
+                File.WriteAllText(stem + ".json", json);
+                Console.WriteLine($"written: {stem}.md, {stem}.json");
+            }
+            else
+            {
+                File.WriteAllText(outPath, format == "json" ? json : md);
+                Console.WriteLine($"written: {outPath}");
+            }
             return 0;
         }
 ```
 
-Reuse the existing `ArgValue` and traversal helpers; if the traversal check is inline in the
-`export-blocking` case rather than a named helper, extract it as `IsSafeOutputPath` and use it from
-both, so the rule lives in one place.
+`Arg` is a local function in the top-level program, so the new `case` sees it directly. Do not add a
+second traversal helper: `BlockingDigestMarkdown.HasTraversal` is the one the other two commands
+already call, and the rule must live in one place.
 
 - [ ] **Step 4: Extend the usage line**
 
 Add to the `Console.Error.WriteLine("usage: …")` string, after the `obfuscate-plan` clause:
 
 ```
- | export-health --project <dir> [--format json|md] [--out <file>] [--limit <n>]
+ | export-health --project <dir> [--format json|md|both] [--out <file>] [--limit <n>]
 ```
 
 - [ ] **Step 5: Run tests and the full suite**
@@ -2233,7 +2806,7 @@ git commit -m "feat(cli): export-health, coverage-first health digest"
 
 ---
 
-### Task 12: Documentation
+### Task 13: Documentation
 
 **Files:**
 - Modify: `docs/data-model.md`, `docs/cli-reference.md`, `docs/privacy.md`, `docs/blocking.md`,
@@ -2296,22 +2869,67 @@ git commit -m "docs: System Health tables, export-health, and the privacy and co
 
 ## Self-review
 
-**Spec coverage.** §1 → Tasks 4, 8, 10 (coverage and series). §2 → Tasks 3, 6. §3 → Task 3. §4 →
-Tasks 3, 6. §5 → Tasks 1, 2, 7. §6 → Tasks 3, 4, 5. §7 → Tasks 7, 12. §8 → Task 10 (envelope;
-no version constant, as specified). §9 → Tasks 8, 9, 10, 11. §10 → Tasks 10, 12. §11 → satisfied
-by construction. §12 → no task needed. §13 → the tests are inside each task. §14 → Task 12.
+**Spec coverage, checked item by item rather than section by section.** Revision 1 ticked
+"§9 → Tasks 8–11" and shipped four unimplemented digest sections. §9 has seven numbered items plus
+a coverage block; each gets its own line.
 
-**Not covered, deliberately.** §15's open question 1 (the series-detection heuristic) is
-implemented as the simplest rule that passes Task 4's tests, and the digest announces the series
-count rather than hiding it — the spec leaves the harder question open and this plan does not
-close it. §15 question 4 (the other three positional inserts) is out of scope and stated so.
+| Spec | Task |
+|---|---|
+| §1 coverage, interleaved series | 4 (grouping), 8 (query), 11 (notes) |
+| §2 scope, unhandled components | 3, 6 |
+| §3 payload shapes | 3 |
+| §4 routing, three outcomes, counters | 3, 6 |
+| §5 reuse, `source`, write path, seven readers, `EventExport` | 1, 2, 7 |
+| §6 schema, cycle key, name/value, units | 3, 4, 5 |
+| §7 privacy: gate reuse, `@command` shape, `filePath` | 3 (assertion), 7, 13 (docs) |
+| §8 no version constant, versioned envelope | 11 |
+| §9 coverage block incl. non-diagnostics share | 8, 10 (step 5) |
+| §9 item 1 non-clean cycles | **10** |
+| §9 item 2 waits by count delta, span, restarts | 9 |
+| §9 item 3 memory pressure and movers | **10** |
+| §9 item 4 stability signals as deltas | 9, 11 |
+| §9 item 5 worker pressure as gauges | 9, 11 |
+| §9 item 6 I/O and worst pending requests | **10** |
+| §9 item 7 blocking in diagnostics cycles | **10** |
+| §9 `--limit`, `--out` traversal, `--format both`, empty project | 12 |
+| §10 what it promises | 11 (notes), 13 (docs) |
+| §11 architecture | satisfied by construction |
+| §12 performance | no task needed |
+| §13 tests, incl. the `sample/`-gated one | inside each task; the gated one is Task 6 step 8 |
+| §14 documentation | 13 |
+
+Every table created in Task 5 is read by a query in Task 8, 9 or 10 — the check revision 1 did not
+make, and the one that would have caught its largest defect.
+
+**Not covered, deliberately.** §15's open question 1 (the series-detection heuristic) is implemented
+as the simplest rule that passes Task 4's tests, and the digest announces the series count rather
+than hiding it. §15 question 4 (the other three positional inserts in `executions`,
+`blocking_processes` and `deadlock_reports`) stays out of scope, and Task 1 says so at the site.
 
 **Type consistency.** `ServerDiagnosticsSample`, `HealthCycle`, `HealthCoverage`, `WaitDelta`,
-`HealthScalar` and `HealthDigestEnvelope` are defined once and used with the same member names in
-every later task. `PreparedBlockingReport.Source` (Task 1) is consumed in Task 6.
-`InsertHealthCycles` (Task 5) is consumed in Task 6. `HealthQueries.WaitDeltas` /
-`ScalarGauges` / `ScalarDeltas` (Task 9) are consumed in Task 10.
+`HealthScalar`, `StateCount`, `MemoryMovement`, `PendingIoRow`, `DiagnosticsBlockingRow` and
+`HealthDigestEnvelope` are defined once and used with the same member names later.
+`PreparedBlockingReport.Source` (Task 1) is consumed in Task 6. `InsertHealthCycles` (Task 5) is
+consumed in Task 6. `WaitDeltas` / `ScalarGauges` / `ScalarDeltas` (Task 9) and `NonCleanStates` /
+`MemoryMovers` / `WorstPendingIo` / `DiagnosticsBlocking` (Task 10) are consumed in Task 11.
+`HealthCoverage` gains `NonDiagnosticsShare` in Task 10 step 5, which is why that step also amends
+the Task 8 test.
 
-**Ordering.** Task 1 must precede 2 (the column must exist), 2 must precede 7 (isolation before
-the second source arrives), 3–5 must precede 6, 6 must precede 7, 8–9 must precede 10, 10 must
-precede 11.
+**Names verified against the codebase, not remembered.** `Arg(name, fallback)` and
+`BlockingDigestMarkdown.HasTraversal` (Task 12), `NextBlockingReportId` and the `Add(c, "$n", v)`
+helper (Tasks 1, 5), `IngestionService.Prepare(BlockingReport, string?)` (Task 6). Revision 1 named
+two helpers that do not exist anywhere in the repository; every identifier this plan borrows from
+existing code has now been grepped.
+
+**Ordering.** 1 precedes 2 (the column must exist). 2 precedes 7 — the existing readers must be
+isolated *before* the second source starts writing, or the first symptom is a contaminated digest
+rather than a failing test. 3, 4, 5 precede 6. 6 precedes 7. 8, 9, 10 precede 11. 11 precedes 12.
+13 last, because it documents what the others settled.
+
+**Counter accounting, stated once so no task drifts from it.** The event counters —
+`events_mapped`, `events_unmapped`, `events_cleaned`, `events_blocking`, `events_deadlocks`,
+`events_plan_profiles`, `events_server_diagnostics`, `events_server_diagnostics_unhandled`,
+`server_diagnostics_parse_failures` — sum to `events_read`, and Task 6 asserts it.
+`server_diagnostics_embedded_blocking` and `server_diagnostics_embedded_blocking_failures` count
+sub-documents of a single event and are **outside** that sum. Task 13 must say so where it
+publishes the reconciliation query, or the next reader will add them and break it.
