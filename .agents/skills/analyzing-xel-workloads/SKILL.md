@@ -282,8 +282,11 @@ Un multiplicateur entier supérieur à 1 révèle des structures reconstruites i
 
 # Avant de faire sortir quoi que ce soit du projet
 
-`executions.sql_text_raw` n'est **jamais expurgé**, et les fichiers `.sqlplan` portent le schéma et
-parfois des valeurs littérales. Avant qu'un plan quitte le projet, passer
+`executions.sql_text_raw` est stocké brut par défaut — jamais expurgé, sauf si l'import a utilisé
+`--sanitize-sql-text literals` (`ingest.sqlTextSanitization`), qui écrase les littéraux mais laisse
+les identifiants. Vérifier `ingestion_runs.sql_text_policy` avant de supposer l'un ou l'autre. Les
+fichiers `.sqlplan` portent le schéma et parfois des valeurs littérales dans tous les cas. Avant
+qu'un plan quitte le projet, passer
 `sqlferret obfuscate-plan --project <dir> --plan-id <id>`, et garder le `*.map.json` / la table
 `obfuscation_map` en arrière : cette carte **est** la clé de désanonymisation.
 

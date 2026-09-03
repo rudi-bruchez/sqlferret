@@ -14,9 +14,9 @@ public sealed class DrillDownPresenter(WorkloadQueries q, QueryStat signature)
     public IReadOnlyList<ParamImpact> ParameterImpact(string paramName) =>
         q.ParameterImpact(signature.NormalizedHash, paramName);
 
-    public (ReplayScript Script, bool AnyRedacted) BuildReplay(long executionId)
+    public (ReplayScript Script, bool AnyRedacted, string? SqlTextPolicy) BuildReplay(long executionId)
     {
         var ev = q.LoadExecution(executionId);
-        return (ReplayBuilder.Build(ev), ev.Parameters.Any(p => p.Redacted));
+        return (ReplayBuilder.Build(ev), ev.Parameters.Any(p => p.Redacted), ev.SqlTextPolicy);
     }
 }

@@ -5,6 +5,7 @@ using SqlFerret.Core.Analysis;
 using SqlFerret.Core.Config;
 using SqlFerret.Core.Filtering;
 using SqlFerret.Core.Ingestion;
+using SqlFerret.Core.Normalization;
 using SqlFerret.Core.Parameters;
 using SqlFerret.Core.Project;
 using SqlFerret.Core.Server;
@@ -46,7 +47,7 @@ AuditProject? OpenProject()
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: import <path> --project <dir> | top-slow --project <dir> | export-blocking --project <dir> [...] | query-store-import --project <dir> [--conn <s>] [--database <db>] [--no-plans] [--from <dt> --to <dt> | --last <N>{h|d}] | export-events --project <dir> --out <dir> [--kind blocking|deadlock|both] [--from <dt> --to <dt> | --last <N>{h|d}] [--fingerprint <hash>] [--database <id>] [--limit <n>] | obfuscate-plan (--in <file> --out <file> | --in-dir <dir> --out-dir <dir> [--map <file>] | --project <dir> --plan-id <id>) | query --project <dir> (--sql <texte> | --file <chemin>) [--format table|csv|json|md] [--limit <n> (defaut 1000) | --no-limit] [--raw] | reclassify --project <dir> [--force]");
+    Console.Error.WriteLine("usage: import <path> --project <dir> [--redaction off|hash|masked|full] [--sanitize-sql-text raw|literals] | top-slow --project <dir> | export-blocking --project <dir> [...] | query-store-import --project <dir> [--conn <s>] [--database <db>] [--no-plans] [--from <dt> --to <dt> | --last <N>{h|d}] | export-events --project <dir> --out <dir> [--kind blocking|deadlock|both] [--from <dt> --to <dt> | --last <N>{h|d}] [--fingerprint <hash>] [--database <id>] [--limit <n>] | obfuscate-plan (--in <file> --out <file> | --in-dir <dir> --out-dir <dir> [--map <file>] | --project <dir> --plan-id <id>) | query --project <dir> (--sql <texte> | --file <chemin>) [--format table|csv|json|md] [--limit <n> (defaut 1000) | --no-limit] [--raw] | reclassify --project <dir> [--force]");
     return 1;
 }
 
@@ -70,9 +71,27 @@ switch (args[0])
                 return 1;
             }
 
+            var sanitizeIndex = Array.IndexOf(args, "--sanitize-sql-text");
+            if (sanitizeIndex >= 0 && sanitizeIndex + 1 >= args.Length)
+            {
+                Console.Error.WriteLine("import: --sanitize-sql-text requires a value. Valid: raw, literals");
+                return 1;
+            }
+            var sanitizeStr = Arg("--sanitize-sql-text", project.Config.SqlTextPolicy);
+            // Validate the INPUT STRING against the defined enum names, not the parsed value:
+            // Enum.TryParse("0", ...) succeeds and yields Raw, which IS a defined value, so
+            // checking Enum.IsDefined on the parsed result alone lets numeric typos through.
+            if (!Enum.GetNames<SqlTextSanitization>().Any(n => n.Equals(sanitizeStr, StringComparison.OrdinalIgnoreCase))
+                || !Enum.TryParse<SqlTextSanitization>(sanitizeStr, ignoreCase: true, out var sqlText))
+            {
+                Console.Error.WriteLine($"import: invalid --sanitize-sql-text value '{sanitizeStr}'. Valid: raw, literals");
+                return 1;
+            }
+
             using var db = project.OpenDb();
             var options = new IngestionOptions(redaction, Array.Empty<FilterRule>(),
-                PlanProfileDir: project.PlanProfileRunFolder(db.PeekNextRunId()));
+                PlanProfileDir: project.PlanProfileRunFolder(db.PeekNextRunId()),
+                SqlText: sqlText);
 
             // Live in-place gauge on stderr (kept off stdout so the summary stays clean and
             // pipe-friendly). Synchronous IProgress so carriage-return updates stay ordered.
@@ -98,6 +117,12 @@ switch (args[0])
                 planWriter.WriteDigests(digestRows);
                 planWriter.WriteIndex(digestRows);
                 Console.WriteLine($"plans: {result.PlanProfiles} profiles, {digestRows.Count} distinct -> {planDir}");
+                if (sqlText != SqlTextSanitization.Raw)
+                    Console.Error.WriteLine(
+                        $"warning: statement-text sanitization policy '{sanitizeStr}' does not sanitize plan " +
+                        $"artifacts; plan_profiles.statement_text in sqlferret.duckdb, and .sqlplan and " +
+                        $".digest.json files under {planDir}, still carry unsanitized statement text. Use " +
+                        $"obfuscate-plan before sharing them.");
             }
 
             Console.WriteLine(
@@ -105,7 +130,8 @@ switch (args[0])
                 $"unmapped={result.Unmapped} cleaned={result.Cleaned} tokenizeFailures={result.TokenizeFailures} " +
                 $"blocking={result.Blocking} deadlocks={result.Deadlocks} blockingParseFailures={result.BlockingParseFailures} " +
                 $"planProfiles={result.PlanProfiles} planParseFailures={result.PlanParseFailures} " +
-                $"planWriteFailures={result.PlanWriteFailures}");
+                $"planWriteFailures={result.PlanWriteFailures} " +
+                $"sqlTextSanitizeFailures={result.SqlTextSanitizeFailures}");
 
             if (db.PlanCorrelationWarning(result.RunId) is { } planWarning)
                 Console.Error.WriteLine(planWarning);

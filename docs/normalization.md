@@ -125,7 +125,7 @@ raising an error.
 
 ## Versioning
 
-`QueryNormalizer.Version` is currently **3** and is persisted twice: on `ingestion_runs` and on
+`QueryNormalizer.Version` is currently **4** and is persisted twice: on `ingestion_runs` and on
 every row in `normalized_queries`.
 
 This exists so that a change to the normalization rules is detectable rather than silently
@@ -151,6 +151,18 @@ nor a blocking input buffer — cannot be reclassified at all and is left as it 
 that remain unclassified after the pass are reported so that `--force` can replay them once the
 classifier gains a visitor for them. See
 [cli-reference.md#reclassify](cli-reference.md#reclassify).
+
+`SqlTextSanitizer.Version` is **1**, on `ingestion_runs.sql_text_sanitizer_version`, and is
+coupled to it: at the `literals` level the stored statement text *is* the normalizer's output, so
+a rule change in one should prompt a look at the other. See [privacy.md](privacy.md).
+
+At `literals`, a double-quoted token (`"alice@example.com"`) is always collapsed to `?`, along
+with ordinary literals. The `.xel` capture does not record the session's `QUOTED_IDENTIFIER`
+setting, so a double-quoted token is ambiguous — a string value under `QUOTED_IDENTIFIER OFF`, an
+identifier under `ON` — and normalization fails safe rather than risk a leak. The cost is that a
+legitimately double-quoted identifier (`"Order Details"`) is lost to `?` too. Bracketed
+identifiers (`[Order Details]`) are unambiguous and unaffected — they are also the SQL Server
+convention. See [privacy.md](privacy.md).
 
 ## What this does and does not guarantee
 

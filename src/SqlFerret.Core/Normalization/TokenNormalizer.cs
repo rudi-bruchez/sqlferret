@@ -6,7 +6,8 @@ namespace SqlFerret.Core.Normalization;
 
 public static class TokenNormalizer
 {
-    private static readonly HashSet<TSqlTokenType> LiteralTokens =
+    // internal: reused by SpExecuteSqlUnwrapper's token walk so the two stay in lockstep.
+    internal static readonly HashSet<TSqlTokenType> LiteralTokens =
     [
         TSqlTokenType.Integer, TSqlTokenType.Numeric, TSqlTokenType.Money,
         TSqlTokenType.Real, TSqlTokenType.HexLiteral,
@@ -16,7 +17,7 @@ public static class TokenNormalizer
     // Explicit allow-list of keyword token types exercised by the golden tests.
     // This avoids the fiddly heuristic approach. Identifiers (dbo.Users, [my table])
     // are NOT in this set and keep their original casing.
-    private static readonly HashSet<TSqlTokenType> KeywordTokens =
+    internal static readonly HashSet<TSqlTokenType> KeywordTokens =
     [
         TSqlTokenType.Select,
         TSqlTokenType.From,
@@ -62,10 +63,17 @@ public static class TokenNormalizer
         TSqlTokenType.All,
     ];
 
-    public static (string normalizedSql, bool tokenizeFailed) Normalize(string rawSql)
+    /// <returns>
+    /// <c>normalizedSql</c>: literals collapsed to <c>?</c>, everything else (including a
+    /// double-quoted token) verbatim. <c>qiCollapsedSql</c>: the same, except a
+    /// <see cref="TSqlTokenType.QuotedIdentifier"/> token also collapses to <c>?</c> — see
+    /// <see cref="SqlFerret.Core.Model.NormalizedQuery.QiCollapsedSql"/> for why. Both are built in
+    /// the one token pass so producing the second costs no extra parse.
+    /// </returns>
+    public static (string normalizedSql, bool tokenizeFailed, string qiCollapsedSql) Normalize(string rawSql)
     {
         if (string.IsNullOrWhiteSpace(rawSql))
-            return (string.Empty, false);
+            return (string.Empty, false, string.Empty);
 
         try
         {
@@ -77,15 +85,16 @@ public static class TokenNormalizer
             {
                 parser.Parse(parseReader, out IList<ParseError> parseErrors);
                 if (parseErrors.Count > 0)
-                    return (FallbackCollapse(rawSql), true);
+                    return (FallbackCollapse(rawSql), true, FallbackCollapse(rawSql));
             }
 
             using var reader = new StringReader(rawSql);
             IList<TSqlParserToken> tokens = parser.GetTokenStream(reader, out IList<ParseError> errors);
             if (errors.Count > 0)
-                return (FallbackCollapse(rawSql), true);
+                return (FallbackCollapse(rawSql), true, FallbackCollapse(rawSql));
 
             var sb = new StringBuilder();
+            var sbQi = new StringBuilder();
             bool lastWasSpace = false;
 
             foreach (var t in tokens)
@@ -96,28 +105,51 @@ public static class TokenNormalizer
                     case TSqlTokenType.SingleLineComment:
                     case TSqlTokenType.MultilineComment:
                     case TSqlTokenType.EndOfFile:
-                        if (!lastWasSpace) { sb.Append(' '); lastWasSpace = true; }
+                        if (!lastWasSpace) { sb.Append(' '); sbQi.Append(' '); lastWasSpace = true; }
                         continue;
                 }
 
-                string text;
+                string text, textQi;
                 if (LiteralTokens.Contains(t.TokenType))
+                {
                     text = "?";
-                else if (KeywordTokens.Contains(t.TokenType))
-                    text = t.Text.ToLowerInvariant();
-                else
+                    textQi = "?";
+                }
+                else if (t.TokenType == TSqlTokenType.AsciiStringOrQuotedIdentifier)
+                {
+                    // A double-quoted token ("..."): ScriptDom itself can't disambiguate value
+                    // from identifier without knowing the session's QUOTED_IDENTIFIER setting,
+                    // which the capture never records — hence this dedicated ambiguous token
+                    // type (distinct from QuotedIdentifier, which is bracket-quoted [...] and
+                    // unambiguously an identifier — never collapsed).
+                    // `normalizedSql` keeps it verbatim (existing behavior, drives the hash);
+                    // `qiCollapsedSql` fails safe and collapses it like a literal.
                     text = t.Text;
+                    textQi = "?";
+                }
+                else if (KeywordTokens.Contains(t.TokenType))
+                {
+                    text = t.Text.ToLowerInvariant();
+                    textQi = text;
+                }
+                else
+                {
+                    text = t.Text;
+                    textQi = t.Text;
+                }
 
                 sb.Append(text);
+                sbQi.Append(textQi);
                 lastWasSpace = false;
             }
 
             var collapsed = CollapseInList(sb.ToString().Trim());
-            return (collapsed, false);
+            var qiCollapsed = CollapseInList(sbQi.ToString().Trim());
+            return (collapsed, false, qiCollapsed);
         }
         catch
         {
-            return (FallbackCollapse(rawSql), true);
+            return (FallbackCollapse(rawSql), true, FallbackCollapse(rawSql));
         }
     }
 

@@ -14,14 +14,20 @@ public static class QueryNormalizer
     /// visiteurs <c>DROP PROCEDURE/FUNCTION/TRIGGER/VIEW</c>, <c>ALTER TABLE</c>
     /// <c>REBUILD/SWITCH/ENABLE TRIGGER</c> et filet generique, <c>MERGE</c>, <c>FETCH</c>, et
     /// syntaxe heritee <c>DROP INDEX table.index</c>.</para>
+    /// <para>v4 : arrivee de la sanitisation du texte SQL. <c>NormalizedSql</c>, la classification
+    /// et donc le fingerprint sont inchanges par rapport a v3 ; la passe de tokens produit en plus
+    /// <c>QiCollapsedSql</c>, qui ne nourrit jamais le hash. Le bump est deliberement conservateur :
+    /// il force un <c>reclassify</c> sur les projets deja importes pour qu'ils reprennent la
+    /// colonne, pas parce que la normalisation aurait change.</para>
     /// </summary>
-    public const int Version = 3;
+    public const int Version = 4;
 
     public static NormalizedQuery Normalize(string rawSql)
     {
-        var (normalized, failed) = TokenNormalizer.Normalize(rawSql);
+        var (normalized, failed, qiCollapsed) = TokenNormalizer.Normalize(rawSql);
         var cls = AstClassifier.Classify(rawSql);
         var hash = Fingerprint.Hash(normalized);
-        return new NormalizedQuery(normalized, hash, cls.Kind, cls.PrimaryTable, cls.TargetObject, failed);
+        return new NormalizedQuery(
+            normalized, hash, cls.Kind, cls.PrimaryTable, cls.TargetObject, failed, qiCollapsed);
     }
 }

@@ -242,8 +242,10 @@ pointing SQLFerret at anything real. The short version:
 - **Parameter values** are redacted at ingestion, before the write. Four policies: `off` (the value
   is never stored), `hash`, `masked` (default), `full`. A parameter whose name contains `password`,
   `token`, `secret` or `email` is always hashed, whatever the policy says.
-- **Raw statement text is always stored.** Redaction covers *extracted parameters*, not the
-  statement itself. A batch with inlined literals keeps those literals.
+- **Statement text is stored raw by default.** Redaction covers *extracted parameters*, not the
+  statement itself, so a batch with inlined literals keeps those literals — unless you pass
+  `--sanitize-sql-text literals` (or set `ingest.sqlTextSanitization`), which collapses literals
+  in the stored statement text instead. See [docs/privacy.md](docs/privacy.md).
 - **Blocking and deadlock XML** are only retained when redaction is `off`, because that XML embeds
   full input buffers.
 - **Plans can be obfuscated** with `obfuscate-plan`, which rewrites every schema, table, column and

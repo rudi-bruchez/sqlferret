@@ -48,7 +48,7 @@ public class DuckDbProjectSchemaTests
             // Garde-fou volontaire : toute evolution d'AstClassifier qui change une classification
             // doit incrementer la version, sinon les projets deja importes gardent l'ancienne sans
             // que HasStaleClassification ne le signale.
-            Assert.Equal(3, QueryNormalizer.Version);
+            Assert.Equal(4, QueryNormalizer.Version);
         }
         finally { File.Delete(path); }
     }

@@ -19,7 +19,8 @@ Missing files are not an error. With neither present, built-in defaults apply.
     "cpuUnit": "ms"
   },
   "ingest": {
-    "redactionPolicy": "masked"
+    "redactionPolicy": "masked",
+    "sqlTextSanitization": "raw"
   },
   "server": {
     "connectionString": "Server=sql01;Database=Sales;${SQLFERRET_AUTH};TrustServerCertificate=True",
@@ -33,6 +34,7 @@ Missing files are not an error. With neither present, built-in defaults apply.
 | `display.durationUnit` | `ms` | `ms`, `s`, `us`. Formatting only; storage is always microseconds. |
 | `display.cpuUnit` | `ms` | Same. |
 | `ingest.redactionPolicy` | `masked` | `off`, `hash`, `masked`, `full`. See [privacy.md](privacy.md). Overridable per import with `--redaction`. |
+| `ingest.sqlTextSanitization` | `raw` | `raw`, `literals`. See [privacy.md](privacy.md). Overridable per import with `--sanitize-sql-text`; honored by both the CLI and the TUI import flow. |
 | `server.connectionString` | none | Used by `query-store-import` and estimated-plan capture. `${VAR}` is interpolated from the environment. |
 | `server.plansFolder` | `./plans` | Relative paths resolve against the **project directory**. An absolute path is used as-is. |
 

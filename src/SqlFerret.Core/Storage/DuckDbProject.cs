@@ -87,6 +87,9 @@ public sealed partial class DuckDbProject : IDisposable
               ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS plan_parse_failures BIGINT;
               ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS plan_write_failures BIGINT;
               ALTER TABLE normalized_queries ADD COLUMN IF NOT EXISTS target_object TEXT;
+              ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS sql_text_policy TEXT;
+              ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS sql_text_sanitizer_version INTEGER;
+              ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS sql_text_sanitize_failures BIGINT;
               """;
             migrate.ExecuteNonQuery();
         }
@@ -120,7 +123,8 @@ public sealed partial class DuckDbProject : IDisposable
         return _nextRunId;
     }
 
-    public long BeginRun(string sourcePath, int filesCount, long bytesTotal, string redactionPolicy)
+    public long BeginRun(string sourcePath, int filesCount, long bytesTotal, string redactionPolicy,
+        SqlTextSanitization sqlText = SqlTextSanitization.Raw)
     {
         if (_nextRunId < 0) _nextRunId = Scalar("SELECT COALESCE(MAX(run_id),0) FROM ingestion_runs") + 1;
         long runId = _nextRunId++;
@@ -130,11 +134,13 @@ public sealed partial class DuckDbProject : IDisposable
             finished_at, events_read, events_mapped, events_unmapped, events_cleaned,
             tokenize_failures, events_blocking, events_deadlocks, blocking_parse_failures,
             normalizer_version, redaction_policy,
-            events_plan_profiles, plan_parse_failures, plan_write_failures)
-          VALUES ($id,$src,$fc,$bt, now(), NULL, 0,0,0,0,0,0,0,0, $nv, $rp, 0,0,0)
+            events_plan_profiles, plan_parse_failures, plan_write_failures,
+            sql_text_policy, sql_text_sanitizer_version, sql_text_sanitize_failures)
+          VALUES ($id,$src,$fc,$bt, now(), NULL, 0,0,0,0,0,0,0,0, $nv, $rp, 0,0,0, $stp, $stv, 0)
           """;
         Add(c, "$id", runId); Add(c, "$src", sourcePath); Add(c, "$fc", filesCount);
         Add(c, "$bt", bytesTotal); Add(c, "$nv", QueryNormalizer.Version); Add(c, "$rp", redactionPolicy);
+        Add(c, "$stp", sqlText.ToString().ToLowerInvariant()); Add(c, "$stv", SqlTextSanitizer.Version);
         c.ExecuteNonQuery();
         return runId;
     }
@@ -207,20 +213,23 @@ public sealed partial class DuckDbProject : IDisposable
 
     public void FinishRun(long runId, long read, long mapped, long unmapped, long cleaned,
         long tokenizeFailures, long blocking, long deadlocks, long blockingParseFailures,
-        long planProfiles = 0, long planParseFailures = 0, long planWriteFailures = 0)
+        long planProfiles = 0, long planParseFailures = 0, long planWriteFailures = 0,
+        long sqlTextSanitizeFailures = 0)
     {
         using var c = Connection.CreateCommand();
         c.CommandText = """
           UPDATE ingestion_runs SET finished_at=now(), events_read=$r, events_mapped=$m,
             events_unmapped=$u, events_cleaned=$c, tokenize_failures=$tf,
             events_blocking=$bl, events_deadlocks=$dl, blocking_parse_failures=$bpf,
-            events_plan_profiles=$pp, plan_parse_failures=$ppf, plan_write_failures=$pwf
+            events_plan_profiles=$pp, plan_parse_failures=$ppf, plan_write_failures=$pwf,
+            sql_text_sanitize_failures=$stsf
           WHERE run_id=$id
           """;
         Add(c, "$r", read); Add(c, "$m", mapped); Add(c, "$u", unmapped); Add(c, "$c", cleaned);
         Add(c, "$tf", tokenizeFailures); Add(c, "$bl", blocking); Add(c, "$dl", deadlocks);
         Add(c, "$bpf", blockingParseFailures);
         Add(c, "$pp", planProfiles); Add(c, "$ppf", planParseFailures); Add(c, "$pwf", planWriteFailures);
+        Add(c, "$stsf", sqlTextSanitizeFailures);
         Add(c, "$id", runId);
         c.ExecuteNonQuery();
     }

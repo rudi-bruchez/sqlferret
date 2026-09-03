@@ -283,8 +283,18 @@ Note that redaction interacts badly with replay: a batch whose parameters were m
 cannot be replayed with meaningful values. Estimated-plan capture on a redacted project will
 compile a plan for `'****'`, which is not the plan production got.
 
+`--sanitize-sql-text` interacts worse: `EstimatedPlanService.CaptureAsync` refuses outright,
+before opening a connection, when the execution's `sql_text_policy` is `literals` rather than
+`raw`. The stored text is `"… WHERE Email = ?"`, not valid T-SQL, so there is no plan to compile.
+This mirrors the `export-events` refusal precedent (see [privacy.md](privacy.md)): fail loudly
+with an explicit message rather than send something that will not parse to the server. Re-import
+with `--sanitize-sql-text raw` if estimated plans are needed for that data.
+
 There is no CLI command for this yet; it is a library entry point, exercised by an
-environment-gated integration test that needs `SQLFERRET_TEST_CONN`.
+environment-gated integration test that needs `SQLFERRET_TEST_CONN`. `CaptureAsync` has no
+production caller today — the only invocations in the repository are in tests, and neither host
+reaches it — so the refusal above is the contract for whoever wires it up next, not yet a
+user-visible behavior.
 
 ---
 
