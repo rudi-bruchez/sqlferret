@@ -46,3 +46,27 @@ public record WaitDelta(
 
 /// <summary>Jauge instantanee : min / mediane / p95 / max, jamais une somme.</summary>
 public record HealthScalar(string Name, double? Min, double? Median, double? P95, double? Max, long Samples);
+
+public record StateCount(string Component, string State, long Cycles);
+
+/// <param name="Change">
+/// Dernier moins premier, signe. Le classement se fait sur la valeur absolue : une chute de
+/// memoire disponible est au moins aussi interessante qu'une hausse, et ne garder que les hausses
+/// cacherait exactement le cas qu'on cherche.
+/// </param>
+public record MemoryMovement(
+    string ReportName, string? Unit, string Description, double First, double Last, double Change);
+
+/// <param name="FilePath">
+/// Chemin cote serveur, stocke verbatim et retire par aucune politique de redaction. L'hote qui
+/// l'affiche doit dire que le digest divulgue la disposition des disques et les noms de fichiers.
+/// </param>
+public record PendingIoRow(DateTime CapturedAt, long? DurationUs, string? FilePath, string? Handle);
+
+/// <summary>
+/// Instantane pris pendant un cycle de diagnostics, jamais un rapport declenche par seuil : les
+/// deux ne se comptent pas ensemble, et l'hote doit le dire quand il les affiche.
+/// </summary>
+public record DiagnosticsBlockingRow(
+    DateTime CapturedAt, int? BlockedSpid, int? BlockingSpid, long? WaitTimeUs,
+    string? WaitResourceType, string? BlockedInputBuf);

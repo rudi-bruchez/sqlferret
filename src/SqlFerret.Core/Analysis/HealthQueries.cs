@@ -189,6 +189,107 @@ public class HealthQueries(DuckDBConnection conn)
         return list;
     }
 
+    /// <summary>Spec §9 item 1. Un etat autre que CLEAN est le premier endroit ou regarder.</summary>
+    public IReadOnlyList<StateCount> NonCleanStates()
+    {
+        using var c = conn.CreateCommand();
+        c.CommandText = """
+          SELECT component, state, count(*) AS cycles
+          FROM health_samples
+          WHERE state IS NOT NULL AND upper(state) <> 'CLEAN' AND handled
+          GROUP BY component, state
+          ORDER BY cycles DESC, component
+          """;
+        var list = new List<StateCount>();
+        using var r = c.ExecuteReader();
+        while (r.Read()) list.Add(new StateCount(r.GetString(0), r.GetString(1), r.GetInt64(2)));
+        return list;
+    }
+
+    /// <summary>
+    /// Spec §9 item 3. Une seule serie : comparer un premier et un dernier a travers deux series
+    /// entrelacees comparerait deux instants sans rapport.
+    /// </summary>
+    public IReadOnlyList<MemoryMovement> MemoryMovers(string seriesKey, int limit = 10)
+    {
+        using var c = conn.CreateCommand();
+        c.CommandText = """
+          WITH e AS (
+            SELECT m.report_name, m.unit, m.description, m.value_num, y.cycle_at
+            FROM health_memory_entries m
+            JOIN health_samples s ON s.sample_id = m.sample_id
+            JOIN health_cycles  y ON y.cycle_id  = s.cycle_id
+            WHERE y.series_key = $sk AND m.value_num IS NOT NULL
+          )
+          SELECT report_name, any_value(unit), description,
+                 arg_min(value_num, cycle_at) AS first_v,
+                 arg_max(value_num, cycle_at) AS last_v
+          FROM e GROUP BY report_name, description
+          ORDER BY abs(arg_max(value_num, cycle_at) - arg_min(value_num, cycle_at)) DESC
+          LIMIT $lim
+          """;
+        Bind(c, "$sk", seriesKey); Bind(c, "$lim", limit);
+        var list = new List<MemoryMovement>();
+        using var r = c.ExecuteReader();
+        while (r.Read())
+        {
+            double first = r.GetDouble(3), last = r.GetDouble(4);
+            list.Add(new MemoryMovement(r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1),
+                r.GetString(2), first, last, last - first));
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// Spec §9 item 6. file_path est stocke verbatim et n'est retire par aucune politique de
+    /// redaction : l'hote qui l'affiche doit le dire.
+    /// </summary>
+    public IReadOnlyList<PendingIoRow> WorstPendingIo(int limit = 10)
+    {
+        using var c = conn.CreateCommand();
+        c.CommandText = """
+          SELECT s.captured_at, i.duration_us, i.file_path, i.handle
+          FROM health_pending_io i
+          JOIN health_samples s ON s.sample_id = i.sample_id
+          ORDER BY i.duration_us DESC NULLS LAST
+          LIMIT $lim
+          """;
+        Bind(c, "$lim", limit);
+        var list = new List<PendingIoRow>();
+        using var r = c.ExecuteReader();
+        while (r.Read())
+            list.Add(new PendingIoRow(r.GetDateTime(0), r.IsDBNull(1) ? null : r.GetInt64(1),
+                r.IsDBNull(2) ? null : r.GetString(2), r.IsDBNull(3) ? null : r.GetString(3)));
+        return list;
+    }
+
+    /// <summary>
+    /// Spec §9 item 7. Les instantanes de diagnostics uniquement, jamais melanges aux rapports
+    /// declenches par seuil.
+    /// </summary>
+    public IReadOnlyList<DiagnosticsBlockingRow> DiagnosticsBlocking(int limit = 10)
+    {
+        using var c = conn.CreateCommand();
+        c.CommandText = """
+          SELECT r.captured_at, b.spid, k.spid, b.wait_time_us, b.wait_resource_type, b.inputbuf
+          FROM blocking_reports r
+          JOIN blocking_processes b ON b.report_id = r.report_id AND b.role = 'blocked'
+          JOIN blocking_processes k ON k.report_id = r.report_id AND k.role = 'blocking'
+          WHERE coalesce(r.source, 'event') = 'diagnostics'
+          ORDER BY b.wait_time_us DESC NULLS LAST
+          LIMIT $lim
+          """;
+        Bind(c, "$lim", limit);
+        var list = new List<DiagnosticsBlockingRow>();
+        using var r = c.ExecuteReader();
+        while (r.Read())
+            list.Add(new DiagnosticsBlockingRow(r.GetDateTime(0),
+                r.IsDBNull(1) ? null : r.GetInt32(1), r.IsDBNull(2) ? null : r.GetInt32(2),
+                r.IsDBNull(3) ? null : r.GetInt64(3), r.IsDBNull(4) ? null : r.GetString(4),
+                r.IsDBNull(5) ? null : r.GetString(5)));
+        return list;
+    }
+
     private static void Bind(System.Data.Common.DbCommand c, string name, object? value)
     {
         var p = c.CreateParameter();
