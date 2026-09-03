@@ -1,5 +1,6 @@
 // src/SqlFerret.Core/Storage/DuckDbProject.cs
 using DuckDB.NET.Data;
+using SqlFerret.Core.Ingestion;
 using SqlFerret.Core.Model;
 using SqlFerret.Core.Normalization;
 
@@ -11,6 +12,8 @@ public sealed partial class DuckDbProject : IDisposable
 
     private long _nextExecutionId = -1;
     private long _nextRunId = -1;
+    private long _nextHealthCycleId = -1;
+    private long _nextHealthSampleId = -1;
 
     private DuckDbProject(DuckDBConnection conn) => Connection = conn;
 
@@ -75,6 +78,35 @@ public sealed partial class DuckDbProject : IDisposable
         CREATE TABLE IF NOT EXISTS deadlock_reports (
           report_id BIGINT PRIMARY KEY, run_id BIGINT, captured_at TIMESTAMP,
           victim_spids TEXT, participant_spids TEXT, graph_xml TEXT);
+
+        CREATE TABLE IF NOT EXISTS health_cycles (
+          cycle_id BIGINT PRIMARY KEY, run_id BIGINT, cycle_at TIMESTAMP, series_key TEXT);
+
+        CREATE TABLE IF NOT EXISTS health_samples (
+          sample_id BIGINT PRIMARY KEY, cycle_id BIGINT, run_id BIGINT, captured_at TIMESTAMP,
+          component TEXT, state TEXT, handled BOOLEAN);
+
+        CREATE TABLE IF NOT EXISTS health_metrics (
+          sample_id BIGINT, name TEXT, value_num DOUBLE, value_big BIGINT, value_text TEXT);
+
+        CREATE TABLE IF NOT EXISTS health_waits (
+          sample_id BIGINT, preemptive BOOLEAN, ranking TEXT,
+          wait_type TEXT, waits BIGINT, avg_wait_us BIGINT, max_wait_us BIGINT);
+
+        CREATE TABLE IF NOT EXISTS health_cpu_requests (
+          sample_id BIGINT, session_id INTEGER, request_id INTEGER, command TEXT,
+          cpu_time_us BIGINT, cpu_utilization DOUBLE, task_address TEXT);
+
+        CREATE TABLE IF NOT EXISTS health_pending_tasks (
+          sample_id BIGINT, entry_point TEXT, task_count BIGINT);
+
+        -- offset_bytes, pas offset : OFFSET est reserve en DuckDB et devrait etre quote partout.
+        CREATE TABLE IF NOT EXISTS health_pending_io (
+          sample_id BIGINT, duration_us BIGINT, file_path TEXT, handle TEXT, offset_bytes BIGINT);
+
+        CREATE TABLE IF NOT EXISTS health_memory_entries (
+          sample_id BIGINT, report_name TEXT, unit TEXT, description TEXT,
+          value_num DOUBLE, value_text TEXT);
         """;
         cmd.ExecuteNonQuery();
         using (var migrate = conn.CreateCommand())
@@ -261,6 +293,91 @@ public sealed partial class DuckDbProject : IDisposable
         if (_nextDeadlockReportId < 0)
             _nextDeadlockReportId = Scalar("SELECT COALESCE(MAX(report_id),0) FROM deadlock_reports");
         return ++_nextDeadlockReportId;
+    }
+
+    public long NextHealthCycleId()
+    {
+        if (_nextHealthCycleId < 0)
+            _nextHealthCycleId = Scalar("SELECT COALESCE(MAX(cycle_id),0) FROM health_cycles");
+        return ++_nextHealthCycleId;
+    }
+
+    public long NextHealthSampleId()
+    {
+        if (_nextHealthSampleId < 0)
+            _nextHealthSampleId = Scalar("SELECT COALESCE(MAX(sample_id),0) FROM health_samples");
+        return ++_nextHealthSampleId;
+    }
+
+    /// <summary>
+    /// Ecrit un lot de cycles et tous leurs enfants en une transaction. Un echantillon non gere
+    /// garde sa ligne dans <c>health_samples</c> avec <c>handled = false</c> et n'a pas d'enfants :
+    /// c'est ce qui fait qu'un composant inconnu est visible plutot que perdu.
+    /// </summary>
+    public void InsertHealthCycles(long runId, IReadOnlyList<HealthCycle> cycles)
+    {
+        using var tx = Connection.BeginTransaction();
+        foreach (var cycle in cycles)
+        {
+            long cycleId = NextHealthCycleId();
+            Exec(tx, """
+              INSERT INTO health_cycles (cycle_id, run_id, cycle_at, series_key)
+              VALUES ($cid,$run,$at,$sk)
+              """, ("$cid", cycleId), ("$run", runId), ("$at", cycle.CycleAt), ("$sk", cycle.SeriesKey));
+
+            foreach (var sample in cycle.Samples)
+            {
+                long sid = NextHealthSampleId();
+                Exec(tx, """
+                  INSERT INTO health_samples
+                        (sample_id, cycle_id, run_id, captured_at, component, state, handled)
+                  VALUES ($sid,$cid,$run,$ts,$comp,$state,$h)
+                  """,
+                  ("$sid", sid), ("$cid", cycleId), ("$run", runId), ("$ts", sample.CapturedAt),
+                  ("$comp", sample.Component), ("$state", (object?)sample.State),
+                  ("$h", sample.Outcome == DiagnosticsOutcome.Parsed));
+
+                foreach (var m in sample.Metrics)
+                    Exec(tx, "INSERT INTO health_metrics (sample_id,name,value_num,value_big,value_text) VALUES ($s,$n,$vn,$vb,$vt)",
+                        ("$s", sid), ("$n", m.Name), ("$vn", (object?)m.ValueNum),
+                        ("$vb", (object?)m.ValueBig), ("$vt", (object?)m.ValueText));
+
+                foreach (var w in sample.Waits)
+                    Exec(tx, "INSERT INTO health_waits (sample_id,preemptive,ranking,wait_type,waits,avg_wait_us,max_wait_us) VALUES ($s,$p,$r,$wt,$w,$a,$m)",
+                        ("$s", sid), ("$p", w.Preemptive), ("$r", w.Ranking), ("$wt", w.WaitType),
+                        ("$w", w.Waits), ("$a", w.AvgWaitUs), ("$m", w.MaxWaitUs));
+
+                foreach (var q in sample.CpuRequests)
+                    Exec(tx, "INSERT INTO health_cpu_requests (sample_id,session_id,request_id,command,cpu_time_us,cpu_utilization,task_address) VALUES ($s,$si,$ri,$c,$ct,$cu,$ta)",
+                        ("$s", sid), ("$si", (object?)q.SessionId), ("$ri", (object?)q.RequestId),
+                        ("$c", (object?)q.Command), ("$ct", (object?)q.CpuTimeUs),
+                        ("$cu", (object?)q.CpuUtilization), ("$ta", (object?)q.TaskAddress));
+
+                foreach (var t in sample.PendingTasks)
+                    Exec(tx, "INSERT INTO health_pending_tasks (sample_id,entry_point,task_count) VALUES ($s,$e,$c)",
+                        ("$s", sid), ("$e", t.EntryPoint), ("$c", t.TaskCount));
+
+                foreach (var i in sample.PendingIo)
+                    Exec(tx, "INSERT INTO health_pending_io (sample_id,duration_us,file_path,handle,offset_bytes) VALUES ($s,$d,$f,$h,$o)",
+                        ("$s", sid), ("$d", (object?)i.DurationUs), ("$f", (object?)i.FilePath),
+                        ("$h", (object?)i.Handle), ("$o", (object?)i.OffsetBytes));
+
+                foreach (var e in sample.MemoryEntries)
+                    Exec(tx, "INSERT INTO health_memory_entries (sample_id,report_name,unit,description,value_num,value_text) VALUES ($s,$rn,$u,$d,$vn,$vt)",
+                        ("$s", sid), ("$rn", e.ReportName), ("$u", (object?)e.Unit),
+                        ("$d", e.Description), ("$vn", (object?)e.ValueNum), ("$vt", (object?)e.ValueText));
+            }
+        }
+        tx.Commit();
+    }
+
+    private void Exec(DuckDBTransaction tx, string sql, params (string Name, object? Value)[] ps)
+    {
+        using var c = Connection.CreateCommand();
+        c.Transaction = tx;
+        c.CommandText = sql;
+        foreach (var (n, v) in ps) Add(c, n, v);
+        c.ExecuteNonQuery();
     }
 
     public void InsertBlockingBatch(long runId, IReadOnlyList<PreparedBlockingReport> reports)
