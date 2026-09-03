@@ -47,7 +47,7 @@ AuditProject? OpenProject()
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: import <path> --project <dir> [--redaction off|hash|masked|full] [--sanitize-sql-text raw|literals] | top-slow --project <dir> | export-blocking --project <dir> [...] | query-store-import --project <dir> [--conn <s>] [--database <db>] [--no-plans] [--from <dt> --to <dt> | --last <N>{h|d}] | export-events --project <dir> --out <dir> [--kind blocking|deadlock|both] [--from <dt> --to <dt> | --last <N>{h|d}] [--fingerprint <hash>] [--database <id>] [--limit <n>] | obfuscate-plan (--in <file> --out <file> | --in-dir <dir> --out-dir <dir> [--map <file>] | --project <dir> --plan-id <id>) | query --project <dir> (--sql <texte> | --file <chemin>) [--format table|csv|json|md] [--limit <n> (defaut 1000) | --no-limit] [--raw] | reclassify --project <dir> [--force]");
+    Console.Error.WriteLine("usage: import <path> --project <dir> [--redaction off|hash|masked|full] [--sanitize-sql-text raw|literals] | top-slow --project <dir> | export-blocking --project <dir> [...] | query-store-import --project <dir> [--conn <s>] [--database <db>] [--no-plans] [--from <dt> --to <dt> | --last <N>{h|d}] | export-events --project <dir> --out <dir> [--kind blocking|deadlock|both] [--from <dt> --to <dt> | --last <N>{h|d}] [--fingerprint <hash>] [--database <id>] [--limit <n>] | obfuscate-plan (--in <file> --out <file> | --in-dir <dir> --out-dir <dir> [--map <file>] | --project <dir> --plan-id <id>) | export-health --project <dir> [--format json|md|both] [--out <file>] [--limit <n>] | query --project <dir> (--sql <texte> | --file <chemin>) [--format table|csv|json|md] [--limit <n> (defaut 1000) | --no-limit] [--raw] | reclassify --project <dir> [--force]");
     return 1;
 }
 
@@ -156,6 +156,54 @@ switch (args[0])
                     $"{s.StatementKind,-7} {s.Count,8}  total={DisplayFormat.Duration(s.TotalDurationUs, project.Config.DurationUnit),-12}  {Trim(s.NormalizedSql)}");
             if (db.HasStaleClassification())
                 Console.Error.WriteLine(StaleClassificationNote);
+            return 0;
+        }
+    case "export-health":
+        {
+            var project = OpenProject();
+            if (project is null) return 1;
+
+            var format = Arg("--format", "md");
+            if (format is not ("json" or "md" or "both"))
+            { Console.Error.WriteLine("export-health: --format must be json, md or both"); return 1; }
+
+            var outPath = Arg("--out", "");
+            if (outPath.Length > 0 && SqlFerret.Cli.BlockingDigestMarkdown.HasTraversal(outPath))
+            { Console.Error.WriteLine("export-health: invalid --out path"); return 1; }
+
+            var limit = int.TryParse(Arg("--limit", "10"), out var lv) && lv > 0 ? lv : 10;
+
+            using var db = project.OpenDb();
+            var envelope = new SqlFerret.Core.Analysis.HealthDigest(db.Connection).Build(limit);
+
+            var json = System.Text.Json.JsonSerializer.Serialize(envelope,
+                           new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            var md = SqlFerret.Core.Analysis.HealthDigest.ToMarkdown(envelope);
+
+            // `both` ecrit deux fichiers quand --out est donne, et concatene sur stdout sinon —
+            // meme comportement qu'export-blocking, dont cette commande copie la forme.
+            if (outPath.Length == 0)
+            {
+                Console.WriteLine(format switch
+                {
+                    "json" => json,
+                    "md" => md,
+                    _ => md + Environment.NewLine + json,
+                });
+            }
+            else if (format == "both")
+            {
+                var stem = Path.Combine(Path.GetDirectoryName(outPath) ?? "",
+                                        Path.GetFileNameWithoutExtension(outPath));
+                File.WriteAllText(stem + ".md", md);
+                File.WriteAllText(stem + ".json", json);
+                Console.WriteLine($"written: {stem}.md, {stem}.json");
+            }
+            else
+            {
+                File.WriteAllText(outPath, format == "json" ? json : md);
+                Console.WriteLine($"written: {outPath}");
+            }
             return 0;
         }
     case "export-blocking":
