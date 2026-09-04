@@ -254,4 +254,35 @@ public class HealthDigestTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+    /// <summary>
+    /// Cinq composants sont documentes par Microsoft ; tout autre nom est celui d'un groupe de
+    /// disponibilite, c'est-a-dire du nommage choisi par le client. Il est stocke verbatim sous
+    /// --redaction full et imprime dans le digest, et docs/privacy.md n'enumerait que trois
+    /// colonnes hors politique.
+    /// </summary>
+    [Fact]
+    public void An_availability_group_name_is_announced_as_customer_naming()
+    {
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "full");
+            ServerDiagnosticsSample Ag(DateTime ts) =>
+                new(ts, "SampleAppAvailabilityGroup", "WARNING", DiagnosticsOutcome.Unhandled,
+                    [], [], [], [], [], [], []);
+            db.InsertHealthCycles(runId, [
+                new HealthCycle(at,               "1", [Ag(at)]),
+                new HealthCycle(at.AddMinutes(5), "1", [Ag(at.AddMinutes(5))]),
+            ]);
+
+            var e = new HealthDigest(db.Connection).Build();
+
+            Assert.Contains(e.Digest.Notes,
+                n => n.Contains("availability group", StringComparison.OrdinalIgnoreCase)
+                  && n.Contains("SampleAppAvailabilityGroup", StringComparison.Ordinal));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
 }

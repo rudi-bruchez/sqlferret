@@ -1,4 +1,5 @@
 // tests/SqlFerret.Core.Tests/HealthBlockingReuseTests.cs
+using SqlFerret.Core.Analysis;
 using SqlFerret.Core.Ingestion;
 using SqlFerret.Core.Normalization;
 using SqlFerret.Core.Parameters;
@@ -153,6 +154,32 @@ public class HealthBlockingReuseTests
               WHERE b.role = 'blocked'
               """) ?? "";
             Assert.DoesNotContain(Pii, normalized);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    /// <summary>
+    /// Le Markdown n'affiche jamais l'input buffer d'un blocage vu en diagnostics ; l'enveloppe
+    /// JSON le porte. Un operateur qui a relu le .md par defaut puis lance --format both
+    /// distribue donc autre chose que ce qu'il a relu, et rien ne le lui disait.
+    /// </summary>
+    [Fact]
+    public void The_json_envelope_announces_the_statement_text_the_markdown_hides()
+    {
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            new IngestionService(db, new IngestionOptions(RedactionMode.Off, [],
+                    SqlText: SqlTextSanitization.Raw))
+                .Ingest("logs/", [Diag("exec AppSchema.WidgetRecalc @Code='X1'")]);
+
+            var e = new HealthDigest(db.Connection).Build();
+
+            Assert.NotEmpty(e.Digest.DiagnosticsBlocking);
+            Assert.Contains(e.Digest.Notes,
+                n => n.Contains("--format json", StringComparison.Ordinal)
+                  && n.Contains("statement text", StringComparison.OrdinalIgnoreCase));
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }

@@ -44,8 +44,12 @@ public record HealthCycle(
 /// </summary>
 public static class HealthCycleGrouper
 {
-    /// <summary>Au-dela de cet ecart, l'echantillon appartient au cycle suivant.</summary>
-    private static readonly TimeSpan CycleGap = TimeSpan.FromSeconds(1);
+    /// <summary>
+    /// Au-dela de cet ecart, l'echantillon appartient au cycle suivant. Public parce que
+    /// l'ingestion pose la meme question en O(1) a l'arrivee de chaque echantillon, pour eviter
+    /// d'appeler <see cref="Group"/> — qui trie tout le tampon — sur chaque evenement.
+    /// </summary>
+    public static readonly TimeSpan CycleGap = TimeSpan.FromSeconds(1);
 
     public static IReadOnlyList<HealthCycle> Group(IReadOnlyList<ServerDiagnosticsSample> samples)
     {

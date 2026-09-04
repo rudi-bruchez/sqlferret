@@ -19,10 +19,14 @@ situation.
 | `blocking_processes.inputbuf` | The input buffer text | Same gate; otherwise stored normalized |
 | `deadlock_reports.graph_xml` | The deadlock graph | Same gate, otherwise stored as `<redacted/>` |
 | `plan_profiles.statement_text` | Statement text inside `sqlferret.duckdb` itself | Not sanitized by `--sanitize-sql-text` |
+| `blocking_processes.inputbuf` reached through `export-health --format json` | The blocked process's input buffer, for blocking seen inside a diagnostics cycle | Same gate as any input buffer — but the **Markdown rendering omits it entirely**, so the two formats of one command disclose different things. The digest says so in a note |
 | `plans/**/*.sqlplan` | Showplan XML: schema, table, column and index names, and sometimes literal predicate values | `obfuscate-plan`, after the fact |
 | `health_pending_io.file_path` | Server-side file paths: instance name, drive layout, database file names | **Nothing.** Stored verbatim under every redaction mode, `full` included |
 | `health_cpu_requests.session_id`, `.command` | Session id and command class (`SELECT`, `BACKUP DATABASE`), not statement text | Nothing |
-| `health_memory_entries.description` | SQL Server's own memory counter names | Nothing |
+| `health_memory_entries.description`, `.report_name` | SQL Server's own memory counter names | Nothing |
+| `health_samples.component` | The five documented components, **plus one row per Always On availability group** — and an availability group is named by whoever configured the server, often after a business unit, an application or the customer | Nothing. Stored and printed verbatim under `full`; the digest names them in a note |
+| `health_metrics.name`, `.value_text` | Engine counter names, and engine strings such as `lastNotification` and `sickSpinlockType` | Nothing |
+| `health_waits.wait_type`, `health_pending_tasks.entry_point`, `health_cpu_requests.task_address` | Engine-defined enumerations and addresses, not customer naming | Nothing |
 | `plans/**/*.digest.json` | Plan metrics plus a truncated `StatementText` | Not redacted |
 | `obfuscation_map` table and `*.map.json` | The reverse mapping from tokens to real identifiers | Nothing. This *is* the key. |
 

@@ -103,4 +103,52 @@ public class HealthDigestMarkdownTests
             if (File.Exists(path)) File.Delete(path);
         }
     }
+    /// <summary>
+    /// Tout texte venu de la capture est une donnee d'une AUTRE machine. Rendu tel quel entre
+    /// backticks, il sort de sa cellule : un backtick ferme le span, une barre verticale ouvre une
+    /// colonne, un saut de ligne termine le tableau, et le reste devient du Markdown a part
+    /// entiere — titres fabriques, lignes de metriques forgees, HTML brut. Le digest est justement
+    /// l'artefact qu'on envoie a un client ou qu'on ouvre dans un portail qui rend le Markdown.
+    /// <para>Le vecteur realiste n'est pas le type d'attente, qui vient de l'enumeration du
+    /// moteur, mais le chemin de fichier — quiconque cree une base choisit le nom du fichier — le
+    /// nom d'un groupe de disponibilite, et la description d'un clerc memoire.</para>
+    /// </summary>
+    [Fact]
+    public void Capture_text_cannot_break_out_of_its_cell()
+    {
+        const string Evil = "X` | 9 | 9 | 9 |\n\n## Injected heading\n<img src=x onerror=alert(1)>\n\n`Y";
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "full");
+
+            ServerDiagnosticsSample Qp3(DateTime ts, long n) =>
+                new(ts, "QUERY_PROCESSING", "CLEAN", DiagnosticsOutcome.Parsed, [],
+                    [new HealthWait(false, "byCount", Evil, n, 2_000, 5_000)], [], [], [], [], []);
+            ServerDiagnosticsSample Ios(DateTime ts) =>
+                new(ts, "IO_SUBSYSTEM", "WARNING", DiagnosticsOutcome.Parsed, [], [], [], [],
+                    [new HealthPendingIo(900_000, Evil, "h1", 0)], [], []);
+
+            db.InsertHealthCycles(runId, [
+                new HealthCycle(at,               "1", [Qp3(at, 10), Ios(at)]),
+                new HealthCycle(at.AddMinutes(5), "1", [Qp3(at.AddMinutes(5), 30), Ios(at.AddMinutes(5))]),
+            ]);
+
+            var md = SqlFerret.Cli.HealthDigestMarkdown.Render(new HealthDigest(db.Connection).Build());
+
+            // La propriete n'est pas que le texte disparaisse — ce serait detruire la donnee —
+            // mais qu'il ne soit plus INTERPRETE. Reste dans sa cellule, il est inerte.
+            var starts = md.Split((char)10).Select(l => l.TrimEnd((char)13)).ToList();
+            Assert.DoesNotContain(starts, l => l.StartsWith("## Injected", StringComparison.Ordinal));
+            Assert.DoesNotContain(starts, l => l.StartsWith("<img", StringComparison.Ordinal));
+            // Et il reste lisible : c'est un rendu, pas une censure.
+            Assert.Contains("Injected heading", md, StringComparison.Ordinal);
+            // Et le tableau des attentes garde exactement UNE ligne de donnees. La valeur
+            // hostile en fabriquait une seconde en enjambant la fin de ligne.
+            Assert.Equal(1, starts.Count(l => l.StartsWith("| " + (char)96, StringComparison.Ordinal)));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
 }

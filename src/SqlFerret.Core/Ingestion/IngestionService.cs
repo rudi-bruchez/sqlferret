@@ -24,6 +24,7 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
     private bool VerbatimStatementTextAllowed =>
         options.Redaction == RedactionMode.Off && options.SqlText == SqlTextSanitization.Raw;
 
+
     public IngestionResult Ingest(string sourcePath,
         IEnumerable<(IXeEventData ev, string fileName, long offset)> events,
         int filesCount = 1, long bytesTotal = 0,
@@ -45,6 +46,10 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
         var planThresholds = new SqlFerret.Core.Plans.PlanFindingThresholds();
         string currentFile = "";
         var buffer = new List<PreparedRow>(options.BatchSize);
+        // Plafond du tampon de diagnostics quand aucun cycle ne se ferme. Il suit la taille de
+        // lot choisie par l'operateur : un cycle reel porte quatre a six echantillons, donc dix
+        // lots sont trois ordres de grandeur au-dessus et ne peuvent pas couper une capture saine.
+        int maxBufferedDiagnostics = options.BatchSize * 10;
 
         foreach (var (ev, fileName, offset) in events)
         {
@@ -108,13 +113,19 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
                     case DiagnosticsOutcome.Unhandled: serverDiagnosticsUnhandled++; break;
                     default: serverDiagnosticsParseFailures++; break;
                 }
+                // Un cycle ne peut s'etre ferme que si CET echantillon a ouvert un ecart. La
+                // question se pose en O(1) ; Group() trie le tampon entier, et l'appeler sur
+                // chaque evenement rendait l'ingestion quadratique.
+                bool boundaryJustOpened = diagSamples.Count > 0
+                    && sample.CapturedAt - diagSamples[^1].CapturedAt > HealthCycleGrouper.CycleGap;
                 diagSamples.Add(sample);
 
                 // Vidange par lots, mais jamais au milieu d'un cycle : les quatre composants d'un
                 // cycle doivent etre groupes ensemble, et une coupure les repartirait sur deux
                 // cycles. On attend donc que l'echantillon suivant soit eloigne du precedent —
                 // meme seuil que HealthCycleGrouper — avant de vider.
-                if (diagSamples.Count >= options.BatchSize)
+                if (diagSamples.Count >= options.BatchSize
+                    && (boundaryJustOpened || diagSamples.Count >= maxBufferedDiagnostics))
                 {
                     var cycles = HealthCycleGrouper.Group(diagSamples);
                     if (cycles.Count > 1)
@@ -122,6 +133,18 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
                         // Le dernier cycle peut encore recevoir des echantillons : on le garde.
                         project.InsertHealthCycles(runId, [.. cycles.Take(cycles.Count - 1)]);
                         diagSamples = [.. cycles[cycles.Count - 1].Samples];
+                    }
+                    else if (diagSamples.Count >= maxBufferedDiagnostics)
+                    {
+                        // Aucun cycle ne s'est ferme, et le tampon a franchi le plafond. Une
+                        // capture dont les evenements arrivent en rafales sous la seconde n'en
+                        // ferme jamais aucun : sans cette issue, rien n'etait ecrit, tout restait
+                        // en memoire, et Group() retriait le tampon entier a chaque evenement.
+                        // Un vrai cycle porte quatre a six echantillons ; au-dela du plafond ce
+                        // n'est plus un cycle mais une pathologie, et « ne jamais couper un
+                        // cycle » cesse de primer sur l'epuisement memoire de l'hote.
+                        project.InsertHealthCycles(runId, cycles);
+                        diagSamples = [];
                     }
                 }
 

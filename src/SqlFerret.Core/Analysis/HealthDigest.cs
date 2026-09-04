@@ -137,6 +137,25 @@ public class HealthDigest(DuckDBConnection conn)
             notes.Add("Blocking below is what the server happened to be doing at a sampling instant, "
                     + "not a threshold-triggered report. It is not comparable with export-blocking.");
 
+        // Le Markdown n'imprime que des spid et des durees ; l'enveloppe JSON porte l'input
+        // buffer, c'est-a-dire du texte d'instruction. Un operateur qui a relu le .md par defaut
+        // puis lance --format json distribue autre chose que ce qu'il a relu.
+        if (diagBlocking.Any(b => !string.IsNullOrEmpty(b.BlockedInputBuf)))
+            notes.Add("The blocking rows below carry the blocked process's input buffer, which is "
+                    + "statement text. The Markdown rendering omits it; --format json and "
+                    + "--format both emit it. Under --redaction off --sanitize-sql-text raw it is "
+                    + "verbatim, literals included. Read the JSON, not only the Markdown, before "
+                    + "sharing it.");
+
+        // Cinq composants sont documentes ; tout autre nom est celui d'un groupe de
+        // disponibilite, donc du nommage choisi par le client. Aucune politique ne le retire.
+        var agNames = q.NonStandardComponents();
+        if (agNames.Count > 0)
+            notes.Add("This capture carries component names that are not one of the five documented "
+                    + "components: " + string.Join(", ", agNames) + ". Those are availability group "
+                    + "names, chosen by whoever configured the server, and they are stored and "
+                    + "printed verbatim under every redaction mode, --redaction full included.");
+
         return new HealthDigestEnvelope(SchemaVersion, DateTime.UtcNow,
             new HealthDigestResult(coverage, notes, nonClean, waits, memory, workers, stability,
                 memoryPressure, memoryGauges, ioCounters, pendingIo, diagBlocking));

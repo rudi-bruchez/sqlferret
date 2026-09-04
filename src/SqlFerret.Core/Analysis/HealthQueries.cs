@@ -181,6 +181,27 @@ public class HealthQueries(DuckDBConnection conn)
     }
 
     /// <summary>
+    /// Microsoft documente cinq composants : system, resource, query_processing, io_subsystem et
+    /// events. Tout autre nom est celui d'un groupe de disponibilite, donc du nommage choisi par
+    /// le client — unite d'affaires, application, parfois le client lui-meme. Il est stocke
+    /// verbatim sous toutes les politiques, y compris <c>full</c>, et imprime dans le digest.
+    /// </summary>
+    public IReadOnlyList<string> NonStandardComponents()
+    {
+        using var c = conn.CreateCommand();
+        c.CommandText = """
+          SELECT DISTINCT component FROM health_samples
+          WHERE lower(component) NOT IN
+                ('system','resource','query_processing','io_subsystem','events')
+          ORDER BY component
+          """;
+        var list = new List<string>();
+        using var r = c.ExecuteReader();
+        while (r.Read()) if (!r.IsDBNull(0)) list.Add(r.GetString(0));
+        return list;
+    }
+
+    /// <summary>
     /// Compteurs d'intervalle : chaque cycle porte le nombre survenu DANS son intervalle, et non
     /// un cumul depuis le demarrage. L'agregat est donc une somme directe. Les differencier — ce
     /// que faisait <see cref="ScalarDeltas"/> — calcule une acceleration : un plateau constant

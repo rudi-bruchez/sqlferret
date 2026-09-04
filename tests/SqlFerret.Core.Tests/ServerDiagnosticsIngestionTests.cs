@@ -206,4 +206,46 @@ public class ServerDiagnosticsIngestionTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+    /// <summary>
+    /// Le tampon de diagnostics ne se vidait que lorsqu'un cycle etait clos, c'est-a-dire quand
+    /// deux echantillons consecutifs etaient separes de plus d'une seconde. Une capture dont les
+    /// evenements arrivent en rafales sous la seconde n'en fermait donc jamais aucun : rien
+    /// n'etait ecrit, tout restait en memoire, et <c>Group()</c> retriait l'integralite du tampon
+    /// a chaque evenement — cout superlineaire mesure a 6 000 → 11 s, 24 000 → 74 s.
+    /// <para>Un vrai cycle porte quatre a six echantillons. Au-dela du plafond, ce n'est plus un
+    /// cycle mais une pathologie, et la garantie « ne jamais couper un cycle » cesse de valoir
+    /// contre l'epuisement memoire de l'hote.</para>
+    /// </summary>
+    [Fact]
+    public void A_sub_second_burst_cannot_hold_the_whole_capture_in_memory()
+    {
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+
+            // 600 evenements a 100 ms d'ecart : aucun n'ouvre jamais l'ecart d'une seconde, donc
+            // aucun cycle ne se ferme. Avec un lot de 50, le plafond du tampon est a 500.
+            List<(IXeEventData, string, long)> evs = [];
+            for (int i = 0; i < 600; i++)
+                evs.Add(Diag("QUERY_PROCESSING", Qp, at.AddMilliseconds(100 * i)));
+
+            new IngestionService(db, new IngestionOptions(RedactionMode.Masked, [], BatchSize: 50))
+                .Ingest("logs/", evs);
+
+            using var c = db.Connection.CreateCommand();
+            c.CommandText = "SELECT count(*) FROM health_cycles";
+            var cycles = Convert.ToInt64(c.ExecuteScalar());
+            c.CommandText = "SELECT count(*) FROM health_samples";
+            var samples = Convert.ToInt64(c.ExecuteScalar());
+
+            Assert.Equal(600L, samples);
+            // Sans plafond, les 600 echantillons formaient UN seul cycle jamais vidange, garde en
+            // memoire jusqu'a la fin du flux. Le plafond le coupe, donc il y en a plus d'un.
+            Assert.True(cycles > 1,
+                $"le tampon n'a jamais ete vidange : {cycles} cycle pour {samples} echantillons");
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
 }
