@@ -17,6 +17,92 @@ fact would mean inventing boundaries the repository never had.
 The version is written into every project directory's `project.json` as `ToolVersion`, so
 an audit can always name the build that produced it.
 
+## [0.3.0] - 2026-09-04
+
+System Health. SQL Server's own `system_health` session runs on every instance, unasked,
+and writes `sp_server_diagnostics_component_result` events nobody reads. This release reads
+them: worker and memory pressure, wait deltas, pending I/O, and the blocking the server
+happened to be doing at a sampling instant — from a capture you already have.
+
+### Added
+
+- **`sqlferret export-health`** — a digest of a `system_health` capture, in `md`, `json` or
+  `both`. Coverage first, then non-clean component states, wait deltas, memory movers,
+  worker pressure, stability signals, I/O counters, worst pending I/O, and blocking seen
+  inside diagnostics cycles.
+- **Ingestion of `sp_server_diagnostics_component_result`** into eight `health_*` tables,
+  with three outcomes counted separately: parsed, *unhandled* (a component this build does
+  not model — `events`, and one per Always On availability group), and failed. Unhandled is
+  not failure: a component set of five plus one per availability group would otherwise fire
+  a parse error forever on any clustered instance.
+- **Blocked-process reports lifted out of diagnostics cycles**, stored with
+  `blocking_reports.source = 'diagnostics'` and counted as sub-documents rather than events.
+  Every existing blocking query filters them out, so `export-blocking` still reports only
+  threshold-triggered contention — the two are not comparable and are no longer mixed.
+
+### The numbers this release refuses to print
+
+Everything in the digest is either a delta over a printed span or a distribution, never a
+total, because the counters behind them are **cumulative since instance start**. Measured on
+a real capture: 147 cycles of one series, 146 rising transitions and zero falling. Summing
+them would rank uptime, not activity.
+
+For the same reason nothing is ranked on `maxWaitTime` (a frozen running maximum) or on
+`averageWaitTime` (a millisecond-rounded running mean). They are carried and labelled as
+instance-lifetime figures, and no ordering touches them.
+
+A counter that goes backwards means the instance restarted inside the window. That interval
+is dropped from the delta and counted, never netted off: a restart must not read as a quiet
+period.
+
+Counters scoped to a sampling interval — `intervalLongIos`, `intervalDumpRequests` — are
+summed, not differenced, and suppressed entirely when the capture's cadence is irregular.
+
+### Two things the digest tells you it cannot do
+
+- **A capture folder can hold more than one session recording the same instance.** Observed:
+  two, offset by 35 min 32 s on a 5-minute period. Nothing in the capture says which cycle
+  belongs to which session, and every heuristic tried for it was wrong in a way that
+  mattered. The digest reports that the cadence is irregular and suppresses the two
+  interval-scoped counters rather than guessing.
+- **`health_pending_io.file_path` is stored verbatim under every redaction mode**, `full`
+  included, and no flag removes it. This is deliberate — a pending-I/O row without its file
+  is not a finding — and the digest says so in a note whenever those rows are present.
+
+### Changed
+
+- `QueryNormalizer.Version` stays at 4; no reclassification is needed for this release.
+- `docs/privacy.md` now enumerates every column stored outside the redaction policy, not
+  a subset. That includes `blocking_processes.client_app`, `.host_name` and `.login_name`,
+  which no redaction mode touches and never did — the System Health path makes those rows
+  routine, since a diagnostics cycle records blocking without `blocked process threshold`
+  being configured at all.
+
+### Fixed
+
+- **Markdown digests escape capture-derived text.** Both `export-health` and
+  `export-blocking` interpolated strings taken from the capture — file paths, availability
+  group names, wait types, and statement text — straight into Markdown. A backtick closed
+  the code span, a pipe opened a column, a newline ended the table, and the rest rendered as
+  Markdown: forged headings, fabricated metric rows, raw HTML, in the artifact meant to be
+  shared. The ordinary case was enough on its own: a multi-line SQL statement broke its own
+  bullet. Both renderers now share one escaper.
+- **Diagnostics ingestion is bounded.** A capture whose events arrive less than a second
+  apart closed no cycle, so nothing was flushed and the whole capture was held in memory
+  while each new event re-sorted the buffer. Cycle boundaries are now detected in constant
+  time against the latest timestamp seen, and a ceiling flushes the buffer even when no
+  boundary appears.
+- **The diagnostics XML parser refuses DTDs.** External entities already failed safe, but
+  internal entities were expanded and the result stored — 300 bytes yielded 139 264
+  characters, and the reader's cap bounds one document while a capture holds thousands.
+
+### Security
+
+The branch was reviewed by four independent external readers across two panels, plus a
+fifth reading of the security diff. Twenty-one defects were found and fixed, five of them in
+the fixes for earlier findings — which is the part worth keeping: a correction written under
+review pressure gets less scrutiny than the original and carries a persuasive commit message.
+
 ## [0.2.0] - 2026-09-03
 
 First published release, with binaries. Five platforms, self-contained: nothing to install,
@@ -88,4 +174,5 @@ no .NET runtime, no agent on the SQL Server.
 - **`project.json` recorded `ToolVersion: 1.0.0.0`** — an SDK default nobody chose — for
   every project ever created, so the provenance field said nothing.
 
+[0.3.0]: https://github.com/rudi-bruchez/sqlferret/releases/tag/v0.3.0
 [0.2.0]: https://github.com/rudi-bruchez/sqlferret/releases/tag/v0.2.0
