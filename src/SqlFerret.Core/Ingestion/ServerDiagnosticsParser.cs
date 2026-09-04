@@ -1,5 +1,6 @@
 // src/SqlFerret.Core/Ingestion/ServerDiagnosticsParser.cs
 using System.Globalization;
+using System.Xml;
 using System.Xml.Linq;
 using SqlFerret.Core.Model;
 
@@ -33,6 +34,22 @@ public static class ServerDiagnosticsParser
     private static readonly HashSet<string> MillisecondScalars =
         new(StringComparer.Ordinal) { "oldestPendingTaskWaitingTime", "processOutOfMemoryPeriod" };
 
+    /// <summary>
+    /// Une DTD n'a rien a faire dans la sortie de <c>sp_server_diagnostics</c>, et la refuser
+    /// ferme deux choses d'un coup. Les entites externes echouaient deja, mais les INTERNES
+    /// etaient developpees et le resultat stocke : mesure, 300 octets rendaient 139 264 caracteres
+    /// dans <c>health_metrics.value_text</c>. Le plafond du lecteur XML borne un document, pas une
+    /// capture, et l'attaque se repete a chaque evenement — quelques megaoctets de capture hostile
+    /// gonflent donc le projet DuckDB de l'analyste en gigaoctets.
+    /// <para>Refuser rend aussi le comptage honnete : un tel document devient un echec d'analyse
+    /// compte comme tel, plutot qu'un document accepte dont personne ne mesure le poids.</para>
+    /// </summary>
+    private static readonly XmlReaderSettings ReaderSettings = new()
+    {
+        DtdProcessing = DtdProcessing.Prohibit,
+        XmlResolver = null,
+    };
+
     public static ServerDiagnosticsSample TryParse(
         string? component, string? state, string? xml, DateTime capturedAt)
     {
@@ -45,7 +62,12 @@ public static class ServerDiagnosticsParser
 
         XElement root;
         // Chemin de repli delibere : un XML malforme est compte, pas propage.
-        try { root = XElement.Parse(xml); }
+        try
+        {
+            using var sr = new StringReader(xml);
+            using var xr = XmlReader.Create(sr, ReaderSettings);
+            root = XElement.Load(xr);
+        }
         catch { return Empty(capturedAt, comp, state, DiagnosticsOutcome.Failed); }
 
         if (!string.Equals(root.Name.LocalName, expectedRoot, StringComparison.Ordinal))

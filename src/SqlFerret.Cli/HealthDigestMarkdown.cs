@@ -41,7 +41,10 @@ public static class HealthDigestMarkdown
     /// </summary>
     private static string Safe(string? v) => string.IsNullOrEmpty(v) ? "" : new StringBuilder(v)
         .Replace((char)13, ' ').Replace((char)10, ' ').Replace((char)9, ' ')
-        .Replace("`", "'").Replace("|", @"\|").ToString();
+        // L'antislash EN PREMIER : echapper la barre avant lui produirait "\\|" pour une
+        // entree "\|", et en GFM une barre precedee d'un nombre pair d'antislashs
+        // redevient un separateur de cellule.
+        .Replace("\\", @"\\").Replace("`", "'").Replace("|", @"\|").ToString();
 
     public static string Render(HealthDigestEnvelope e)
     {

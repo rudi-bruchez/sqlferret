@@ -248,4 +248,49 @@ public class ServerDiagnosticsIngestionTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+    /// <summary>
+    /// Le predicat O(1) comparait l'ecart avec le DERNIER echantillon arrive, alors que
+    /// <c>Group()</c> tranche sur le tampon TRIE. En arrivee chronologique les deux disent la
+    /// meme chose ; une capture qui ordonne ses evenements a sa guise les fait diverger, et la
+    /// vidange ecrit alors un cycle comme clos alors qu'il lui reste des echantillons a recevoir.
+    /// <para>Mesure : deux cycles legitimes de quatre echantillons, entrelaces A0,B0,A1,B1…,
+    /// donnaient quatre cycles au lieu de deux — le cycle A stocke en fragments de 2, 1 et 1,
+    /// ce que le commentaire du code promettait justement de ne jamais faire.</para>
+    /// <para>Le predicat compare desormais avec le MAXIMUM vu, seul point de comparaison que
+    /// <c>Group()</c> puisse confirmer : un echantillon qui arrive en retard tombe a l'interieur
+    /// du tampon trie et n'ouvre donc aucune frontiere.</para>
+    /// </summary>
+    [Fact]
+    public void Out_of_order_arrival_does_not_fragment_a_legitimate_cycle()
+    {
+        var a = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        var b = a.AddSeconds(100);
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+
+            // Deux cycles de quatre composants, a cent secondes l'un de l'autre, mais dont les
+            // evenements arrivent entrelaces : A0, B0, A1, B1, ...
+            List<(IXeEventData, string, long)> evs = [];
+            for (int i = 0; i < 4; i++)
+            {
+                evs.Add(Diag("QUERY_PROCESSING", Qp, a.AddTicks(600 * i)));
+                evs.Add(Diag("QUERY_PROCESSING", Qp, b.AddTicks(600 * i)));
+            }
+
+            new IngestionService(db, new IngestionOptions(RedactionMode.Masked, [], BatchSize: 4))
+                .Ingest("logs/", evs);
+
+            using var c = db.Connection.CreateCommand();
+            c.CommandText = "SELECT count(*) FROM health_cycles";
+            var cycles = Convert.ToInt64(c.ExecuteScalar());
+            c.CommandText = "SELECT count(*) FROM health_samples";
+            var samples = Convert.ToInt64(c.ExecuteScalar());
+
+            Assert.Equal(8L, samples);
+            Assert.Equal(2L, cycles);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
 }

@@ -141,4 +141,47 @@ public class ServerDiagnosticsParserTests
 
         Assert.Equal(DiagnosticsOutcome.Failed, s.Outcome);
     }
+    /// <summary>
+    /// Les entites externes echouaient deja proprement, mais les entites INTERNES etaient
+    /// developpees et le resultat stocke : mesure, 300 octets rendaient 139 264 caracteres dans
+    /// <c>health_metrics.value_text</c>, soit une amplification de 460. Le plafond du lecteur XML
+    /// borne un document, pas une capture : l'attaque se repete a chaque evenement, donc quelques
+    /// megaoctets de capture hostile gonflent le projet DuckDB de l'analyste en gigaoctets.
+    /// <para>Une DTD n'a rien a faire dans la sortie de <c>sp_server_diagnostics</c>. On la
+    /// refuse, ce qui rend le comptage honnete : le document devient une echec d'analyse, compte
+    /// comme tel, plutot qu'un document accepte dont personne ne mesure le poids.</para>
+    /// </summary>
+    [Fact]
+    public void An_internal_entity_bomb_is_a_parse_failure_and_stores_nothing()
+    {
+        var bomb = """
+            <!DOCTYPE ioSubsystem [
+              <!ENTITY a "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA">
+              <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+              <!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">
+            ]>
+            <ioSubsystem ioLatchTimeouts="0"><ioSubsystemHealthRecord longestPendingRequests="&c;" />
+            </ioSubsystem>
+            """;
+
+        var s = ServerDiagnosticsParser.TryParse("IO_SUBSYSTEM", "CLEAN", bomb, Ts);
+
+        Assert.Equal(DiagnosticsOutcome.Failed, s.Outcome);
+        Assert.Empty(s.Metrics);
+    }
+
+    /// <summary>Une entite externe echouait deja proprement : cela doit le rester.</summary>
+    [Fact]
+    public void An_external_entity_is_never_resolved()
+    {
+        var xxe = """
+            <!DOCTYPE ioSubsystem [<!ENTITY x SYSTEM "file:///c:/windows/win.ini">]>
+            <ioSubsystem ioLatchTimeouts="0"><ioSubsystemHealthRecord longestPendingRequests="&x;" />
+            </ioSubsystem>
+            """;
+
+        var s = ServerDiagnosticsParser.TryParse("IO_SUBSYSTEM", "CLEAN", xxe, Ts);
+
+        Assert.Equal(DiagnosticsOutcome.Failed, s.Outcome);
+    }
 }

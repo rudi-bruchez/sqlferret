@@ -221,4 +221,51 @@ public class HealthDigestMarkdownTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+    /// <summary>
+    /// L'ordre des remplacements comptait, et il etait faux : la barre devenait <c>\|</c> mais
+    /// l'antislash d'entree n'etait pas echappe, donc une valeur portant deja <c>\|</c> ressortait
+    /// en <c>\\|</c> — et en GFM, une barre precedee d'un nombre PAIR d'antislashs redevient un
+    /// separateur de cellule. L'antislash doit etre echappe en premier.
+    /// </summary>
+    [Fact]
+    public void A_backslash_in_the_capture_cannot_re_arm_the_pipe()
+    {
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "full");
+            ServerDiagnosticsSample Qp4(DateTime ts, long n) =>
+                new(ts, "QUERY_PROCESSING", "CLEAN", DiagnosticsOutcome.Parsed, [],
+                    [new HealthWait(false, "byCount", @"SAMPLE\|WAIT", n, 2_000, 5_000)],
+                    [], [], [], [], []);
+            db.InsertHealthCycles(runId, [
+                new HealthCycle(at,               "1", [Qp4(at, 10)]),
+                new HealthCycle(at.AddMinutes(5), "1", [Qp4(at.AddMinutes(5), 30)]),
+            ]);
+
+            var md = SqlFerret.Cli.HealthDigestMarkdown.Render(new HealthDigest(db.Connection).Build());
+
+            var row = md.Split((char)10).Select(l => l.TrimEnd((char)13))
+                .Single(l => l.StartsWith("| " + (char)96, StringComparison.Ordinal));
+            // Cinq colonnes, donc six barres vivantes et pas une de plus.
+            Assert.Equal(6, row.Count(ch => ch == '|') - CountEscapedPipes(row));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    /// <summary>Barres precedees d'un nombre IMPAIR d'antislashs : celles-la sont echappees.</summary>
+    private static int CountEscapedPipes(string s)
+    {
+        int n = 0;
+        for (int i = 0; i < s.Length; i++)
+        {
+            if (s[i] != '|') continue;
+            int b = 0;
+            for (int j = i - 1; j >= 0 && s[j] == (char)92; j--) b++;
+            if (b % 2 == 1) n++;
+        }
+        return n;
+    }
 }

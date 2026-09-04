@@ -50,6 +50,8 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
         // lot choisie par l'operateur : un cycle reel porte quatre a six echantillons, donc dix
         // lots sont trois ordres de grandeur au-dessus et ne peuvent pas couper une capture saine.
         int maxBufferedDiagnostics = options.BatchSize * 10;
+        // Le plus tardif des echantillons de diagnostics vus, tampon courant compris.
+        var maxDiagSampleAt = DateTime.MinValue;
 
         foreach (var (ev, fileName, offset) in events)
         {
@@ -116,8 +118,16 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
                 // Un cycle ne peut s'etre ferme que si CET echantillon a ouvert un ecart. La
                 // question se pose en O(1) ; Group() trie le tampon entier, et l'appeler sur
                 // chaque evenement rendait l'ingestion quadratique.
+                //
+                // La comparaison porte sur le MAXIMUM vu et non sur le dernier ARRIVE, parce que
+                // Group() tranche sur le tampon trie. Les deux disent la meme chose en arrivee
+                // chronologique, et divergent des qu'une capture ordonne ses evenements a sa
+                // guise : la vidange ecrivait alors un cycle comme clos alors qu'il lui restait
+                // des echantillons a recevoir, et le stockait en fragments — ce que le
+                // commentaire ci-dessous promet justement de ne jamais faire.
                 bool boundaryJustOpened = diagSamples.Count > 0
-                    && sample.CapturedAt - diagSamples[^1].CapturedAt > HealthCycleGrouper.CycleGap;
+                    && sample.CapturedAt - maxDiagSampleAt > HealthCycleGrouper.CycleGap;
+                if (sample.CapturedAt > maxDiagSampleAt) maxDiagSampleAt = sample.CapturedAt;
                 diagSamples.Add(sample);
 
                 // Vidange par lots, mais jamais au milieu d'un cycle : les quatre composants d'un
@@ -133,6 +143,7 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
                         // Le dernier cycle peut encore recevoir des echantillons : on le garde.
                         project.InsertHealthCycles(runId, [.. cycles.Take(cycles.Count - 1)]);
                         diagSamples = [.. cycles[cycles.Count - 1].Samples];
+                        maxDiagSampleAt = diagSamples[^1].CapturedAt;
                     }
                     else if (diagSamples.Count >= maxBufferedDiagnostics)
                     {
@@ -145,6 +156,7 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
                         // cycle » cesse de primer sur l'epuisement memoire de l'hote.
                         project.InsertHealthCycles(runId, cycles);
                         diagSamples = [];
+                        maxDiagSampleAt = DateTime.MinValue;
                     }
                 }
 
