@@ -28,23 +28,7 @@ public static class HealthDigestMarkdown
 
     private static string Num(long v, string name) => Num((double)v, name);
 
-    /// <summary>
-    /// Tout texte venu de la capture est une donnee d'une AUTRE machine, et ce fichier l'ecrit
-    /// dans un artefact destine a etre partage. Rendu tel quel entre backticks il sort de sa
-    /// cellule : un backtick ferme le span, une barre ouvre une colonne, un saut de ligne termine
-    /// le tableau, et la suite devient du Markdown a part entiere. Un chemin de fichier suffit —
-    /// quiconque cree une base choisit le nom du fichier.
-    /// <para>Markdown n'offre aucun echappement du backtick a l'interieur d'un span de code, donc
-    /// il est remplace. C'est coherent avec la regle du projet : <c>table</c> et <c>md</c> sont
-    /// des formats de PRESENTATION, <c>csv</c> et <c>json</c> sont les formats fideles. La valeur
-    /// exacte reste en base et dans le JSON.</para>
-    /// </summary>
-    private static string Safe(string? v) => string.IsNullOrEmpty(v) ? "" : new StringBuilder(v)
-        .Replace((char)13, ' ').Replace((char)10, ' ').Replace((char)9, ' ')
-        // L'antislash EN PREMIER : echapper la barre avant lui produirait "\\|" pour une
-        // entree "\|", et en GFM une barre precedee d'un nombre pair d'antislashs
-        // redevient un separateur de cellule.
-        .Replace("\\", @"\\").Replace("`", "'").Replace("|", @"\|").ToString();
+    private static string Safe(string? v) => MarkdownText.Safe(v);
 
     public static string Render(HealthDigestEnvelope e)
     {
