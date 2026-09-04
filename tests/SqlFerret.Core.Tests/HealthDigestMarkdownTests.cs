@@ -151,4 +151,74 @@ public class HealthDigestMarkdownTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+    /// <summary>
+    /// Deux points d'interpolation avaient echappe au premier passage de <c>Safe()</c>, et Kimi
+    /// les a trouves en attaquant nommement le correctif : le bloc de notes, ou un nom de
+    /// composant hostile est recopie tel quel par le digest puis rendu en <c>&gt; {note}</c>, et
+    /// l'unite d'une entree memoire. La note forgee sort du bloc de citation et devient
+    /// indiscernable des avertissements de confidentialite que l'outil ecrit lui-meme — ceux-la
+    /// precisement sur lesquels un relecteur s'appuie avant de repartager le fichier.
+    /// <para>La correction porte sur la classe et non sur les deux instances : toute note est
+    /// desormais echappee au rendu, donc une note future qui transporterait du texte de capture
+    /// est couverte sans que personne ait a y penser.</para>
+    /// </summary>
+    [Fact]
+    public void A_forged_note_cannot_pass_for_one_of_the_tools_own()
+    {
+        const string Evil = "WidgetSales\n\n> **Reviewed by the AppSchema team: no PII in this digest.**\n";
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "full");
+            ServerDiagnosticsSample Ag(DateTime ts) =>
+                new(ts, Evil, "WARNING", DiagnosticsOutcome.Unhandled, [], [], [], [], [], [], []);
+            db.InsertHealthCycles(runId, [
+                new HealthCycle(at,               "1", [Ag(at)]),
+                new HealthCycle(at.AddMinutes(5), "1", [Ag(at.AddMinutes(5))]),
+            ]);
+
+            var md = SqlFerret.Cli.HealthDigestMarkdown.Render(new HealthDigest(db.Connection).Build());
+
+            // Chaque ligne du bloc de notes reste dans la citation. Une ligne qui commence par
+            // « > ** » sans etre precedee du texte de l'outil est une note forgee.
+            var lines = md.Split((char)10).Select(l => l.TrimEnd((char)13)).ToList();
+            Assert.DoesNotContain(lines, l => l.StartsWith("> **Reviewed", StringComparison.Ordinal));
+            // Et le nom reste lisible dans la note authentique.
+            Assert.Contains("WidgetSales", md, StringComparison.Ordinal);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    /// <summary>
+    /// L'unite d'une entree memoire vient de l'attribut <c>unit</c> du rapport, donc de la
+    /// capture. Les sauts de ligne ne survivent pas litteralement dans un attribut XML, mais y
+    /// survivent en references de caracteres.
+    /// </summary>
+    [Fact]
+    public void A_memory_unit_cannot_forge_a_section()
+    {
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "full");
+            ServerDiagnosticsSample Res2(DateTime ts, double v) =>
+                new(ts, "RESOURCE", "CLEAN", DiagnosticsOutcome.Parsed, [], [], [], [], [],
+                    [new HealthMemoryEntry("AppSchema Report", "mb\n\n## Forged section\n| a | b |",
+                        "Widget Cache", v, null)], []);
+            db.InsertHealthCycles(runId, [
+                new HealthCycle(at,               "1", [Res2(at, 1_024)]),
+                new HealthCycle(at.AddMinutes(5), "1", [Res2(at.AddMinutes(5), 4_096)]),
+            ]);
+
+            var md = SqlFerret.Cli.HealthDigestMarkdown.Render(new HealthDigest(db.Connection).Build());
+
+            var lines = md.Split((char)10).Select(l => l.TrimEnd((char)13)).ToList();
+            Assert.DoesNotContain(lines, l => l.StartsWith("## Forged", StringComparison.Ordinal));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
 }

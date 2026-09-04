@@ -71,7 +71,7 @@ public static class HealthDigestMarkdown
             sb.AppendLine();
         }
 
-        foreach (var n in d.Notes) sb.AppendLine($"> {n}").AppendLine();
+        foreach (var n in d.Notes) sb.AppendLine($"> {Safe(n)}").AppendLine();
 
         sb.AppendLine("## Non-clean states").AppendLine();
         if (d.NonCleanStates.Count == 0) sb.AppendLine("Every component reported CLEAN.");
@@ -109,7 +109,7 @@ public static class HealthDigestMarkdown
         if (d.MemoryMovers.Count == 0) sb.AppendLine("No memory report entries.");
         else foreach (var m in d.MemoryMovers)
             sb.AppendLine($"- `{Safe(m.Description)}` ({Safe(m.ReportName)}): {m.First.ToString("F0", inv)} to "
-                        + $"{m.Last.ToString("F0", inv)} ({m.Change.ToString("+#;-#;0", inv)} {m.Unit})");
+                        + $"{m.Last.ToString("F0", inv)} ({m.Change.ToString("+#;-#;0", inv)} {Safe(m.Unit)})");
         sb.AppendLine();
 
         sb.AppendLine("## Worker pressure").AppendLine();

@@ -17,13 +17,14 @@ situation.
 | `execution_parameters.value_text` | Extracted RPC / `sp_executesql` parameter values | The redaction policy |
 | `blocking_reports.raw_xml` | The full blocked-process report, including both input buffers | Retained only under `--redaction off` **and** `--sanitize-sql-text raw` |
 | `blocking_processes.inputbuf` | The input buffer text | Same gate; otherwise stored normalized |
+| `blocking_processes.client_app`, `.host_name`, `.login_name` | The application, machine and **account** that ran the blocked or blocking statement — `loginname` is routinely a personal account | **Nothing.** No redaction mode touches them, `full` included |
 | `deadlock_reports.graph_xml` | The deadlock graph | Same gate, otherwise stored as `<redacted/>` |
 | `plan_profiles.statement_text` | Statement text inside `sqlferret.duckdb` itself | Not sanitized by `--sanitize-sql-text` |
 | `blocking_processes.inputbuf` reached through `export-health --format json` | The blocked process's input buffer, for blocking seen inside a diagnostics cycle | Same gate as any input buffer — but the **Markdown rendering omits it entirely**, so the two formats of one command disclose different things. The digest says so in a note |
 | `plans/**/*.sqlplan` | Showplan XML: schema, table, column and index names, and sometimes literal predicate values | `obfuscate-plan`, after the fact |
-| `health_pending_io.file_path` | Server-side file paths: instance name, drive layout, database file names | **Nothing.** Stored verbatim under every redaction mode, `full` included |
+| `health_pending_io.file_path`, `.handle` | Server-side file paths and the OS file handle: instance name, drive layout, database file names | **Nothing.** Stored verbatim under every redaction mode, `full` included |
 | `health_cpu_requests.session_id`, `.command` | Session id and command class (`SELECT`, `BACKUP DATABASE`), not statement text | Nothing |
-| `health_memory_entries.description`, `.report_name` | SQL Server's own memory counter names | Nothing |
+| `health_memory_entries.description`, `.report_name`, `.unit`, `.value_text` | SQL Server's own memory counter names, units and string values | Nothing |
 | `health_samples.component` | The five documented components, **plus one row per Always On availability group** — and an availability group is named by whoever configured the server, often after a business unit, an application or the customer | Nothing. Stored and printed verbatim under `full`; the digest names them in a note |
 | `health_metrics.name`, `.value_text` | Engine counter names, and engine strings such as `lastNotification` and `sickSpinlockType` | Nothing |
 | `health_waits.wait_type`, `health_pending_tasks.entry_point`, `health_cpu_requests.task_address` | Engine-defined enumerations and addresses, not customer naming | Nothing |
@@ -136,9 +137,22 @@ stating plainly: `health_pending_io.file_path` discloses your instance name, dri
 database file names, and `--redaction full` does not remove it. If you share a project or an
 `export-health` digest, you share that.
 
-Blocking reports lifted out of a diagnostics cycle are the exception that proves the rule: they
-carry statement text, so they go through `IngestionService.PrepareProc` exactly like
-event-sourced reports and inherit both policies, with no separate gate.
+Blocking reports lifted out of a diagnostics cycle carry statement text, so they go through
+`IngestionService.PrepareProc` exactly like event-sourced reports, and their `inputbuf` and
+`raw_xml` inherit both policies with no separate gate.
+
+**That sentence covers the statement text and nothing else.** The same row carries
+`blocking_processes.client_app`, `.host_name` and `.login_name`, taken verbatim from the report's
+`clientapp`, `hostname` and `loginname` attributes, and **no redaction mode touches them** —
+`full` included. On a real capture `loginname` is routinely a personal account
+(`DOMAINirstname.lastname`) and `hostname` is your infrastructure naming.
+
+This is not new — the columns predate the System Health work and the event-sourced path has always
+filled them. What is new is how often they appear: a threshold-triggered blocked-process report
+requires `blocked process threshold` to be configured, whereas a diagnostics cycle records
+whatever blocking existed at the sampling instant, so **every** `system_health` capture that
+caught contention produces these rows. If you share such a project, assume you are sharing account
+and host names, whatever `--redaction` you used.
 
 ## Redaction policies
 
