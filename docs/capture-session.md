@@ -285,10 +285,12 @@ recording the same instance in parallel, offset by about 35 minutes — which, t
 
 `export-health` does **not** try to say which cycle belongs to which session: nothing in the capture
 records that, and every heuristic tried for it was wrong in a way that mattered. It reports that the
-cadence is irregular, and suppresses the one counter that depends on the session —
-`intervalLongIos`. Everything else is unaffected, because the counters are cumulative per instance
-and the gauges are point-in-time: a last-minus-first across interleaved samples of one server is
-still the right answer.
+cadence is irregular, and suppresses the two counters that depend on the session —
+`intervalLongIos` and `intervalDumpRequests`. Each carries what happened inside *its own* session's
+interval, so the digest sums them rather than differencing them, and summing across two interleaved
+sessions would count the same window twice. Everything else is unaffected, because the counters are
+cumulative per instance and the gauges are point-in-time: a last-minus-first across interleaved
+samples of one server is still the right answer.
 
 None of this is a misconfiguration to fix. It is what the session is, and the digest's coverage
 block exists so that you read the rest of it knowing that.

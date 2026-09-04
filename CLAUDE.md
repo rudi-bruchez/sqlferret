@@ -25,7 +25,7 @@ docs/                               user + contributor documentation (indexed by
 ```
 
 CLI commands, nine of them: `import`, `top-slow`, `query`, `reclassify`, `export-blocking`,
-`export-events`, `query-store-import`, `obfuscate-plan`. Flags and exit codes:
+`export-events`, `export-health`, `query-store-import`, `obfuscate-plan`. Flags and exit codes:
 `docs/cli-reference.md`.
 
 Core namespaces, one-directional deps:
@@ -71,15 +71,16 @@ the parameter collection matches `name`. Every `Add` helper does `name.TrimStart
 
 ```bash
 dotnet build                                  # 0 warnings expected (verified)
-dotnet test                                   # 627 tests: 616 pass, 11 skip (see below)
+dotnet test                                   # 648 tests: 637 pass, 11 skip (see below)
 dotnet test --filter <TestClassName>          # focused
 dotnet format <path>                          # style; .editorconfig is the baseline
 ```
 
-The 10 skips are expected, not a regression. Two distinct gates:
+The 11 skips are expected, not a regression. Two distinct gates:
 
-- **`sample/` present** — `XelReaderTests`, `BlockingQueriesTests`, `BlockingDigestTests`,
-  `CliSmokeTests`, `ImportRunnerTests`, `ImportPresenterTests`, `ImportViewTests`
+- **`sample/` present** — `XelReaderTests`, `BlockingQueriesTests`, `CliSmokeTests`,
+  `CliQueryCommandTests`, `ImportRunnerTests`, `ServerDiagnosticsIngestionTests`,
+  `ImportPresenterTests`, `ImportViewTests`
 - **`SQLFERRET_TEST_CONN` set** (a SQL Server connection string) —
   `EstimatedPlanServiceTests`, `QueryStoreImportServiceTests`
 

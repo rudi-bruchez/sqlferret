@@ -136,4 +136,122 @@ public class HealthDigestTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+    private static ServerDiagnosticsSample Res(DateTime ts, params HealthMetric[] m) =>
+        new(ts, "RESOURCE", "CLEAN", DiagnosticsOutcome.Parsed, m, [], [], [], [], [], []);
+
+    /// <summary>
+    /// Un plateau d'E/S longues est une panne disque stable, pas un serveur calme. La difference
+    /// rendait zero et le filtre l'effacait ; la somme le montre.
+    /// </summary>
+    [Fact]
+    public void A_steady_interval_io_counter_reaches_the_digest()
+    {
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "masked");
+            db.InsertHealthCycles(runId, [
+                new HealthCycle(at,                "1", [Io(at,                5)]),
+                new HealthCycle(at.AddMinutes(5),  "1", [Io(at.AddMinutes(5),  5)]),
+                new HealthCycle(at.AddMinutes(10), "1", [Io(at.AddMinutes(10), 5)]),
+            ]);
+
+            var e = new HealthDigest(db.Connection).Build();
+
+            var interval = e.Digest.IoCounters.Single(x => x.Name == "intervalLongIos");
+            Assert.Equal(15L, interval.Delta);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    /// <summary>
+    /// Un drapeau 0/1 n'a pas de delta. Bloque a 1, il donnait un pas de zero, disparaissait du
+    /// digest, et l'outil certifiait alors sain un serveur en penurie de memoire permanente.
+    /// </summary>
+    [Fact]
+    public void A_pool_pinned_out_of_memory_is_reported_and_forbids_the_healthy_note()
+    {
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "masked");
+            db.InsertHealthCycles(runId, [
+                new HealthCycle(at,               "1", [Res(at,               new HealthMetric("isAnyPoolOutOfMemory", null, 1, null))]),
+                new HealthCycle(at.AddMinutes(5), "1", [Res(at.AddMinutes(5), new HealthMetric("isAnyPoolOutOfMemory", null, 1, null))]),
+            ]);
+
+            var e = new HealthDigest(db.Connection).Build();
+
+            var g = e.Digest.MemoryGauges.Single(x => x.Name == "isAnyPoolOutOfMemory");
+            Assert.Equal(1d, g.Max);
+            Assert.DoesNotContain(e.Digest.Notes,
+                n => n.Contains("expected result", StringComparison.OrdinalIgnoreCase));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    /// <summary>
+    /// La note « serveur sain » ne regardait que trois des six sections. Un serveur qui n'a que
+    /// des E/S longues la recevait quand meme.
+    /// </summary>
+    [Fact]
+    public void Io_pressure_alone_forbids_the_healthy_note()
+    {
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "masked");
+            db.InsertHealthCycles(runId, [
+                new HealthCycle(at,               "1", [Io(at,               7)]),
+                new HealthCycle(at.AddMinutes(5), "1", [Io(at.AddMinutes(5), 7)]),
+            ]);
+
+            var e = new HealthDigest(db.Connection).Build();
+
+            Assert.NotEmpty(e.Digest.IoCounters);
+            Assert.DoesNotContain(e.Digest.Notes,
+                n => n.Contains("expected result", StringComparison.OrdinalIgnoreCase));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+    /// <summary>
+    /// La part non-diagnostics decrit la CAPTURE, pas le projet. Elle sommait tous les runs, donc
+    /// un projet qui contient aussi une trace de charge — usage documente, les imports s'ajoutent —
+    /// rendait une part proche de 100 % qui ne mesurait plus rien. Seuls les runs qui ont
+    /// reellement ingere des diagnostics entrent dans le calcul.
+    /// </summary>
+    [Fact]
+    public void The_coverage_share_describes_the_health_capture_not_the_whole_project()
+    {
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+
+            // Run 1 : une trace de charge ordinaire, aucun diagnostic.
+            long workload = db.BeginRun("trace/", 1, 0, "masked");
+            db.FinishRun(workload, read: 1_000_000, mapped: 1_000_000, unmapped: 0, cleaned: 0,
+                tokenizeFailures: 0, blocking: 0, deadlocks: 0, blockingParseFailures: 0);
+
+            // Run 2 : la capture system_health — 1000 evenements dont 800 diagnostics.
+            long health = db.BeginRun("logs/", 1, 0, "masked");
+            db.FinishRun(health, read: 1_000, mapped: 200, unmapped: 0, cleaned: 0,
+                tokenizeFailures: 0, blocking: 0, deadlocks: 0, blockingParseFailures: 0,
+                serverDiagnostics: 800);
+            db.InsertHealthCycles(health, [new HealthCycle(at, "1", [Qp(at, 1)])]);
+
+            var cov = new HealthQueries(db.Connection).Coverage();
+
+            // 200 / 1000 sur la capture, et non 1 000 200 / 1 001 000.
+            Assert.Equal(0.2, cov.NonDiagnosticsShare, 3);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
 }

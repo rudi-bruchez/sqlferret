@@ -70,7 +70,15 @@ line whose counters are mutually exclusive and exhaustive across every event rea
 run 3: read=41827 mapped=41120 unmapped=612 cleaned=95 tokenizeFailures=0
        blocking=48 deadlocks=3 blockingParseFailures=0
        planProfiles=346 planParseFailures=0 planWriteFailures=0
+       sqlTextSanitizeFailures=0
+       serverDiagnostics=1344 serverDiagnosticsUnhandled=0 serverDiagnosticsParseFailures=0
+       embeddedBlocking=7 embeddedBlockingFailures=0
 ```
+
+`embeddedBlocking` and `embeddedBlockingFailures` are the exception to *exhaustive*: they count
+**sub-documents, not events** — the `blocked-process-report` elements lifted out of a diagnostics
+cycle — so they sit outside the sum and adding them to it would push it past `read`. Every other
+counter on the line is one event, counted once.
 
 If any plan profiles were ingested, a second line names the artifact folder:
 

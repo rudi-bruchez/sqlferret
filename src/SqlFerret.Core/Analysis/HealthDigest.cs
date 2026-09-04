@@ -10,6 +10,7 @@ public record HealthDigestResult(
     IReadOnlyList<MemoryMovement> MemoryMovers, IReadOnlyList<HealthScalar> WorkerPressure,
     IReadOnlyList<ScalarDelta> StabilitySignals,
     IReadOnlyList<ScalarDelta> MemoryPressure,
+    IReadOnlyList<HealthScalar> MemoryGauges,
     IReadOnlyList<ScalarDelta> IoCounters,
     IReadOnlyList<PendingIoRow> WorstPendingIo,
     IReadOnlyList<DiagnosticsBlockingRow> DiagnosticsBlocking);
@@ -28,22 +29,37 @@ public class HealthDigest(DuckDBConnection conn)
     public const int SchemaVersion = 1;
 
     private static readonly string[] WorkerGauges =
-        ["pendingTasks", "workersIdle", "workersCreated", "maxWorkers",
-         "oldestPendingTaskWaitingTimeUs"];
+        ["pendingTasks", "workersIdle", "maxWorkers", "oldestPendingTaskWaitingTimeUs"];
 
     /// <summary>Spec §9 item 4 : « from SYSTEM ». Uniquement des scalaires du composant SYSTEM.</summary>
     private static readonly string[] StabilityCounters =
         ["spinlockBackoffs", "latchWarnings", "nonYieldingTasksReported", "pageFaults",
-         "totalDumpRequests", "intervalDumpRequests", "writeAccessViolationCount",
+         "totalDumpRequests", "writeAccessViolationCount",
          "BadPagesDetected", "BadPagesFixed"];
+
+    /// <summary>Rattaches a l'intervalle du cycle : sommes, jamais differencies.</summary>
+    private static readonly string[] StabilityIntervalCounters = ["intervalDumpRequests"];
 
     /// <summary>Spec §9 item 3, la partie scalaire, du composant RESOURCE.</summary>
     private static readonly string[] MemoryCounters =
-        ["outOfMemoryExceptions", "processOutOfMemoryPeriodUs", "isAnyPoolOutOfMemory"];
+        ["outOfMemoryExceptions"];
+
+    /// <summary>
+    /// Ni des compteurs ni des durees a cumuler. <c>isAnyPoolOutOfMemory</c> est un drapeau 0/1 :
+    /// un delta dessus n'a pas de sens, et bloque a 1 il rendait zero puis disparaissait du
+    /// digest. <c>processOutOfMemoryPeriodUs</c> a une semantique que Microsoft Learn ne definit
+    /// pas — une distribution reste juste qu'il soit cumulatif (le max est la valeur finale) ou
+    /// instantane, ce qu'un delta ne serait pas.
+    /// </summary>
+    private static readonly string[] MemoryGaugeNames =
+        ["processOutOfMemoryPeriodUs", "isAnyPoolOutOfMemory"];
 
     /// <summary>Spec §9 item 6, la partie scalaire, du composant IO_SUBSYSTEM.</summary>
     private static readonly string[] IoCounterNames =
-        ["totalLongIos", "intervalLongIos", "ioLatchTimeouts"];
+        ["totalLongIos", "ioLatchTimeouts"];
+
+    /// <summary>Rattaches a l'intervalle du cycle : sommes, jamais differencies.</summary>
+    private static readonly string[] IoIntervalCounters = ["intervalLongIos"];
 
     public HealthDigestEnvelope Build(int limit = 10)
     {
@@ -56,15 +72,17 @@ public class HealthDigest(DuckDBConnection conn)
             notes.Add("This project holds no diagnostics samples. Import a system_health capture, or "
                     + "check that the capture actually contains sp_server_diagnostics_component_result.");
             return new HealthDigestEnvelope(SchemaVersion, DateTime.UtcNow,
-                new HealthDigestResult(coverage, notes, [], [], [], [], [], [], [], [], []));
+                new HealthDigestResult(coverage, notes, [], [], [], [], [], [], [], [], [], []));
         }
 
         if (coverage.CadenceIsIrregular)
             notes.Add("The interval between cycles is not homogeneous. The usual cause is that this "
                     + "capture folder holds more than one session recording the same server. "
-                    + "Interval-scoped counters (intervalLongIos) are suppressed below, because they "
-                    + "are scoped to their own session's interval and this tool cannot tell which "
-                    + "cycle belongs to which session. Everything else below is unaffected: the "
+                    + "Interval-scoped counters (intervalLongIos, intervalDumpRequests) are "
+                    + "suppressed below: each is scoped to its own session's interval, summing "
+                    + "them across interleaved sessions would double-count, and this tool cannot "
+                    + "tell which cycle belongs to which session. Everything else below is "
+                    + "unaffected: the "
                     + "counters are cumulative per instance and the gauges are point-in-time, so a "
                     + "last-minus-first across interleaved samples of one server stays correct.");
 
@@ -74,15 +92,19 @@ public class HealthDigest(DuckDBConnection conn)
         var waits = q.WaitDeltas(main, limit);
         var memory = q.MemoryMovers(main, limit);
         var workers = q.ScalarGauges(WorkerGauges);
-        var stability = q.ScalarDeltas(main, StabilityCounters).Where(x => x.Delta > 0).ToList();
+        // Les compteurs d'intervalle sont rattaches a l'intervalle de LEUR session. Quand la
+        // cadence est irreguliere, on ne sait pas a quelle session chaque cycle appartient : on
+        // les tait plutot que de rendre un chiffre dont personne ne peut dire ce qu'il mesure.
+        // Les sommer a travers deux sessions entrelacees compterait deux fois.
+        IReadOnlyList<ScalarDelta> Interval(string[] names) => coverage.CadenceIsIrregular
+            ? [] : q.IntervalSums(main, names).Where(x => x.Delta > 0).ToList();
+
+        var stability = q.ScalarDeltas(main, StabilityCounters).Where(x => x.Delta > 0)
+            .Concat(Interval(StabilityIntervalCounters)).ToList();
         var memoryPressure = q.ScalarDeltas(main, MemoryCounters).Where(x => x.Delta > 0).ToList();
-        // intervalLongIos est rattache a l'intervalle de SA session. Quand la cadence est
-        // irreguliere, on ne sait pas a quelle session chaque cycle appartient : on le tait plutot
-        // que de rendre un chiffre dont personne ne peut dire ce qu'il mesure.
-        var ioNames = coverage.CadenceIsIrregular
-            ? IoCounterNames.Where(n => n != "intervalLongIos").ToArray()
-            : IoCounterNames;
-        var ioCounters = q.ScalarDeltas(main, ioNames).Where(x => x.Delta > 0).ToList();
+        var memoryGauges = q.ScalarGauges(MemoryGaugeNames);
+        var ioCounters = q.ScalarDeltas(main, IoCounterNames).Where(x => x.Delta > 0)
+            .Concat(Interval(IoIntervalCounters)).ToList();
         var pendingIo = q.WorstPendingIo(limit);
         var diagBlocking = q.DiagnosticsBlocking(limit);
 
@@ -96,7 +118,13 @@ public class HealthDigest(DuckDBConnection conn)
                     + "window. Those intervals are dropped from the delta and counted, not netted "
                     + "off — a restart must not read as a quiet period.");
 
-        if (nonClean.Count == 0 && stability.Count == 0 && memoryPressure.Count == 0)
+        // Cette note parle au nom de tout le digest : elle doit donc regarder tout le digest.
+        // Elle ne consultait que trois des sept sections, et un serveur qui n'avait que des E/S
+        // longues ou du blocage la recevait quand meme.
+        bool anyPoolOom = memoryGauges.Any(g => g.Max is > 0);
+        if (nonClean.Count == 0 && stability.Count == 0 && memoryPressure.Count == 0
+            && ioCounters.Count == 0 && pendingIo.Count == 0 && diagBlocking.Count == 0
+            && !anyPoolOom)
             notes.Add("No component left CLEAN and no stability signal moved. On a healthy server "
                     + "this is the expected result, not missing data.");
 
@@ -111,6 +139,6 @@ public class HealthDigest(DuckDBConnection conn)
 
         return new HealthDigestEnvelope(SchemaVersion, DateTime.UtcNow,
             new HealthDigestResult(coverage, notes, nonClean, waits, memory, workers, stability,
-                memoryPressure, ioCounters, pendingIo, diagBlocking));
+                memoryPressure, memoryGauges, ioCounters, pendingIo, diagBlocking));
     }
 }

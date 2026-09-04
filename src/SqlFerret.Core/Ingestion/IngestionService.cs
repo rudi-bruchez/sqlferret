@@ -134,7 +134,12 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
                 {
                     var rep = BlockingReportParser.Parse(reportXml, ev.Timestamp);
                     if (rep is null) { embeddedBlockingFailures++; continue; }
-                    project.InsertBlockingBatch(runId, [Prepare(rep, null) with { Source = "diagnostics" }]);
+                    // Meme porte que le chemin evenement : le fragment porte les input buffers
+                    // en clair. Passer `null` en dur ici perdait le XML dans le seul mode dont
+                    // l'objet est de tout conserver, et sans recours — les tables health ne
+                    // gardent que des scalaires.
+                    var embRaw = VerbatimStatementTextAllowed ? reportXml : null;
+                    project.InsertBlockingBatch(runId, [Prepare(rep, embRaw) with { Source = "diagnostics" }]);
                     embeddedBlocking++;
                 }
                 continue;

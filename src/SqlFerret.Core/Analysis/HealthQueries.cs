@@ -77,6 +77,12 @@ public class HealthQueries(DuckDBConnection conn)
                     + coalesce(sum(events_server_diagnostics_unhandled), 0)
                     + coalesce(sum(server_diagnostics_parse_failures), 0))::DOUBLE
               FROM ingestion_runs
+              -- Seuls les runs qui ont ingere des diagnostics. Ce chiffre decrit la CAPTURE et
+              -- non le projet : un projet qui contient aussi une trace de charge — les imports
+              -- s'ajoutent — diluait la part jusqu'a la vider de sens.
+              WHERE coalesce(events_server_diagnostics, 0)
+                  + coalesce(events_server_diagnostics_unhandled, 0)
+                  + coalesce(server_diagnostics_parse_failures, 0) > 0
               """;
             using var r = c.ExecuteReader();
             if (r.Read())
@@ -171,6 +177,35 @@ public class HealthQueries(DuckDBConnection conn)
                 r.IsDBNull(1) ? null : r.GetDouble(1), r.IsDBNull(2) ? null : r.GetDouble(2),
                 r.IsDBNull(3) ? null : r.GetDouble(3), r.IsDBNull(4) ? null : r.GetDouble(4),
                 r.GetInt64(5)));
+        return list;
+    }
+
+    /// <summary>
+    /// Compteurs d'intervalle : chaque cycle porte le nombre survenu DANS son intervalle, et non
+    /// un cumul depuis le demarrage. L'agregat est donc une somme directe. Les differencier — ce
+    /// que faisait <see cref="ScalarDeltas"/> — calcule une acceleration : un plateau constant
+    /// rend zero, et le filtre du digest le fait alors disparaitre.
+    /// <para>Non verifie : Microsoft Learn documente la sortie de <c>sp_server_diagnostics</c>
+    /// mais ne definit la semantique d'aucun de ces attributs. Le decoupage repose sur le nom et
+    /// sur la spec §6.</para>
+    /// </summary>
+    public IReadOnlyList<ScalarDelta> IntervalSums(
+        string seriesKey, IReadOnlyList<string> names)
+    {
+        using var c = conn.CreateCommand();
+        c.CommandText = """
+          SELECT m.name, coalesce(sum(m.value_big), 0) AS total
+          FROM health_metrics m
+          JOIN health_samples s ON s.sample_id = m.sample_id
+          JOIN health_cycles  y ON y.cycle_id  = s.cycle_id
+          WHERE y.series_key = $sk AND m.value_big IS NOT NULL AND list_contains($names, m.name)
+          GROUP BY m.name ORDER BY total DESC
+          """;
+        Bind(c, "$sk", seriesKey); Bind(c, "$names", names.ToList());
+
+        var list = new List<ScalarDelta>();
+        using var r = c.ExecuteReader();
+        while (r.Read()) list.Add(new ScalarDelta(r.GetString(0), r.GetInt64(1)));
         return list;
     }
 

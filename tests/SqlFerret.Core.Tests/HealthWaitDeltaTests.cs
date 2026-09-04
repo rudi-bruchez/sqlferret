@@ -128,6 +128,71 @@ public class HealthWaitDeltaTests
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 
+    /// <summary>
+    /// Les compteurs d'intervalle ne sont pas cumulatifs : chaque cycle porte le nombre survenu
+    /// DANS son intervalle. Les differencier calcule une acceleration, pas une activite — un
+    /// serveur qui subit regulierement cinq longs E/S par intervalle donne un pas de zero, le
+    /// filtre Delta > 0 l'ecarte, et le digest imprime « aucun compteur d'E/S n'a bouge » sur un
+    /// blocage disque stable. L'agregat honnete est une somme.
+    /// </summary>
+    [Fact]
+    public void An_interval_counter_is_summed_not_differenced()
+    {
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        static ServerDiagnosticsSample Io(DateTime ts, long longIos) =>
+            new(ts, "IO_SUBSYSTEM", "CLEAN", DiagnosticsOutcome.Parsed,
+                [new HealthMetric("intervalLongIos", null, longIos, null)],
+                [], [], [], [], [], []);
+
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "masked");
+            db.InsertHealthCycles(runId, [
+                new HealthCycle(at,                "1", [Io(at,                5)]),
+                new HealthCycle(at.AddMinutes(5),  "1", [Io(at.AddMinutes(5),  3)]),
+                new HealthCycle(at.AddMinutes(10), "1", [Io(at.AddMinutes(10), 8)]),
+                new HealthCycle(at.AddMinutes(15), "1", [Io(at.AddMinutes(15), 2)]),
+            ]);
+
+            var d = Assert.Single(new HealthQueries(db.Connection)
+                .IntervalSums("1", ["intervalLongIos"]));
+
+            Assert.Equal(18L, d.Delta);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    /// <summary>Un plateau constant est le cas que la difference perdait entierement.</summary>
+    [Fact]
+    public void A_steady_interval_counter_is_not_mistaken_for_a_quiet_server()
+    {
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        static ServerDiagnosticsSample Io(DateTime ts) =>
+            new(ts, "IO_SUBSYSTEM", "CLEAN", DiagnosticsOutcome.Parsed,
+                [new HealthMetric("intervalLongIos", null, 5, null)],
+                [], [], [], [], [], []);
+
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "masked");
+            db.InsertHealthCycles(runId, [
+                new HealthCycle(at,               "1", [Io(at)]),
+                new HealthCycle(at.AddMinutes(5), "1", [Io(at.AddMinutes(5))]),
+                new HealthCycle(at.AddMinutes(10),"1", [Io(at.AddMinutes(10))]),
+            ]);
+
+            var d = Assert.Single(new HealthQueries(db.Connection)
+                .IntervalSums("1", ["intervalLongIos"]));
+
+            Assert.Equal(15L, d.Delta);   // la difference rendait 0
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
     [Fact]
     public void Only_the_by_count_ranking_is_returned()
     {

@@ -52,4 +52,55 @@ public class HealthDigestMarkdownTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+    /// <summary>
+    /// Les deux jauges en microsecondes sortaient en entiers nus — dans le fichier meme qui avait
+    /// ete deplace vers l'hote POUR respecter l'invariant de formatage. Et la ligne de pression
+    /// des workers interpolait ses doubles en culture courante, seule du fichier a le faire :
+    /// en fr-FR elle rendait des virgules decimales dans un tableau invariant.
+    /// </summary>
+    [Fact]
+    public void Microsecond_gauges_are_formatted_and_every_number_is_invariant()
+    {
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        static ServerDiagnosticsSample Qp2(DateTime ts) =>
+            new(ts, "QUERY_PROCESSING", "CLEAN", DiagnosticsOutcome.Parsed,
+                [new HealthMetric("oldestPendingTaskWaitingTimeUs", null, 1_500_000, null)],
+                [], [], [], [], [], []);
+        static ServerDiagnosticsSample Res(DateTime ts) =>
+            new(ts, "RESOURCE", "CLEAN", DiagnosticsOutcome.Parsed,
+                [new HealthMetric("processOutOfMemoryPeriodUs", null, 2_000_000, null)],
+                [], [], [], [], [], []);
+
+        var prior = System.Globalization.CultureInfo.CurrentCulture;
+        var path = TempDb();
+        try
+        {
+            // La culture francaise est le piege : elle rend « 1500000 » en « 1500000 » mais tout
+            // double non invariant en « 1,5 ».
+            System.Globalization.CultureInfo.CurrentCulture =
+                System.Globalization.CultureInfo.GetCultureInfo("fr-FR");
+
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "masked");
+            db.InsertHealthCycles(runId, [
+                new HealthCycle(at,               "1", [Qp2(at), Res(at)]),
+                new HealthCycle(at.AddMinutes(5), "1", [Qp2(at.AddMinutes(5)), Res(at.AddMinutes(5))]),
+            ]);
+
+            var md = SqlFerret.Cli.HealthDigestMarkdown.Render(new HealthDigest(db.Connection).Build());
+
+            // 1 500 000 us = 1500 ms. Le nombre nu ne doit plus apparaitre.
+            Assert.DoesNotContain("1500000", md, StringComparison.Ordinal);
+            Assert.DoesNotContain("2000000", md, StringComparison.Ordinal);
+            Assert.Contains("oldestPendingTaskWaitingTimeUs", md, StringComparison.Ordinal);
+            Assert.Contains("processOutOfMemoryPeriodUs", md, StringComparison.Ordinal);
+            // Aucune virgule decimale : elles trahiraient une interpolation en culture courante.
+            Assert.DoesNotContain("1,5", md, StringComparison.Ordinal);
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = prior;
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
 }

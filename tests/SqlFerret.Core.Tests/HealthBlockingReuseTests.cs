@@ -95,6 +95,44 @@ public class HealthBlockingReuseTests
     }
 
     /// <summary>
+    /// Le XML brut porte les input buffers en clair, donc il passe la meme porte que l'inputbuf.
+    /// Ce test manquait, et son absence a laisse passer un portillon a moitie cable : le chemin
+    /// evenement appliquait la porte, le chemin integre passait `null` en dur, et la Theory
+    /// voisine n'assertait que `inputbuf`. Elle etait donc verte sur les quatre combinaisons
+    /// contre un code qui ne conservait le XML dans aucune.
+    /// </summary>
+    [Theory]
+    [InlineData(RedactionMode.Off, SqlTextSanitization.Raw, true)]
+    [InlineData(RedactionMode.Off, SqlTextSanitization.Literals, false)]
+    [InlineData(RedactionMode.Masked, SqlTextSanitization.Raw, false)]
+    [InlineData(RedactionMode.Masked, SqlTextSanitization.Literals, false)]
+    public void The_raw_xml_obeys_both_policies(RedactionMode red, SqlTextSanitization txt, bool verbatim)
+    {
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            new IngestionService(db, new IngestionOptions(red, [], SqlText: txt))
+                .Ingest("logs/", [Diag($"exec AppSchema.WidgetRecalc @Code='{Pii}'")]);
+
+            var raw = Scalar(db, "SELECT raw_xml FROM blocking_reports WHERE source='diagnostics'");
+            if (verbatim)
+            {
+                Assert.NotNull(raw);
+                Assert.Contains(Pii, raw);
+                // Le fragment conserve est le rapport de blocage, pas le cycle de diagnostics
+                // entier : celui-ci n'est stocke nulle part.
+                Assert.Contains("blocked-process-report", raw);
+            }
+            else
+            {
+                Assert.Null(raw);
+            }
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    /// <summary>
     /// La fuite ne doit pas se deplacer d'une colonne a l'autre : normalized_queries vit dans le
     /// meme fichier et se joint sur la meme empreinte.
     /// </summary>

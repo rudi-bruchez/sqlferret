@@ -14,6 +14,20 @@ namespace SqlFerret.Cli;
 /// </summary>
 public static class HealthDigestMarkdown
 {
+    /// <summary>
+    /// Un nom qui se termine par « Us » porte des microsecondes — c'est la convention de Core, et
+    /// l'hote est le seul endroit ou la conversion a le droit d'avoir lieu. Les autres valeurs
+    /// sont des comptes, rendus en culture invariante comme tout le reste du fichier. Deux jauges
+    /// sortaient en entiers nus dans le fichier meme qui avait ete deplace ici pour cet invariant.
+    /// </summary>
+    private static string Num(double? v, string name) =>
+        v is null ? "-"
+        : name.EndsWith("Us", StringComparison.Ordinal)
+            ? DisplayFormat.Duration((long)v.Value, "ms")
+            : v.Value.ToString("G15", CultureInfo.InvariantCulture);
+
+    private static string Num(long v, string name) => Num((double)v, name);
+
     public static string Render(HealthDigestEnvelope e)
     {
         var d = e.Digest;
@@ -68,8 +82,14 @@ public static class HealthDigestMarkdown
         sb.AppendLine();
 
         sb.AppendLine("## Memory").AppendLine();
-        foreach (var s in d.MemoryPressure) sb.AppendLine($"- `{s.Name}`: +{s.Delta}");
-        if (d.MemoryPressure.Count == 0) sb.AppendLine("No memory pressure counter moved.");
+        foreach (var s in d.MemoryPressure) sb.AppendLine($"- `{s.Name}`: +{Num(s.Delta, s.Name)}");
+        // Un drapeau 0/1 et une duree de semantique non documentee : des distributions, pas des
+        // deltas. Bloque a 1, isAnyPoolOutOfMemory rendait un delta nul et disparaissait.
+        foreach (var g in d.MemoryGauges)
+            sb.AppendLine($"- `{g.Name}`: min {Num(g.Min, g.Name)}, median {Num(g.Median, g.Name)}, "
+                        + $"p95 {Num(g.P95, g.Name)}, max {Num(g.Max, g.Name)} ({g.Samples} samples)");
+        if (d.MemoryPressure.Count == 0 && d.MemoryGauges.Count == 0)
+            sb.AppendLine("No memory pressure counter moved.");
         sb.AppendLine();
         if (d.MemoryMovers.Count == 0) sb.AppendLine("No memory report entries.");
         else foreach (var m in d.MemoryMovers)
@@ -80,18 +100,19 @@ public static class HealthDigestMarkdown
         sb.AppendLine("## Worker pressure").AppendLine();
         if (d.WorkerPressure.Count == 0) sb.AppendLine("Not recorded.");
         else foreach (var s in d.WorkerPressure)
-            sb.AppendLine($"- `{s.Name}`: min {s.Min}, median {s.Median}, p95 {s.P95}, max {s.Max} "
-                        + $"({s.Samples} samples)");
+            sb.AppendLine($"- `{s.Name}`: min {Num(s.Min, s.Name)}, median {Num(s.Median, s.Name)}, "
+                        + $"p95 {Num(s.P95, s.Name)}, max {Num(s.Max, s.Name)} ({s.Samples} samples)");
         sb.AppendLine();
 
         sb.AppendLine("## Stability signals").AppendLine();
         if (d.StabilitySignals.Count == 0) sb.AppendLine("Nothing moved.");
-        else foreach (var (name, delta) in d.StabilitySignals) sb.AppendLine($"- `{name}`: +{delta}");
+        else foreach (var (name, delta) in d.StabilitySignals)
+            sb.AppendLine($"- `{name}`: +{Num(delta, name)}");
         sb.AppendLine();
 
         sb.AppendLine("## I/O").AppendLine();
         if (d.IoCounters.Count == 0) sb.AppendLine("No I/O counter moved.");
-        else foreach (var s in d.IoCounters) sb.AppendLine($"- `{s.Name}`: +{s.Delta}");
+        else foreach (var s in d.IoCounters) sb.AppendLine($"- `{s.Name}`: +{Num(s.Delta, s.Name)}");
         sb.AppendLine();
 
         sb.AppendLine("## Worst pending I/O").AppendLine();
