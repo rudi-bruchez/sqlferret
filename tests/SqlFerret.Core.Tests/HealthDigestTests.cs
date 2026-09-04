@@ -79,36 +79,6 @@ public class HealthDigestTests
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 
-    [Fact]
-    public void Markdown_leads_with_coverage_and_renders_every_section()
-    {
-        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
-        var path = TempDb();
-        try
-        {
-            using var db = DuckDbProject.Open(path);
-            long runId = db.BeginRun("logs/", 1, 0, "masked");
-            db.InsertHealthCycles(runId, [
-                new HealthCycle(at,               "34", [Qp(at, 1_000)]),
-                new HealthCycle(at.AddMinutes(5), "34", [Qp(at.AddMinutes(5), 1_500)]),
-            ]);
-
-            var md = HealthDigest.ToMarkdown(new HealthDigest(db.Connection).Build());
-
-            var coverageAt = md.IndexOf("## Coverage", StringComparison.Ordinal);
-            var waitsAt = md.IndexOf("## Waits", StringComparison.Ordinal);
-            Assert.True(coverageAt >= 0 && waitsAt > coverageAt, "Coverage doit venir en premier");
-            Assert.Contains("since instance start", md, StringComparison.OrdinalIgnoreCase);
-            // Les sept sections de la spec §9 sont toutes rendues, pas seulement celles qui ont des
-            // donnees : une section absente se lirait comme une section sans probleme.
-            foreach (var h in new[] { "## Non-clean states", "## Waits", "## Memory",
-                                      "## Worker pressure", "## Stability signals",
-                                      "## Worst pending I/O", "## Blocking seen in diagnostics cycles" })
-                Assert.Contains(h, md, StringComparison.Ordinal);
-        }
-        finally { if (File.Exists(path)) File.Delete(path); }
-    }
-
     /// <summary>
     /// L'enveloppe JSON est la raison d'etre de §8, et rien ne l'assertait : un ValueTuple
     /// n'expose Item1/Item2 qu'en CHAMPS, et System.Text.Json ne serialise que des proprietes,

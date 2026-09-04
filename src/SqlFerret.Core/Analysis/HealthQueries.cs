@@ -174,19 +174,26 @@ public class HealthQueries(DuckDBConnection conn)
         return list;
     }
 
-    /// <summary>Compteurs cumulatifs : dernier moins premier, dans une seule serie.</summary>
+    /// <summary>
+    /// Compteurs cumulatifs. Somme des seuls pas croissants, comme <see cref="WaitDeltas"/> : un
+    /// simple dernier-moins-premier perdrait toute l'activite anterieure a un redemarrage
+    /// d'instance, et un <c>greatest(..., 0)</c> la ferait disparaitre en silence.
+    /// </summary>
     public IReadOnlyList<ScalarDelta> ScalarDeltas(
         string seriesKey, IReadOnlyList<string> names)
     {
         using var c = conn.CreateCommand();
         c.CommandText = """
-          SELECT m.name,
-                 greatest(arg_max(m.value_big, y.cycle_at) - arg_min(m.value_big, y.cycle_at), 0)
-          FROM health_metrics m
-          JOIN health_samples s ON s.sample_id = m.sample_id
-          JOIN health_cycles  y ON y.cycle_id  = s.cycle_id
-          WHERE y.series_key = $sk AND m.value_big IS NOT NULL AND list_contains($names, m.name)
-          GROUP BY m.name ORDER BY 2 DESC
+          WITH v AS (
+            SELECT m.name, y.cycle_at, m.value_big,
+                   m.value_big - lag(m.value_big) OVER (PARTITION BY m.name ORDER BY y.cycle_at) AS step
+            FROM health_metrics m
+            JOIN health_samples s ON s.sample_id = m.sample_id
+            JOIN health_cycles  y ON y.cycle_id  = s.cycle_id
+            WHERE y.series_key = $sk AND m.value_big IS NOT NULL AND list_contains($names, m.name)
+          )
+          SELECT name, coalesce(sum(step) FILTER (WHERE step >= 0), 0) AS delta
+          FROM v GROUP BY name ORDER BY delta DESC
           """;
         Bind(c, "$sk", seriesKey); Bind(c, "$names", names.ToList());
 

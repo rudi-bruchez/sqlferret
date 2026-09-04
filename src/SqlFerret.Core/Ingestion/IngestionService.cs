@@ -37,7 +37,7 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
         long sqlTextSanitizeFailures = 0;
         long serverDiagnostics = 0, serverDiagnosticsUnhandled = 0, serverDiagnosticsParseFailures = 0;
         long embeddedBlocking = 0, embeddedBlockingFailures = 0;
-        var diagSamples = new List<ServerDiagnosticsSample>();
+        var diagSamples = new List<ServerDiagnosticsSample>();   // reaffecte a la vidange
         long blocking = 0, deadlocks = 0, blockingParseFailures = 0;
         long planProfiles = 0, planParseFailures = 0, planWriteFailures = 0;
         var planWriter = new SqlFerret.Core.Plans.PlanArtifactWriter(options.PlanProfileDir);
@@ -109,6 +109,21 @@ public class IngestionService(DuckDbProject project, IngestionOptions options)
                     default: serverDiagnosticsParseFailures++; break;
                 }
                 diagSamples.Add(sample);
+
+                // Vidange par lots, mais jamais au milieu d'un cycle : les quatre composants d'un
+                // cycle doivent etre groupes ensemble, et une coupure les repartirait sur deux
+                // cycles. On attend donc que l'echantillon suivant soit eloigne du precedent —
+                // meme seuil que HealthCycleGrouper — avant de vider.
+                if (diagSamples.Count >= options.BatchSize)
+                {
+                    var cycles = HealthCycleGrouper.Group(diagSamples);
+                    if (cycles.Count > 1)
+                    {
+                        // Le dernier cycle peut encore recevoir des echantillons : on le garde.
+                        project.InsertHealthCycles(runId, [.. cycles.Take(cycles.Count - 1)]);
+                        diagSamples = [.. cycles[cycles.Count - 1].Samples];
+                    }
+                }
 
                 // Les rapports de blocage integres passent par PrepareProc comme les autres :
                 // meme porte de confidentialite, meme empreinte d'inputbuf, aucun code nouveau.

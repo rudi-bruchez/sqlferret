@@ -93,6 +93,41 @@ public class HealthWaitDeltaTests
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 
+    /// <summary>
+    /// ScalarDeltas doit ecarter l'intervalle du redemarrage comme WaitDeltas le fait, et non
+    /// faire un simple dernier-moins-premier : celui-ci perdrait toute l'activite anterieure au
+    /// redemarrage, et un greatest(..., 0) la ferait disparaitre en silence.
+    /// </summary>
+    [Fact]
+    public void Scalar_deltas_keep_the_activity_from_before_an_instance_restart()
+    {
+        var at = new DateTime(2026, 9, 3, 0, 16, 34, DateTimeKind.Utc);
+        static ServerDiagnosticsSample Sys(DateTime ts, long backoffs) =>
+            new(ts, "SYSTEM", "CLEAN", DiagnosticsOutcome.Parsed,
+                [new HealthMetric("spinlockBackoffs", null, backoffs, null)],
+                [], [], [], [], [], []);
+
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            long runId = db.BeginRun("logs/", 1, 0, "masked");
+            db.InsertHealthCycles(runId, [
+                new HealthCycle(at,                "1", [Sys(at,                1_000)]),
+                new HealthCycle(at.AddMinutes(5),  "1", [Sys(at.AddMinutes(5),  1_400)]),  // +400
+                new HealthCycle(at.AddMinutes(10), "1", [Sys(at.AddMinutes(10),    10)]),  // redemarrage
+                new HealthCycle(at.AddMinutes(15), "1", [Sys(at.AddMinutes(15),    70)]),  // +60
+            ]);
+
+            var d = Assert.Single(new HealthQueries(db.Connection)
+                .ScalarDeltas("1", ["spinlockBackoffs"]));
+
+            // 400 avant le redemarrage + 60 apres. Un dernier-moins-premier aurait rendu 0.
+            Assert.Equal(460L, d.Delta);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
     [Fact]
     public void Only_the_by_count_ranking_is_returned()
     {

@@ -83,6 +83,49 @@ public class ServerDiagnosticsIngestionTests
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 
+    /// <summary>
+    /// La vidange par lots ne doit jamais couper un cycle en deux : les quatre composants d'un
+    /// cycle arrivent a moins d'une milliseconde d'ecart et doivent rester groupes, quelle que
+    /// soit la taille de lot.
+    /// </summary>
+    [Fact]
+    public void Batched_flushing_never_splits_a_cycle()
+    {
+        var at = new DateTime(2026, 9, 3, 8, 26, 34, DateTimeKind.Utc);
+        var events = new List<(IXeEventData, string, long)>();
+        for (int i = 0; i < 30; i++)
+        {
+            var t = at.AddMinutes(5 * i);
+            events.Add(Diag("SYSTEM", """<system spinlockBackoffs="1"/>""", t));
+            events.Add(Diag("RESOURCE", """<resource outOfMemoryExceptions="0"/>""", t.AddTicks(619)));
+            events.Add(Diag("QUERY_PROCESSING", Qp, t.AddTicks(2352)));
+            events.Add(Diag("IO_SUBSYSTEM", Io, t.AddTicks(2393)));
+        }
+
+        var path = TempDb();
+        try
+        {
+            using var db = DuckDbProject.Open(path);
+            var res = new IngestionService(db,
+                    new IngestionOptions(RedactionMode.Masked, [], BatchSize: 7))
+                .Ingest("logs/", events);
+
+            Assert.Equal(120, res.ServerDiagnostics);
+
+            using var c = db.Connection.CreateCommand();
+            c.CommandText = "SELECT count(*) FROM health_cycles";
+            Assert.Equal(30L, Convert.ToInt64(c.ExecuteScalar()));
+            // Chaque cycle porte bien ses quatre composants : aucun n'a ete coupe par une vidange.
+            c.CommandText = """
+              SELECT count(*) FROM (
+                SELECT cycle_id, count(*) AS n FROM health_samples GROUP BY cycle_id
+              ) WHERE n <> 4
+              """;
+            Assert.Equal(0L, Convert.ToInt64(c.ExecuteScalar()));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
     private static string? FindSystemHealthCapture()
     {
         var dir = AppContext.BaseDirectory;

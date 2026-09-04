@@ -85,6 +85,27 @@ public class HealthCycleGroupingTests
         Assert.Single(HealthCycleGrouper.Group(all).Select(c => c.SeriesKey).Distinct());
     }
 
+    /// <summary>
+    /// Les quatre evenements d'un cycle peuvent enjamber une frontiere de seconde. Une premiere
+    /// version groupait par troncature a la seconde et coupait alors le cycle en deux moities de
+    /// deux echantillons. Le regroupement se fait par proximite.
+    /// </summary>
+    [Fact]
+    public void A_cycle_straddling_a_second_boundary_stays_one_cycle()
+    {
+        var at = new DateTime(2026, 9, 3, 12, 0, 59, 999, DateTimeKind.Utc);
+        List<ServerDiagnosticsSample> all = [
+            S(at, "SYSTEM"),
+            S(at.AddTicks(5_000), "RESOURCE"),            // 12:00:59.9995
+            S(at.AddTicks(12_000), "QUERY_PROCESSING"),   // 12:01:00.0002
+            S(at.AddTicks(13_000), "IO_SUBSYSTEM"),       // 12:01:00.0003
+        ];
+
+        var c = Assert.Single(HealthCycleGrouper.Group(all));
+        Assert.Equal(4, c.Samples.Count);
+        Assert.Equal(at, c.CycleAt);
+    }
+
     [Fact]
     public void Cycles_come_back_in_chronological_order()
     {

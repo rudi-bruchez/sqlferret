@@ -15,7 +15,14 @@ public record HealthCycle(
 /// mesure sur une capture reelle, 1344 evenements pour 1344 horodatages distincts, mais exactement
 /// 336 groupes a la seconde pres, l'ecart intra-cycle allant de 0,22 a 0,67 ms. Prendre
 /// <c>captured_at</c> pour cle aurait annonce 1344 cycles et un intervalle median de 0,2 ms au lieu
-/// de 336 et de minutes. La troncature a la seconde est la cle, et elle est robuste.</para>
+/// de 336 et de minutes.</para>
+///
+/// <para>Le regroupement se fait par <b>proximite</b> et non par troncature a la seconde : quatre
+/// evenements separes de moins d'une milliseconde peuvent enjamber une frontiere de seconde
+/// (12:00:59,999 et 12:01:00,000), et une troncature les rangerait alors dans deux cycles de deux
+/// echantillons chacun. Un nouveau cycle commence quand l'ecart avec l'echantillon precedent
+/// depasse une seconde — deux ordres de grandeur au-dessus de l'ecart intra-cycle mesure, et deux
+/// ordres de grandeur en dessous de la cadence la plus rapide que la source puisse produire.</para>
 ///
 /// <para><b>La serie, et pourquoi il n'y en a qu'une.</b> Un dossier peut contenir deux sessions
 /// echantillonnant le meme serveur en parallele — cas observe sur cette capture, deux series
@@ -37,12 +44,25 @@ public record HealthCycle(
 /// </summary>
 public static class HealthCycleGrouper
 {
-    public static IReadOnlyList<HealthCycle> Group(IReadOnlyList<ServerDiagnosticsSample> samples) =>
-        samples
-            .GroupBy(s => new DateTime(
-                s.CapturedAt.Ticks - s.CapturedAt.Ticks % TimeSpan.TicksPerSecond, s.CapturedAt.Kind))
-            .OrderBy(g => g.Key)
-            .Select(g => new HealthCycle(
-                g.Min(s => s.CapturedAt), "1", [.. g.OrderBy(s => s.CapturedAt)]))
-            .ToList();
+    /// <summary>Au-dela de cet ecart, l'echantillon appartient au cycle suivant.</summary>
+    private static readonly TimeSpan CycleGap = TimeSpan.FromSeconds(1);
+
+    public static IReadOnlyList<HealthCycle> Group(IReadOnlyList<ServerDiagnosticsSample> samples)
+    {
+        var ordered = samples.OrderBy(s => s.CapturedAt).ToList();
+        var cycles = new List<HealthCycle>();
+        var current = new List<ServerDiagnosticsSample>();
+
+        foreach (var s in ordered)
+        {
+            if (current.Count > 0 && s.CapturedAt - current[^1].CapturedAt > CycleGap)
+            {
+                cycles.Add(new HealthCycle(current[0].CapturedAt, "1", [.. current]));
+                current.Clear();
+            }
+            current.Add(s);
+        }
+        if (current.Count > 0) cycles.Add(new HealthCycle(current[0].CapturedAt, "1", [.. current]));
+        return cycles;
+    }
 }

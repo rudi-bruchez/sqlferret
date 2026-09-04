@@ -178,7 +178,7 @@ switch (args[0])
 
             var json = System.Text.Json.JsonSerializer.Serialize(envelope,
                            new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
-            var md = SqlFerret.Core.Analysis.HealthDigest.ToMarkdown(envelope);
+            var md = SqlFerret.Cli.HealthDigestMarkdown.Render(envelope);
 
             // `both` ecrit deux fichiers quand --out est donne, et concatene sur stdout sinon —
             // meme comportement qu'export-blocking, dont cette commande copie la forme.
