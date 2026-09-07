@@ -92,11 +92,21 @@ dotnet run --project src/SqlFerret.Cli -- top-slow --project /tmp/wl --limit 20
 dotnet run --project src/SqlFerret.Tui -- /tmp/wl
 ```
 
-**There is no CI on push or pull request.** Nothing validates an ordinary change except the
-commands above, run locally. The one workflow, `.github/workflows/release.yml`, fires on a `v*`
-tag: it checks the tag against `Directory.Build.props`, runs the suite, cross-publishes the five
-RIDs from a single Linux runner and smoke-tests the linux-x64 archive before publishing. It is a
-release gate, not a development one — a broken `main` stays broken until someone tags it.
+**CI runs on push to `main` and on every pull request.** `.github/workflows/ci.yml`, on
+`ubuntu-latest`: restore, `dotnet format --verify-no-changes`, `dotnet build -warnaserror`,
+`dotnet test`. It is the gate an ordinary change actually passes through, and it is not a
+substitute for running the same commands locally first.
+
+One trap, documented in the workflow itself: the format check fails with thousands of
+`ENDOFLINE` errors on a Windows working copy. `.editorconfig` asks for `lf`, every blob in the
+index is `lf`, and there is no `.gitattributes` — so a Windows clone with the default
+`core.autocrlf=true` writes CRLF into the working tree. The runner checks out `lf` and agrees.
+Set `core.autocrlf=false` and re-checkout if you need the check to pass here; never "fix" it by
+committing CRLF.
+
+The second workflow, `.github/workflows/release.yml`, fires on a `v*` tag: it checks the tag
+against `Directory.Build.props`, runs the suite, cross-publishes the five RIDs from a single
+Linux runner and smoke-tests the linux-x64 archive before publishing.
 
 ## Running the tool on a real trace
 
