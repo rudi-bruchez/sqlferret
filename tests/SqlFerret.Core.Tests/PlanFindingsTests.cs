@@ -126,20 +126,57 @@ public class PlanFindingsTests
         Assert.False(Has(f, "large_scan"));
     }
 
+    // Forme d'un plan réel (SET STATISTICS XML, SQL Server 2025, tri forcé en
+    // débordement par MAX_GRANT_PERCENT = 0) : le moteur écrit SortSpillDetails sous
+    // RelOp/Warnings, à côté de SpillToTempDb, jamais comme enfant direct du RelOp.
     [Fact]
     public void Spill_fires_on_sort_spill_details()
     {
-        var f = Detect(Plan("""SerialDesiredMemory="1" GrantedMemory="1" MaxUsedMemory="1" """, """
-            <RelOp NodeId="9" PhysicalOp="Sort" LogicalOp="Sort" EstimateRows="1">
+        var f = Detect(Plan("""SerialDesiredMemory="69200" GrantedMemory="512" MaxUsedMemory="512" """, """
+            <RelOp NodeId="0" PhysicalOp="Sort" LogicalOp="Sort" EstimateRows="200000" Parallel="0"
+                   EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+              <OutputList />
+              <Warnings>
+                <SpillToTempDb SpillLevel="2" SpilledThreadCount="1" />
+                <SortSpillDetails GrantedMemoryKb="512" UsedMemoryKb="512" WritesToTempDb="4289" ReadsFromTempDb="4289" />
+              </Warnings>
+              <MemoryFractions Input="1" Output="1" />
               <RunTimeInformation>
-                <RunTimeCountersPerThread Thread="1" ActualRows="1" />
+                <RunTimeCountersPerThread Thread="0" ActualRows="200000" ActualRebinds="1" ActualRewinds="0"
+                                          ActualEndOfScans="1" ActualExecutions="1" ActualExecutionMode="Row" />
               </RunTimeInformation>
-              <SortSpillDetails GrantedMemoryKb="1024" UsedMemoryKb="1024" WritesToTempDb="500" />
             </RelOp>
             """));
 
-        Assert.True(Has(f, "spill_to_tempdb"));
-        Assert.Equal(9, f.First(x => x.Kind == "spill_to_tempdb").NodeId);
+        var spill = Assert.Single(f, x => x.Kind == "spill_to_tempdb");
+        Assert.Equal(0, spill.NodeId);
+        Assert.Contains("\"kind\":\"SortSpillDetails\"", spill.DetailJson);
+        Assert.Contains("\"writes_to_tempdb\":4289", spill.DetailJson);
+    }
+
+    // Même origine, jointure par hachage forcée en débordement.
+    [Fact]
+    public void Spill_fires_on_hash_spill_details()
+    {
+        var f = Detect(Plan("""SerialDesiredMemory="43024" GrantedMemory="1024" MaxUsedMemory="968" """, """
+            <RelOp NodeId="0" PhysicalOp="Hash Match" LogicalOp="Inner Join" EstimateRows="200000" Parallel="0"
+                   EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+              <OutputList />
+              <Warnings>
+                <SpillToTempDb SpillLevel="3" SpilledThreadCount="1" />
+                <HashSpillDetails GrantedMemoryKb="1024" UsedMemoryKb="968" WritesToTempDb="16048" ReadsFromTempDb="16048" />
+              </Warnings>
+              <MemoryFractions Input="1" Output="1" />
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="200000" ActualEndOfScans="1" ActualExecutions="1"
+                                          ActualExecutionMode="Row" />
+              </RunTimeInformation>
+            </RelOp>
+            """));
+
+        var spill = Assert.Single(f, x => x.Kind == "spill_to_tempdb");
+        Assert.Contains("\"kind\":\"HashSpillDetails\"", spill.DetailJson);
+        Assert.Contains("\"used_kb\":968", spill.DetailJson);
     }
 
     [Fact]

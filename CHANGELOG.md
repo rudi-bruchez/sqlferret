@@ -17,6 +17,15 @@ fact would mean inventing boundaries the repository never had.
 The version is written into every project directory's `project.json` as `ToolVersion`, so
 an audit can always name the build that produced it.
 
+## [Unreleased]
+
+### Fixed
+
+- `spill_to_tempdb` never fired on a real plan. It looked for `SortSpillDetails` and
+  `HashSpillDetails` as direct children of the operator, and the engine writes them under
+  the operator's `<Warnings>`: measured on 158 real plans, and reproduced with a sort and a
+  hash join forced to spill on SQL Server 2025. Spills were only visible as `plan_warning`.
+
 ## [0.3.0] - 2026-09-04
 
 System Health. SQL Server's own `system_health` session runs on every instance, unasked,

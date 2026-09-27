@@ -77,9 +77,14 @@ public static class PlanFindings
 
     private static void DetectSpill(XElement op, List<PlanFinding> found)
     {
+        // Le schéma showplan ne place SortSpillDetails et HashSpillDetails que dans
+        // WarningsType, et le moteur les écrit sous RelOp/Warnings : mesuré sur 158 plans
+        // réels et sur un tri et un hachage forcés en débordement (SQL Server 2025).
+        var w = op.Element(N("Warnings"));
+        if (w is null) return;
         foreach (var name in (string[])["SortSpillDetails", "HashSpillDetails"])
         {
-            var s = op.Element(N(name));
+            var s = w.Element(N(name));
             if (s is null) continue;
             found.Add(new PlanFinding("spill_to_tempdb", I(op, "NodeId"), Json(new
             {

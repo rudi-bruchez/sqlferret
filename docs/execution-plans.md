@@ -166,7 +166,7 @@ with no I/O, and they are all in `PlanFindings.cs`.
 | Kind | Fires when | Detail payload |
 |---|---|---|
 | `memory_grant_oversized` | Granted / used memory exceeds the ratio threshold **above a floor**, or the serial desired memory exceeds an absolute threshold | `serial_desired_kb`, `granted_kb`, `max_used_kb`, `ratio` |
-| `spill_to_tempdb` | A `SortSpillDetails` or `HashSpillDetails` element is present | `kind`, `granted_kb`, `used_kb`, `writes_to_tempdb` |
+| `spill_to_tempdb` | A `SortSpillDetails` or `HashSpillDetails` element is present under the operator's `<Warnings>`, which is where the engine writes it | `kind`, `granted_kb`, `used_kb`, `writes_to_tempdb` |
 | `cardinality_misestimate` | Estimated versus actual rows differ by more than the ratio threshold, in either direction | `op`, `estimate_rows`, `actual_rows`, `ratio` |
 | `row_goal_defeated` | A **blocking** operator has `EstimateRowsWithoutRowGoal` far above `EstimateRows` | `op`, `rows`, `rows_without_row_goal`, `ratio` |
 | `large_scan` | A `*Scan` operator over a table whose cardinality exceeds the threshold | `op`, `table`, `index`, `table_cardinality` |
