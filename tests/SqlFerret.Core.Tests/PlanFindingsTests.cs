@@ -377,6 +377,75 @@ public class PlanFindingsTests
         Assert.Contains("\"estimate_rows\":10", d);
     }
 
+    // Forme d'un plan réel (SQL Server 2025, boucle imbriquée forcée sur 1000 lignes
+    // externes) : le Seek interne est estimé à 1 ligne PAR EXÉCUTION, 999 rebinds estimés,
+    // et rend 1000 lignes cumulées sur 1000 exécutions. L'estimation est exacte ; comparer
+    // 1 à 1000 en ferait une sous-estimation d'un facteur 1000.
+    [Fact]
+    public void Cardinality_scales_the_estimate_by_estimated_executions()
+    {
+        var f = Detect(Plan("""SerialDesiredMemory="0" GrantedMemory="0" MaxUsedMemory="0" """, """
+            <RelOp NodeId="0" PhysicalOp="Nested Loops" LogicalOp="Inner Join" EstimateRows="963"
+                   EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="1000" ActualEndOfScans="1" ActualExecutions="1" ActualExecutionMode="Row" />
+              </RunTimeInformation>
+              <NestedLoops Optimized="0" WithUnorderedPrefetch="1">
+                <RelOp NodeId="2" PhysicalOp="Clustered Index Scan" LogicalOp="Clustered Index Scan" EstimateRows="1000"
+                       EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+                  <RunTimeInformation>
+                    <RunTimeCountersPerThread Thread="0" ActualRows="1000" ActualEndOfScans="1" ActualExecutions="1" ActualExecutionMode="Row" />
+                  </RunTimeInformation>
+                </RelOp>
+                <RelOp NodeId="3" PhysicalOp="Clustered Index Seek" LogicalOp="Clustered Index Seek" EstimateRows="1"
+                       EstimateRebinds="999" EstimateRewinds="0" EstimatedExecutionMode="Row">
+                  <RunTimeInformation>
+                    <RunTimeCountersPerThread Thread="0" ActualRows="1000" ActualEndOfScans="0" ActualExecutions="1000" ActualExecutionMode="Row" />
+                  </RunTimeInformation>
+                </RelOp>
+              </NestedLoops>
+            </RelOp>
+            """));
+
+        Assert.False(Has(f, "cardinality_misestimate"));
+    }
+
+    // Même forme, mais chaque exécution interne rend 50 lignes au lieu d'une : 50 000 contre
+    // 1000 estimées au total. L'écart réel reste visible une fois les exécutions comptées.
+    [Fact]
+    public void Cardinality_still_fires_on_a_real_gap_on_the_inner_side()
+    {
+        var f = Detect(Plan("""SerialDesiredMemory="0" GrantedMemory="0" MaxUsedMemory="0" """, """
+            <RelOp NodeId="3" PhysicalOp="Clustered Index Seek" LogicalOp="Clustered Index Seek" EstimateRows="1"
+                   EstimateRebinds="999" EstimateRewinds="0" EstimatedExecutionMode="Row">
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="50000" ActualEndOfScans="0" ActualExecutions="1000" ActualExecutionMode="Row" />
+              </RunTimeInformation>
+            </RelOp>
+            """));
+
+        var d = Assert.Single(f, x => x.Kind == "cardinality_misestimate").DetailJson;
+        Assert.Contains("\"estimate_executions\":1000", d);
+        Assert.Contains("\"ratio\":50}", d);
+    }
+
+    // Les rewinds comptent autant que les rebinds : un spool rejoué 100 fois rend 100 fois
+    // ses lignes.
+    [Fact]
+    public void Cardinality_counts_rewinds_as_executions()
+    {
+        var f = Detect(Plan("""SerialDesiredMemory="0" GrantedMemory="0" MaxUsedMemory="0" """, """
+            <RelOp NodeId="7" PhysicalOp="Table Spool" LogicalOp="Lazy Spool" EstimateRows="10"
+                   EstimateRebinds="0" EstimateRewinds="99" EstimatedExecutionMode="Row">
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="1000" ActualRebinds="1" ActualRewinds="99" ActualExecutions="100" />
+              </RunTimeInformation>
+            </RelOp>
+            """));
+
+        Assert.False(Has(f, "cardinality_misestimate"));
+    }
+
     [Fact]
     public void SumActualRows_returns_null_when_no_runtime_information()
     {

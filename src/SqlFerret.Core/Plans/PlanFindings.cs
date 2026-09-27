@@ -186,21 +186,32 @@ public static class PlanFindings
         })));
     }
 
+    /// <summary>
+    /// EstimateRows est une estimation PAR EXÉCUTION, ActualRows un cumul sur toutes les
+    /// exécutions (et sur tous les threads). Le nombre d'exécutions estimé est
+    /// 1 + EstimateRebinds + EstimateRewinds : sans lui, le côté interne d'une boucle
+    /// imbriquée sort en fausse sous-estimation d'un facteur égal au nombre de lignes externes.
+    /// </summary>
     private static void DetectCardinality(XElement op, PlanFindingThresholds t, List<PlanFinding> found)
     {
-        double? estimate = D(op, "EstimateRows");
+        double? perExecution = D(op, "EstimateRows");
         long? actual = SumActualRows(op);
-        if (estimate is null or <= 0 || actual is null) return;
+        if (perExecution is null or <= 0 || actual is null) return;
 
-        double ratio = actual.Value >= estimate.Value
-            ? actual.Value / estimate.Value
-            : estimate.Value / Math.Max(actual.Value, 1);
+        double executions = 1 + (D(op, "EstimateRebinds") ?? 0) + (D(op, "EstimateRewinds") ?? 0);
+        double estimate = perExecution.Value * executions;
+
+        double ratio = actual.Value >= estimate
+            ? actual.Value / estimate
+            : estimate / Math.Max(actual.Value, 1);
         if (ratio <= t.CardinalityRatio) return;
 
         found.Add(new PlanFinding("cardinality_misestimate", I(op, "NodeId"), Json(new
         {
             op = (string?)op.Attribute("PhysicalOp"),
-            estimate_rows = estimate,
+            estimate_rows = perExecution,
+            estimate_executions = executions,
+            estimate_rows_all_executions = estimate,
             actual_rows = actual,
             ratio = Math.Round(ratio, 2),
         })));

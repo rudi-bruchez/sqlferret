@@ -31,6 +31,12 @@ an audit can always name the build that produced it.
   among them) were ignored because only child elements were read. Both are now reported,
   statement-level ones with a null `node_id`. `ColumnsWithNoStatistics` now names its
   column instead of carrying an empty `detail`.
+- `cardinality_misestimate` compared an estimate per execution with actual rows cumulated
+  over all executions, so the inner side of every nested loops join read as an
+  underestimate. The estimate is now `EstimateRows × (1 + EstimateRebinds +
+  EstimateRewinds)`, and the detail carries `estimate_executions` and
+  `estimate_rows_all_executions`. On PlanInspector's published plans, 25 of 97 verdicts
+  change, in both directions.
 
 ## [0.3.0] - 2026-09-04
 

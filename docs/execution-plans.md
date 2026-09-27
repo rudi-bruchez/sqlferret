@@ -167,7 +167,7 @@ with no I/O, and they are all in `PlanFindings.cs`.
 |---|---|---|
 | `memory_grant_oversized` | Granted / used memory exceeds the ratio threshold **above a floor**, or the serial desired memory exceeds an absolute threshold | `serial_desired_kb`, `granted_kb`, `max_used_kb`, `ratio` |
 | `spill_to_tempdb` | A `SortSpillDetails` or `HashSpillDetails` element is present under the operator's `<Warnings>`, which is where the engine writes it | `kind`, `granted_kb`, `used_kb`, `writes_to_tempdb` |
-| `cardinality_misestimate` | Estimated versus actual rows differ by more than the ratio threshold, in either direction | `op`, `estimate_rows`, `actual_rows`, `ratio` |
+| `cardinality_misestimate` | Estimated rows over all estimated executions versus actual rows differ by more than the ratio threshold, in either direction | `op`, `estimate_rows` (per execution), `estimate_executions`, `estimate_rows_all_executions`, `actual_rows`, `ratio` |
 | `row_goal_defeated` | A **blocking** operator has `EstimateRowsWithoutRowGoal` far above `EstimateRows` | `op`, `rows`, `rows_without_row_goal`, `ratio` |
 | `large_scan` | A `*Scan` operator over a table whose cardinality exceeds the threshold | `op`, `table`, `index`, `table_cardinality` |
 | `excessive_rebinds` | `EstimateRebinds` above the threshold | `op`, `estimate_rebinds` |
@@ -200,7 +200,7 @@ Defaults, from `PlanFindingThresholds`:
 There is no configuration plumbing for these yet. The record is public and has `init` setters, so
 library callers can override them; the CLI always uses defaults.
 
-### Three rules with non-obvious reasoning
+### Rules with non-obvious reasoning
 
 **The memory-grant floor.** A 1 MB grant oversized by a factor of 1000 is arithmetically true and
 completely harmless. Reporting it drowns the handful of cases that actually cost the server
@@ -213,6 +213,36 @@ the granted figure can be modest precisely because of the clipping.
 would report a false underestimate by a factor of DOP on every parallel plan. `SumActualRows`
 sums them, and returns null when the plan carries no runtime counters at all, which is how an
 estimated plan is distinguished from a plan that genuinely returned zero rows.
+
+**The estimate is scaled by the estimated number of executions.** `EstimateRows` is an estimate
+*per execution*; `ActualRows` is cumulative over every execution. On the inner side of a nested
+loops join, a seek estimated at one row and run once per outer row would otherwise read as an
+underestimate by a factor equal to the outer row count. The rule compares `ActualRows` (summed
+over threads) with `EstimateRows × (1 + EstimateRebinds + EstimateRewinds)`. The basis for that
+number of executions is documented: `SET SHOWPLAN_ALL` exposes it as `EstimateExecutions`, "estimated
+number of times this operator will be executed"
+([SET SHOWPLAN_ALL](https://learn.microsoft.com/sql/t-sql/statements/set-showplan-all-transact-sql)),
+and rebinds plus rewinds on the inner side of a loop join add up to the outer rows processed
+([showplan operator reference](https://learn.microsoft.com/sql/relational-databases/showplan-logical-and-physical-operators-reference#rebinds-rewinds-and-end-of-scans)).
+Measured on SQL Server 2025 (Standard Developer edition): a loop join over 1000 outer rows gave the
+inner seek `EstimateRows="1"`, `EstimateRebinds="999"` and 1000 actual rows over 1000
+executions. On the plans PlanInspector publishes, 25 of 97 verdicts change with this correction,
+in both directions.
+
+Batch mode, measured on the same instance: every batch-mode operator observed (columnstore scan,
+hash join, hash aggregate, sort) carried `EstimateRebinds="0"`, `EstimateRewinds="0"` and one
+execution, so the correction leaves them unchanged and their rows compare as before. Batch mode
+on a parallel plan was not observed: Standard edition caps batch-mode DOP at 2 and these plans
+ran on one thread. Unverified.
+
+Adaptive joins could not be measured: they are an Enterprise feature
+([editions and supported features of SQL Server 2025](https://learn.microsoft.com/sql/sql-server/editions-and-components-of-sql-server-2025)),
+and the lab instance is Standard. Documented: an actual plan keeps both branches, and the branch
+not taken shows zero actual rows ([adaptive joins](https://learn.microsoft.com/sql/relational-databases/performance/joins#adaptive-joins)).
+That branch will read as an overestimate whatever the execution scaling, so a
+`cardinality_misestimate` under an `Adaptive Join` operator should be checked against
+`ActualJoinType` before it is believed. Whether the nested loops branch carries estimated rebinds
+is unverified.
 
 **Row goals are only checked on blocking operators.** Sort, Hash Match, Table Spool, Index Spool
 and Window Spool must consume their entire input before yielding a row, so a `TOP` above them
