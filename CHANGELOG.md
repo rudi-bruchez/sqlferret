@@ -19,6 +19,14 @@ an audit can always name the build that produced it.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-27
+
+Plan findings that match what the engine actually writes. Three rules were checked against
+showplans produced on a real instance and published plans: `spill_to_tempdb` looked for spill
+details in a place the engine never puts them, `plan_warning` read only operator-level warnings,
+and `cardinality_misestimate` compared a per-execution estimate with a total over all
+executions. Each rule now reads the real shape, and each fixture was rebuilt from it.
+
 ### Fixed
 
 - `spill_to_tempdb` never fired on a real plan. It looked for `SortSpillDetails` and
