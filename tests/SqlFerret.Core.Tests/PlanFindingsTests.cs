@@ -179,18 +179,105 @@ public class PlanFindingsTests
         Assert.Contains("\"used_kb\":968", spill.DetailJson);
     }
 
+    private static PlanFinding Warning(IReadOnlyList<PlanFinding> f, string name) =>
+        Assert.Single(f, x => x.Kind == "plan_warning" && x.DetailJson.Contains($"\"warning\":\"{name}\""));
+
+    // Les formes qui suivent viennent de plans réels (SET STATISTICS XML, SQL Server 2025),
+    // identifiants remplacés. Le moteur écrit PlanAffectingConvert sous QueryPlan/Warnings,
+    // pas sous un opérateur : mesuré sur 158 plans réels, sans exception.
     [Fact]
-    public void Plan_warning_carries_the_warning_element_name()
+    public void Plan_warning_reads_statement_level_plan_affecting_convert()
     {
-        var f = Detect(Plan("""SerialDesiredMemory="1" GrantedMemory="1" MaxUsedMemory="1" """, """
-            <RelOp NodeId="3" PhysicalOp="Nested Loops" LogicalOp="Inner Join" EstimateRows="1">
-              <Warnings><PlanAffectingConvert ConvertIssue="Cardinality Estimate"
-                                              Expression="CONVERT(int,[a].[b])" /></Warnings>
+        var f = Detect(Plan("""SerialDesiredMemory="0" GrantedMemory="0" MaxUsedMemory="0" """, """
+            <Warnings><PlanAffectingConvert ConvertIssue="Cardinality Estimate"
+                                            Expression="CONVERT_IMPLICIT(int,[w].[GadgetCode],0)" /></Warnings>
+            <RelOp NodeId="0" PhysicalOp="Nested Loops" LogicalOp="Inner Join" EstimateRows="30.4844" />
+            """));
+
+        var w = Warning(f, "PlanAffectingConvert");
+        Assert.Null(w.NodeId);
+        Assert.Contains("ConvertIssue=Cardinality Estimate", w.DetailJson);
+    }
+
+    [Fact]
+    public void Plan_warning_reads_statement_level_memory_grant_warning()
+    {
+        var f = Detect(Plan("""SerialDesiredMemory="40" GrantedMemory="526376" MaxUsedMemory="32" """, """
+            <Warnings><MemoryGrantWarning GrantWarningKind="Excessive Grant" RequestedMemory="526376"
+                                          GrantedMemory="526376" MaxUsedMemory="32" /></Warnings>
+            <RelOp NodeId="0" PhysicalOp="Sort" LogicalOp="TopN Sort" EstimateRows="63" />
+            """));
+
+        var w = Warning(f, "MemoryGrantWarning");
+        Assert.Null(w.NodeId);
+        Assert.Contains("GrantWarningKind=Excessive Grant", w.DetailJson);
+    }
+
+    // NoJoinPredicate est un attribut de <Warnings>, sans enfant.
+    [Fact]
+    public void Plan_warning_reads_no_join_predicate_attribute()
+    {
+        var f = Detect(Plan("""SerialDesiredMemory="0" GrantedMemory="0" MaxUsedMemory="0" """, """
+            <RelOp NodeId="0" PhysicalOp="Top" LogicalOp="Top" EstimateRows="10">
+              <Top RowCount="0" IsPercent="0" WithTies="0">
+                <RelOp NodeId="1" PhysicalOp="Nested Loops" LogicalOp="Inner Join" EstimateRows="10"
+                       EstimateRowsWithoutRowGoal="1e+06">
+                  <OutputList />
+                  <Warnings NoJoinPredicate="1"></Warnings>
+                </RelOp>
+              </Top>
             </RelOp>
             """));
 
-        Assert.True(Has(f, "plan_warning"));
-        Assert.Contains("PlanAffectingConvert", f.First(x => x.Kind == "plan_warning").DetailJson);
+        Assert.Equal(1, Warning(f, "NoJoinPredicate").NodeId);
+    }
+
+    // UnmatchedIndexes="1" sur QueryPlan/Warnings ; l'index filtré que le paramétrage a
+    // rendu inutilisable est nommé dans l'élément frère QueryPlan/UnmatchedIndexes.
+    [Fact]
+    public void Plan_warning_names_the_unmatched_filtered_index()
+    {
+        var f = Detect(Plan("""SerialDesiredMemory="0" GrantedMemory="0" MaxUsedMemory="0" """, """
+            <UnmatchedIndexes><Parameterization>
+              <Object Database="[AppDb]" Schema="[AppSchema]" Table="[WidgetRecalc]" Index="[IX_WidgetRecalc_Filtered]" />
+            </Parameterization></UnmatchedIndexes>
+            <Warnings UnmatchedIndexes="1"></Warnings>
+            <RelOp NodeId="0" PhysicalOp="Clustered Index Scan" LogicalOp="Clustered Index Scan" EstimateRows="225.226" />
+            """));
+
+        var w = Warning(f, "UnmatchedIndexes");
+        Assert.Null(w.NodeId);
+        Assert.Contains("AppDb.AppSchema.WidgetRecalc.IX_WidgetRecalc_Filtered", w.DetailJson);
+    }
+
+    // ColumnsWithNoStatistics n'a aucun attribut : la colonne est dans un ColumnReference.
+    [Fact]
+    public void Plan_warning_names_the_column_without_statistics()
+    {
+        var f = Detect(Plan("""SerialDesiredMemory="0" GrantedMemory="0" MaxUsedMemory="0" """, """
+            <RelOp NodeId="3" PhysicalOp="Clustered Index Scan" LogicalOp="Clustered Index Scan" EstimateRows="31.6228">
+              <OutputList />
+              <Warnings><ColumnsWithNoStatistics>
+                <ColumnReference Database="[AppDb]" Schema="[AppSchema]" Table="[WidgetRecalc]" Alias="[w]" Column="GadgetCode" />
+              </ColumnsWithNoStatistics></Warnings>
+            </RelOp>
+            """));
+
+        var w = Warning(f, "ColumnsWithNoStatistics");
+        Assert.Equal(3, w.NodeId);
+        Assert.Contains("AppDb.AppSchema.WidgetRecalc.GadgetCode", w.DetailJson);
+    }
+
+    [Fact]
+    public void Plan_warning_ignores_a_false_warning_attribute()
+    {
+        var f = Detect(Plan("""SerialDesiredMemory="0" GrantedMemory="0" MaxUsedMemory="0" """, """
+            <RelOp NodeId="1" PhysicalOp="Nested Loops" LogicalOp="Inner Join" EstimateRows="10">
+              <Warnings NoJoinPredicate="0"></Warnings>
+            </RelOp>
+            """));
+
+        Assert.False(Has(f, "plan_warning"));
     }
 
     [Fact]

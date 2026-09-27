@@ -25,6 +25,12 @@ an audit can always name the build that produced it.
   `HashSpillDetails` as direct children of the operator, and the engine writes them under
   the operator's `<Warnings>`: measured on 158 real plans, and reproduced with a sort and a
   hash join forced to spill on SQL Server 2025. Spills were only visible as `plan_warning`.
+- `plan_warning` never read statement-level warnings. `MemoryGrantWarning`,
+  `PlanAffectingConvert`, `Wait` and `UnmatchedIndexes` live under `QueryPlan/Warnings`,
+  which no rule visited, and the boolean attributes of `<Warnings>` (`NoJoinPredicate`
+  among them) were ignored because only child elements were read. Both are now reported,
+  statement-level ones with a null `node_id`. `ColumnsWithNoStatistics` now names its
+  column instead of carrying an empty `detail`.
 
 ## [0.3.0] - 2026-09-04
 

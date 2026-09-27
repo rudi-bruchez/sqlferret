@@ -15,11 +15,15 @@ public static class PlanFindings
         var found = new List<PlanFinding>();
         DetectGrant(plan, t, found);
         DetectMissingIndexes(plan, found);
+        // Avertissements de niveau instruction : MemoryGrantWarning, PlanAffectingConvert,
+        // Wait et UnmatchedIndexes sont écrits sous QueryPlan/Warnings, pas sous un opérateur.
+        foreach (var qp in plan.Descendants(N("QueryPlan")))
+            DetectWarnings(qp, null, found);
         foreach (var op in plan.Descendants(N("RelOp")))
         {
             DetectLargeScan(op, t, found);
             DetectSpill(op, found);
-            DetectWarnings(op, found);
+            DetectWarnings(op, I(op, "NodeId"), found);
             DetectRowGoal(op, t, found);
             DetectCardinality(op, t, found);
             DetectRebinds(op, t, found);
@@ -96,16 +100,50 @@ public static class PlanFindings
         }
     }
 
-    private static void DetectWarnings(XElement op, List<PlanFinding> found)
+    /// <summary>
+    /// Lève un <c>plan_warning</c> par enfant du <c>&lt;Warnings&gt;</c> de <paramref name="owner"/>
+    /// (un RelOp ou un QueryPlan) et par attribut booléen vrai de cet élément.
+    /// NoJoinPredicate, SpatialGuess, UnmatchedIndexes et FullUpdateForOnlineIndexBuild sont
+    /// des attributs de WarningsType, pas des enfants : les ignorer perd la jointure sans
+    /// prédicat et l'index filtré inutilisable.
+    /// </summary>
+    private static void DetectWarnings(XElement owner, int? nodeId, List<PlanFinding> found)
     {
-        var w = op.Element(N("Warnings"));
+        var w = owner.Element(N("Warnings"));
         if (w is null) return;
+        foreach (var flag in w.Attributes())
+        {
+            if (flag.Value is not ("1" or "true")) continue;
+            // UnmatchedIndexes="1" nomme ses index dans l'élément frère QueryPlan/UnmatchedIndexes.
+            found.Add(new PlanFinding("plan_warning", nodeId, Json(new
+            {
+                warning = flag.Name.LocalName,
+                detail = References(owner.Element(N(flag.Name.LocalName))),
+            })));
+        }
         foreach (var child in w.Elements())
-            found.Add(new PlanFinding("plan_warning", I(op, "NodeId"), Json(new
+        {
+            var attrs = child.Attributes().Select(a => $"{a.Name.LocalName}={a.Value}");
+            // ColumnsWithNoStatistics n'a aucun attribut : ses colonnes sont des ColumnReference.
+            var refs = References(child);
+            found.Add(new PlanFinding("plan_warning", nodeId, Json(new
             {
                 warning = child.Name.LocalName,
-                detail = string.Join(", ", child.Attributes().Select(a => $"{a.Name.LocalName}={a.Value}")),
+                detail = string.Join(", ", refs.Length == 0 ? attrs : attrs.Append(refs)),
             })));
+        }
+    }
+
+    /// <summary>Les objets et colonnes nommés sous <paramref name="e"/>, en <c>Schema.Table.Column</c>.</summary>
+    private static string References(XElement? e)
+    {
+        if (e is null) return "";
+        var names = e.Descendants()
+            .Where(d => d.Name == N("ColumnReference") || d.Name == N("Object"))
+            .Select(d => string.Join(".", ((string[])["Database", "Schema", "Table", "Index", "Column"])
+                .Select(a => Trim((string?)d.Attribute(a)))
+                .Where(v => !string.IsNullOrEmpty(v))));
+        return string.Join(", ", names);
     }
 
     private static void DetectMissingIndexes(XDocument plan, List<PlanFinding> found)

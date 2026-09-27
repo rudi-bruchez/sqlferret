@@ -172,7 +172,16 @@ with no I/O, and they are all in `PlanFindings.cs`.
 | `large_scan` | A `*Scan` operator over a table whose cardinality exceeds the threshold | `op`, `table`, `index`, `table_cardinality` |
 | `excessive_rebinds` | `EstimateRebinds` above the threshold | `op`, `estimate_rebinds` |
 | `missing_index` | A `MissingIndexGroup` is present | `impact`, `table`, `columns` |
-| `plan_warning` | Any child of a `<Warnings>` element | `warning`, `detail` |
+| `plan_warning` | Any child of a `<Warnings>` element, and any of its boolean attributes set (`NoJoinPredicate`, `UnmatchedIndexes`, `SpatialGuess`, `FullUpdateForOnlineIndexBuild`), on an operator or on the statement's `QueryPlan` | `warning`, `detail` |
+
+`plan_warning` reads two levels. An operator's `<Warnings>` carries spills, columns without
+statistics and `NoJoinPredicate`; the statement's `QueryPlan/Warnings` carries
+`MemoryGrantWarning`, `PlanAffectingConvert`, `Wait` and `UnmatchedIndexes`. That placement is
+measured: 158 real plans, no exception, and reproduced on SQL Server 2025. A statement-level
+warning has a null `node_id`. `detail` lists the element's attributes followed by the objects and
+columns it names, as `Database.Schema.Table.Column`: that is how `ColumnsWithNoStatistics`, which
+has no attribute, names its column, and how `UnmatchedIndexes` names the filtered index that
+parameterization made unusable (listed in the sibling `QueryPlan/UnmatchedIndexes`).
 
 ### Thresholds
 
