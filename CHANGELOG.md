@@ -34,9 +34,9 @@ executions. Each rule now reads the real shape, and each fixture was rebuilt fro
   the operator's `<Warnings>`: measured on 158 real plans, and reproduced with a sort and a
   hash join forced to spill on SQL Server 2025. Spills were only visible as `plan_warning`.
 - `plan_warning` never read statement-level warnings. `MemoryGrantWarning`,
-  `PlanAffectingConvert`, `Wait` and `UnmatchedIndexes` live under `QueryPlan/Warnings`,
-  which no rule visited, and the boolean attributes of `<Warnings>` (`NoJoinPredicate`
-  among them) were ignored because only child elements were read. Both are now reported,
+  `PlanAffectingConvert` and `Wait` live under `QueryPlan/Warnings`, which no rule
+  visited, and the boolean attributes of `<Warnings>` (`NoJoinPredicate` and
+  `UnmatchedIndexes` among them) were ignored because only child elements were read. Both are now reported,
   statement-level ones with a null `node_id`. `ColumnsWithNoStatistics` now names its
   column instead of carrying an empty `detail`.
 - `cardinality_misestimate` compared an estimate per execution with actual rows cumulated
