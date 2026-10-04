@@ -71,12 +71,12 @@ the parameter collection matches `name`. Every `Add` helper does `name.TrimStart
 
 ```bash
 dotnet build                                  # 0 warnings expected (verified)
-dotnet test                                   # 659 tests: 648 pass, 11 skip (see below)
+dotnet test                                   # 680 tests, up to 11 skip (see below)
 dotnet test --filter <TestClassName>          # focused
 dotnet format <path>                          # style; .editorconfig is the baseline
 ```
 
-The 11 skips are expected, not a regression. Two distinct gates:
+Up to 11 skips are expected, not a regression (4 on a machine holding `sample/`). Two distinct gates:
 
 - **`sample/` present** — `XelReaderTests`, `BlockingQueriesTests`, `CliSmokeTests`,
   `CliQueryCommandTests`, `ImportRunnerTests`, `ServerDiagnosticsIngestionTests`,
