@@ -18,7 +18,12 @@ public static class PlanFindings
         // Avertissements de niveau instruction : MemoryGrantWarning, PlanAffectingConvert,
         // Wait et UnmatchedIndexes sont écrits sous QueryPlan/Warnings, pas sous un opérateur.
         foreach (var qp in plan.Descendants(N("QueryPlan")))
+        {
             DetectWarnings(qp, null, found);
+            DetectNonParallelPlan(qp, t, found);
+            DetectTraceFlags(qp, found);
+        }
+        DetectEarlyAbort(plan, found);
         foreach (var op in plan.Descendants(N("RelOp")))
         {
             DetectLargeScan(op, t, found);
@@ -27,8 +32,122 @@ public static class PlanFindings
             DetectRowGoal(op, t, found);
             DetectCardinality(op, t, found);
             DetectRebinds(op, t, found);
+            DetectThreadSkew(op, t, found);
         }
         return found;
+    }
+
+    /// <summary>
+    /// StatementOptmEarlyAbortReason porte sur tout type d'instruction (BaseStmtInfoType).
+    /// Le schéma énumère TimeOut, MemoryLimitExceeded et GoodEnoughPlanFound ; la troisième
+    /// est l'issue normale d'une optimisation et n'est pas signalée.
+    /// </summary>
+    private static void DetectEarlyAbort(XDocument plan, List<PlanFinding> found)
+    {
+        foreach (var stmt in plan.Descendants())
+        {
+            var reason = (string?)stmt.Attribute("StatementOptmEarlyAbortReason");
+            if (reason is not ("TimeOut" or "MemoryLimitExceeded")) continue;
+            found.Add(new PlanFinding("optimizer_early_abort", null, Json(new
+            {
+                reason,
+                statement_subtree_cost = D(stmt, "StatementSubTreeCost"),
+            })));
+        }
+    }
+
+    /// <summary>
+    /// Les valeurs de NonParallelPlanReason qui désignent un choix fait dans le code de la
+    /// requête. Le schéma type l'attribut en chaîne libre ; la liste vient du guide
+    /// d'architecture du traitement des requêtes (Microsoft Learn). Les raisons de
+    /// configuration, d'édition ou de moteur (MaxDOPSetToOne, EstimatedDOPIsOne,
+    /// CouldNotGenerateValidParallelPlan…) n'en sont pas : le développeur n'y peut rien.
+    /// </summary>
+    private static readonly string[] CodeNonParallelReasons =
+    [
+        "TSQLUserDefinedFunctionsNotParallelizable",
+        "TableVariableTransactionsDoNotSupportParallelNestedTransaction",
+        "CLRUserDefinedFunctionRequiresDataAccess",
+        "NonParallelizableIntrinsicFunction",
+        "DMLQueryReturnsOutputToClient",
+        "NoParallelWithRemoteQuery",
+        "NoParallelDynamicCursor",
+        "NoParallelFastForwardCursor",
+        "NoParallelCursorFetchByBookmark",
+    ];
+
+    /// <summary>
+    /// Le moteur n'envisage un plan parallèle qu'au-delà du coût seuil de parallélisme :
+    /// en dessous, la raison est exacte et sans conséquence. Le coût lu est celui de
+    /// l'instruction qui porte ce QueryPlan.
+    /// </summary>
+    private static void DetectNonParallelPlan(XElement qp, PlanFindingThresholds t, List<PlanFinding> found)
+    {
+        var reason = (string?)qp.Attribute("NonParallelPlanReason");
+        if (reason is null || !CodeNonParallelReasons.Contains(reason)) return;
+
+        double? cost = D(qp.Parent, "StatementSubTreeCost");
+        if (cost is null || cost <= t.NonParallelMinCost) return;
+
+        found.Add(new PlanFinding("non_parallel_plan", null, Json(new
+        {
+            reason,
+            statement_subtree_cost = cost,
+        })));
+    }
+
+    /// <summary>
+    /// QueryPlan porte jusqu'à deux listes TraceFlags : celle de la compilation
+    /// (IsCompileTime vrai) et celle de l'exécution. Seule la première a façonné le plan.
+    /// </summary>
+    private static void DetectTraceFlags(XElement qp, List<PlanFinding> found)
+    {
+        foreach (var list in qp.Elements(N("TraceFlags")))
+        {
+            if ((string?)list.Attribute("IsCompileTime") is not ("1" or "true")) continue;
+            foreach (var flag in list.Elements(N("TraceFlag")))
+            {
+                found.Add(new PlanFinding("trace_flag", null, Json(new
+                {
+                    value = L(flag, "Value"),
+                    scope = (string?)flag.Attribute("Scope"),
+                })));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Un opérateur parallèle dont un thread traite bien plus que sa part. Le thread 0 est
+    /// le coordinateur : il est exclu du plancher, du maximum et de la moyenne. Sur un
+    /// Gather Streams, il porte toutes les lignes reçues des producteurs, et le compter
+    /// doublerait le total.
+    /// </summary>
+    private static void DetectThreadSkew(XElement op, PlanFindingThresholds t, List<PlanFinding> found)
+    {
+        if ((string?)op.Attribute("Parallel") is not ("1" or "true")) return;
+        var rti = op.Element(N("RunTimeInformation"));
+        if (rti is null) return;
+
+        long[] workers = [.. rti.Elements(N("RunTimeCountersPerThread"))
+            .Where(th => I(th, "Thread") is not (null or 0))
+            .Select(th => L(th, "ActualRows") ?? 0)];
+        if (workers.Length == 0) return;
+        long total = workers.Sum();
+        if (total < t.ThreadSkewMinRows) return;
+
+        double avg = workers.Average();
+        long max = workers.Max();
+        if (avg <= 0 || max <= t.ThreadSkewRatio * avg) return;
+
+        found.Add(new PlanFinding("parallel_thread_skew", I(op, "NodeId"), Json(new
+        {
+            op = (string?)op.Attribute("PhysicalOp"),
+            threads = workers.Length,
+            total_rows = total,
+            max_thread_rows = max,
+            avg_thread_rows = Math.Round(avg, 1),
+            ratio = Math.Round(max / avg, 2),
+        })));
     }
 
     private static void DetectGrant(XDocument plan, PlanFindingThresholds t, List<PlanFinding> found)

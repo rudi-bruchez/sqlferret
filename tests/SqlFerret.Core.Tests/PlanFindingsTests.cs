@@ -464,4 +464,193 @@ public class PlanFindingsTests
         Assert.True(Has(f, "excessive_rebinds"));
         Assert.Contains("300000", f.First(x => x.Kind == "excessive_rebinds").DetailJson);
     }
+
+    // Attributs d'instruction et de QueryPlan maîtrisés par le test : les règles de
+    // compilation lisent StmtSimple et QueryPlan, que Plan() fige.
+    private static XDocument Stmt(string stmtAttrs, string queryPlanAttrs, string body = "") => XDocument.Parse($"""
+        <ShowPlanXML xmlns="{Ns}">
+          <BatchSequence><Batch><Statements>
+            <StmtSimple StatementType="SELECT" {stmtAttrs}>
+              <QueryPlan {queryPlanAttrs}>
+                {body}
+                <RelOp NodeId="0" PhysicalOp="Compute Scalar" LogicalOp="Compute Scalar" EstimateRows="1" />
+              </QueryPlan>
+            </StmtSimple>
+          </Statements></Batch></BatchSequence>
+        </ShowPlanXML>
+        """);
+
+    // Le schéma showplan énumère trois valeurs pour StatementOptmEarlyAbortReason :
+    // TimeOut, MemoryLimitExceeded et GoodEnoughPlanFound. La troisième est l'issue
+    // normale d'une optimisation, pas un abandon (28 plans sur 101 la portent).
+    [Theory]
+    [InlineData("TimeOut")]
+    [InlineData("MemoryLimitExceeded")]
+    public void Optimizer_early_abort_fires_on_timeout_and_memory_limit(string reason)
+    {
+        var f = Detect(Stmt($"""StatementOptmLevel="FULL" StatementOptmEarlyAbortReason="{reason}" StatementSubTreeCost="42.5" """,
+                            "DegreeOfParallelism=\"1\""));
+
+        var a = Assert.Single(f, x => x.Kind == "optimizer_early_abort");
+        Assert.Null(a.NodeId);
+        Assert.Contains($"\"reason\":\"{reason}\"", a.DetailJson);
+        Assert.Contains("\"statement_subtree_cost\":42.5", a.DetailJson);
+    }
+
+    [Fact]
+    public void Optimizer_early_abort_ignores_good_enough_plan_found()
+    {
+        var f = Detect(Stmt("""StatementOptmLevel="FULL" StatementOptmEarlyAbortReason="GoodEnoughPlanFound" """,
+                            "DegreeOfParallelism=\"1\""));
+
+        Assert.False(Has(f, "optimizer_early_abort"));
+    }
+
+    // Une UDF scalaire non inlinable interdit le parallélisme à une requête dont le coût
+    // aurait justifié un plan parallèle : c'est le code qu'il faut changer.
+    [Fact]
+    public void Non_parallel_plan_fires_on_a_code_reason_above_the_cost_threshold()
+    {
+        var f = Detect(Stmt("""StatementSubTreeCost="27.3" """,
+                            """DegreeOfParallelism="0" NonParallelPlanReason="TSQLUserDefinedFunctionsNotParallelizable" """));
+
+        var n = Assert.Single(f, x => x.Kind == "non_parallel_plan");
+        Assert.Null(n.NodeId);
+        Assert.Contains("\"reason\":\"TSQLUserDefinedFunctionsNotParallelizable\"", n.DetailJson);
+        Assert.Contains("\"statement_subtree_cost\":27.3", n.DetailJson);
+    }
+
+    // Sous le seuil de coût, le moteur n'aurait pas envisagé de plan parallèle de toute
+    // façon : la raison est exacte et sans conséquence.
+    [Fact]
+    public void Non_parallel_plan_is_silent_below_the_cost_threshold()
+    {
+        var f = Detect(Stmt("""StatementSubTreeCost="0.185" """,
+                            """DegreeOfParallelism="0" NonParallelPlanReason="TableVariableTransactionsDoNotSupportParallelNestedTransaction" """));
+
+        Assert.False(Has(f, "non_parallel_plan"));
+    }
+
+    // MAXDOP 1 dit une configuration, pas un choix de code.
+    [Fact]
+    public void Non_parallel_plan_ignores_a_configuration_reason()
+    {
+        var f = Detect(Stmt("""StatementSubTreeCost="500" """,
+                            """DegreeOfParallelism="0" NonParallelPlanReason="MaxDOPSetToOne" """));
+
+        Assert.False(Has(f, "non_parallel_plan"));
+    }
+
+    // TraceFlags apparaît jusqu'à deux fois sous QueryPlan : la liste de compilation
+    // (IsCompileTime="1") et celle de l'exécution. Seule la première a façonné le plan.
+    [Fact]
+    public void Trace_flag_reports_compile_time_flags_only()
+    {
+        var f = Detect(Stmt("""StatementSubTreeCost="1" """, "DegreeOfParallelism=\"1\"", """
+            <TraceFlags IsCompileTime="1">
+              <TraceFlag Value="9130" Scope="Session" />
+            </TraceFlags>
+            <TraceFlags IsCompileTime="0">
+              <TraceFlag Value="9130" Scope="Session" />
+              <TraceFlag Value="7412" Scope="Global" />
+            </TraceFlags>
+            """));
+
+        var t = Assert.Single(f, x => x.Kind == "trace_flag");
+        Assert.Null(t.NodeId);
+        Assert.Contains("\"value\":9130", t.DetailJson);
+        Assert.Contains("\"scope\":\"Session\"", t.DetailJson);
+    }
+
+    private static string Threads(params long[] rowsFromThread1) => string.Join("\n",
+        rowsFromThread1.Select((r, i) =>
+            $"""<RunTimeCountersPerThread Thread="{i + 1}" ActualRows="{r}" ActualEndOfScans="1" ActualExecutions="1" />"""));
+
+    // DOP 4, un thread porte presque tout : 40 000 lignes sur 43 000, moyenne 10 750,
+    // maximum à 3,7 fois la moyenne.
+    [Fact]
+    public void Parallel_thread_skew_fires_when_one_thread_carries_the_rows()
+    {
+        var f = Detect(Plan("""SerialDesiredMemory="0" GrantedMemory="0" MaxUsedMemory="0" """, $"""
+            <RelOp NodeId="4" PhysicalOp="Hash Match" LogicalOp="Inner Join" EstimateRows="43000" Parallel="1">
+              <RunTimeInformation>
+                {Threads(40000, 1000, 1000, 1000)}
+              </RunTimeInformation>
+            </RelOp>
+            """));
+
+        var s = Assert.Single(f, x => x.Kind == "parallel_thread_skew");
+        Assert.Equal(4, s.NodeId);
+        Assert.Contains("\"threads\":4", s.DetailJson);
+        Assert.Contains("\"max_thread_rows\":40000", s.DetailJson);
+        Assert.Contains("\"ratio\":3.72", s.DetailJson);
+    }
+
+    // Le thread 0 est le coordinateur. Sous un opérateur de la zone parallèle, il porte un
+    // compteur à zéro qui ferait baisser la moyenne : 18 000 contre 9 750 de moyenne reste
+    // sous le rapport 2, mais 18 000 contre 7 800 en comptant le thread 0 le dépasserait.
+    [Fact]
+    public void Parallel_thread_skew_excludes_the_coordinator_thread()
+    {
+        var f = Detect(Plan("""SerialDesiredMemory="0" GrantedMemory="0" MaxUsedMemory="0" """, $"""
+            <RelOp NodeId="4" PhysicalOp="Hash Match" LogicalOp="Inner Join" EstimateRows="39000" Parallel="1">
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="0" ActualEndOfScans="0" ActualExecutions="0" />
+                {Threads(18000, 7000, 7000, 7000)}
+              </RunTimeInformation>
+            </RelOp>
+            """));
+
+        Assert.False(Has(f, "parallel_thread_skew"));
+    }
+
+    // Sur un Gather Streams, le thread 0 reçoit toutes les lignes des producteurs. Le
+    // compter doublerait le total et ferait passer le plancher à un opérateur qui ne
+    // traite que 6 000 lignes en parallèle.
+    [Fact]
+    public void Parallel_thread_skew_floor_ignores_the_coordinator_rows()
+    {
+        var f = Detect(Plan("""SerialDesiredMemory="0" GrantedMemory="0" MaxUsedMemory="0" """, $"""
+            <RelOp NodeId="1" PhysicalOp="Parallelism" LogicalOp="Gather Streams" EstimateRows="6000" Parallel="1">
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="6000" ActualEndOfScans="1" ActualExecutions="1" />
+                {Threads(6000, 0, 0, 0)}
+              </RunTimeInformation>
+            </RelOp>
+            """));
+
+        Assert.False(Has(f, "parallel_thread_skew"));
+    }
+
+    // Tout sur un thread, mais 5 000 lignes : sans conséquence.
+    [Fact]
+    public void Parallel_thread_skew_is_silent_below_the_row_floor()
+    {
+        var f = Detect(Plan("""SerialDesiredMemory="0" GrantedMemory="0" MaxUsedMemory="0" """, $"""
+            <RelOp NodeId="4" PhysicalOp="Hash Match" LogicalOp="Inner Join" EstimateRows="5000" Parallel="1">
+              <RunTimeInformation>
+                {Threads(5000, 0, 0, 0)}
+              </RunTimeInformation>
+            </RelOp>
+            """));
+
+        Assert.False(Has(f, "parallel_thread_skew"));
+    }
+
+    // La règle ne lit que les opérateurs Parallel="1". Forme synthétique : sur les plans
+    // mesurés, un opérateur série ne porte jamais plus d'un thread non nul, et la règle
+    // s'y tairait de toute façon. Le test fixe le contrat, pas un cas observé.
+    [Fact]
+    public void Parallel_thread_skew_ignores_a_serial_operator()
+    {
+        var f = Detect(Plan("""SerialDesiredMemory="0" GrantedMemory="0" MaxUsedMemory="0" """, $"""
+            <RelOp NodeId="4" PhysicalOp="Hash Match" LogicalOp="Inner Join" EstimateRows="43000" Parallel="0">
+              <RunTimeInformation>
+                {Threads(40000, 1000, 1000, 1000)}
+              </RunTimeInformation>
+            </RelOp>
+            """));
+
+        Assert.False(Has(f, "parallel_thread_skew"));
+    }
 }

@@ -160,7 +160,7 @@ UTF-8 without a BOM.
 
 ## Findings
 
-Eight detection rules run over every ingested plan. They are pure functions over an `XDocument`
+Twelve detection rules run over every ingested plan. They are pure functions over an `XDocument`
 with no I/O, and they are all in `PlanFindings.cs`.
 
 | Kind | Fires when | Detail payload |
@@ -172,6 +172,10 @@ with no I/O, and they are all in `PlanFindings.cs`.
 | `large_scan` | A `*Scan` operator over a table whose cardinality exceeds the threshold | `op`, `table`, `index`, `table_cardinality` |
 | `excessive_rebinds` | `EstimateRebinds` above the threshold | `op`, `estimate_rebinds` |
 | `missing_index` | A `MissingIndexGroup` is present | `impact`, `table`, `columns` |
+| `optimizer_early_abort` | The statement's `StatementOptmEarlyAbortReason` is `TimeOut` or `MemoryLimitExceeded` | `reason`, `statement_subtree_cost` |
+| `non_parallel_plan` | The `QueryPlan` carries a `NonParallelPlanReason` caused by the query's code, and the statement cost exceeds `NonParallelMinCost` | `reason`, `statement_subtree_cost` |
+| `trace_flag` | A trace flag in the compile-time `TraceFlags` list (`IsCompileTime` true) | `value`, `scope` |
+| `parallel_thread_skew` | A `Parallel` operator whose busiest thread exceeds the ratio threshold times the average, thread 0 excluded, above a row floor | `op`, `threads`, `total_rows`, `max_thread_rows`, `avg_thread_rows`, `ratio` |
 | `plan_warning` | Any child of a `<Warnings>` element, and any of its boolean attributes set (`NoJoinPredicate`, `UnmatchedIndexes`, `SpatialGuess`, `FullUpdateForOnlineIndexBuild`), on an operator or on the statement's `QueryPlan` | `warning`, `detail` |
 
 `plan_warning` reads two levels. An operator's `<Warnings>` carries spills, columns without
@@ -196,6 +200,9 @@ Defaults, from `PlanFindingThresholds`:
 | `CardinalityRatio` | 10 | `cardinality_misestimate` |
 | `LargeScanRows` | 1,000,000 | `large_scan` |
 | `RebindsThreshold` | 1000 | `excessive_rebinds` |
+| `NonParallelMinCost` | 5 | `non_parallel_plan`, on `StatementSubTreeCost` |
+| `ThreadSkewMinRows` | 10,000 | `parallel_thread_skew`, rows over all worker threads |
+| `ThreadSkewRatio` | 2 | `parallel_thread_skew`, busiest thread over the average |
 
 There is no configuration plumbing for these yet. The record is public and has `init` setters, so
 library callers can override them; the CLI always uses defaults.
@@ -248,6 +255,45 @@ is unverified.
 and Window Spool must consume their entire input before yielding a row, so a `TOP` above them
 cannot spare them the work, and their memory grant is still sized for the full cardinality. On a
 non-blocking operator a defeated row goal is much less interesting.
+
+Only a timeout or a memory limit is an early abort. The showplan schema enumerates three
+values for `StatementOptmEarlyAbortReason`: `TimeOut`, `MemoryLimitExceeded` and
+`GoodEnoughPlanFound`. The third is how an optimization normally ends: 28 of the 101 plans
+published with PlanInspector carry it, and one carries `TimeOut`.
+
+Non-parallel reasons are filtered to the ones the code causes. The schema types
+`NonParallelPlanReason` as a free string; the values come from the
+[query processing architecture guide](https://learn.microsoft.com/sql/relational-databases/query-processing-architecture-guide#parallel-query-processing),
+which lists them as examples, not as a closed set. The rule keeps
+`TSQLUserDefinedFunctionsNotParallelizable`,
+`TableVariableTransactionsDoNotSupportParallelNestedTransaction`,
+`CLRUserDefinedFunctionRequiresDataAccess`, `NonParallelizableIntrinsicFunction`,
+`DMLQueryReturnsOutputToClient`, `NoParallelWithRemoteQuery` and the three cursor reasons
+(`NoParallelDynamicCursor`, `NoParallelFastForwardCursor`, `NoParallelCursorFetchByBookmark`).
+It leaves out configuration and edition reasons (`MaxDOPSetToOne`, `EstimatedDOPIsOne`, the
+edition and index-build ones), In-Memory OLTP, and `CouldNotGenerateValidParallelPlan`: a
+developer cannot act on them in the query. A value missing from that page is not reported.
+The cost floor exists because the engine evaluates parallel alternatives only when the serial
+plan's cost exceeds `cost threshold for parallelism`
+([documented](https://learn.microsoft.com/sql/database-engine/configure-windows/configure-the-cost-threshold-for-parallelism-server-configuration-option));
+below it, the reason is true and changes nothing. The plan does not carry the instance's
+setting, so the documented default of 5 stands in for it. Measured on the 101 PlanInspector
+plans: six carry a code reason (two scalar functions, four table variables), and the two
+scalar-function plans are the only ones above 5.
+
+Trace flags are read from the compile-time list only. A `QueryPlan` can carry two
+`TraceFlags` lists, distinguished by `IsCompileTime`. The compile-time one is what shaped the
+plan; a flag set in the session or by `QUERYTRACEON` shows up there and nowhere in the
+instance configuration. Global flags are reported too, with their `scope`, so a reader can
+filter them out. Measured: one plan of 101, trace flag 9130 at session scope.
+
+Thread 0 is left out of the skew. In a parallel plan, thread 0 is the coordinator. Under
+an operator of the parallel zone it reports zero rows, which would pull the average down; on a
+Gather Streams it reports every row received from the producers, which would double the total.
+Measured on the 101 PlanInspector plans: 266 parallel operators carry runtime counters, 119
+process at least 10,000 rows on their worker threads, and 16 of those have a thread above
+twice the average. At DOP 2 the rule cannot fire: with two threads, the busiest one carries at
+most twice the average.
 
 ---
 
