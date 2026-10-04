@@ -19,6 +19,26 @@ an audit can always name the build that produced it.
 
 ## [Unreleased]
 
+### Added
+
+- Four plan findings, read from attributes no rule looked at before. Measured on the 101
+  real plans published with PlanInspector: 1, 2, 1 and 16 occurrences respectively.
+  - `optimizer_early_abort`: `StatementOptmEarlyAbortReason` is `TimeOut` or
+    `MemoryLimitExceeded`. `GoodEnoughPlanFound`, the normal outcome (28 plans of 101), is
+    not reported.
+  - `non_parallel_plan`: `NonParallelPlanReason` names a choice made in the query's code
+    (scalar T-SQL function, table variable modification, cursor type, `OUTPUT` to the
+    client, and a few more), and the statement costs more than the default cost threshold
+    for parallelism. Configuration and edition reasons such as `MaxDOPSetToOne` are left
+    out. Six plans carry a code reason, two of them above the cost threshold.
+  - `trace_flag`: one finding per trace flag in the compile-time `TraceFlags` list, with its
+    value and scope. The execution-time list is ignored.
+  - `parallel_thread_skew`: a parallel operator whose busiest thread processed more than
+    twice the average, over at least 10,000 rows. Thread 0, the coordinator, is left out of
+    the floor, the maximum and the average.
+- Three thresholds on `PlanFindingThresholds`: `NonParallelMinCost` (5), `ThreadSkewMinRows`
+  (10,000) and `ThreadSkewRatio` (2).
+
 ## [0.4.0] - 2026-09-27
 
 Plan findings that match what the engine actually writes. Three rules were checked against

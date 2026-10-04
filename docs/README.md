@@ -48,7 +48,7 @@ Start at the [project README](../README.md) if you have not read it yet.
 | [configuration.md](configuration.md) | `sqlferret.config.json`, `.env`, resolution order, `project.json` |
 | [data-model.md](data-model.md) | Every DuckDB table and column, plus a library of useful queries |
 | [normalization.md](normalization.md) | Tokenization, classification, fingerprinting, versioning, guarantees |
-| [execution-plans.md](execution-plans.md) | Plan identity, deduplication, the eight findings, digest and index formats |
+| [execution-plans.md](execution-plans.md) | Plan identity, deduplication, the twelve findings, digest and index formats |
 | [blocking.md](blocking.md) | Blocked-process capture, the relational model, the digest, chains, XML export |
 | [query-store.md](query-store.md) | Snapshot import, time windows, version differences, units |
 | [privacy.md](privacy.md) | What lands on disk, redaction policies, plan obfuscation, threat model |

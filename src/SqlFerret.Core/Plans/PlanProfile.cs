@@ -44,6 +44,19 @@ public record PlanFindingThresholds
     /// Ne borne que la règle du ratio — le seuil absolu sur la demande reste actif.
     /// </summary>
     public long GrantRatioFloorKb { get; init; } = 16_384;   // 16 Mo
+
+    /// <summary>
+    /// Coût d'instruction au-dessus duquel une raison de non-parallélisme due au code est
+    /// signalée. Le plan ne porte pas le coût seuil de parallélisme de l'instance ; la
+    /// valeur par défaut documentée de ce réglage (5) en tient lieu.
+    /// </summary>
+    public double NonParallelMinCost { get; init; } = 5;
+
+    /// <summary>Lignes totales d'un opérateur parallèle sous lesquelles le déséquilibre est ignoré.</summary>
+    public long ThreadSkewMinRows { get; init; } = 10_000;
+
+    /// <summary>Rapport du thread le plus chargé à la moyenne, thread 0 exclu.</summary>
+    public double ThreadSkewRatio { get; init; } = 2;
 }
 
 /// <summary>

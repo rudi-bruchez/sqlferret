@@ -220,7 +220,7 @@ Indexed on `captured_at`.
 | Column | Type | Notes |
 |---|---|---|
 | `plan_profile_id` | BIGINT | → `plan_profiles`, indexed |
-| `kind` | TEXT | One of eight kinds, see [execution-plans.md](execution-plans.md#findings) |
+| `kind` | TEXT | One of twelve kinds, see [execution-plans.md](execution-plans.md#findings) |
 | `node_id` | INTEGER | Plan node, NULL for plan-wide findings |
 | `detail_json` | TEXT | Kind-specific JSON payload |
 
