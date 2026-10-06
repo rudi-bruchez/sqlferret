@@ -312,8 +312,10 @@ thresholds give per-hour loads that cannot be compared. Read the block before th
 
 After the coverage block the digest ranks, in this order: statements whose average duration per
 execution rose or fell, statements whose total duration per hour of capture rose or fell, statements
-present on one side only, and plan changes with the finding kinds that appeared or disappeared. Only
-statements with enough executions on each side are ranked, and an execution without a duration is left
+present on one side only, and plan changes with the finding kinds that appeared or disappeared. The
+cost ranking keeps statements with at least 5 executions on each side and an average duration of at
+least 1 ms on one of them. The load ranking keeps statements with at least 5 executions on either side,
+and is computed only when both active spans reach ten minutes. An execution without a duration is left
 out everywhere and counted in the coverage block.
 
 A comparison that cannot be trusted is refused with exit 1, never printed. The checks run in this
@@ -336,8 +338,8 @@ stored it was imported with the `literals` SQL text policy, taking the target's 
 base's otherwise. When every run on both sides is `raw` (a run older than the policy column counts as
 `raw`), texts are printed as stored. In every other case the text is replaced by
 `(text withheld: first imported under raw)`, even though both projects hold it. The rule is
-conservative: it can withhold a text that was in fact safe, and it never prints one whose first run
-stored literals. Statement text from execution plans is never printed.
+conservative: it can withhold a text that was in fact safe, and it never prints a text whose first run
+was imported `raw`, unless every run on both sides is `raw`. Statement text from execution plans is never printed.
 
 ---
 
