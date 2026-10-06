@@ -43,7 +43,7 @@ Start at the [project README](../README.md) if you have not read it yet.
 |---|---|
 | [getting-started.md](getting-started.md) | Capture, build, import, analyze, export — the whole first run |
 | [capture-session.md](capture-session.md) | Events, actions, a ready-to-paste session, and field notes from a real trace |
-| [cli-reference.md](cli-reference.md) | `import`, `top-slow`, `query`, `reclassify`, `export-blocking`, `export-events`, `query-store-import`, `obfuscate-plan`, `export-health` |
+| [cli-reference.md](cli-reference.md) | `import`, `top-slow`, `query`, `reclassify`, `export-blocking`, `export-events`, `query-store-import`, `obfuscate-plan`, `export-health`, `compare` |
 | [tui.md](tui.md) | Views, key map, drill-down, replay copy, persisted state |
 | [configuration.md](configuration.md) | `sqlferret.config.json`, `.env`, resolution order, `project.json` |
 | [data-model.md](data-model.md) | Every DuckDB table and column, plus a library of useful queries |

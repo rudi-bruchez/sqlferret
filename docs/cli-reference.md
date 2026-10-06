@@ -273,6 +273,74 @@ A project with no diagnostics data at all gets a different message from a health
 
 ---
 
+## `compare`
+
+Compare two existing projects and emit a digest of what changed between them.
+
+```text
+sqlferret compare --base <dir> --target <dir> [--database <name>]
+                  [--format json|md|both] [--out <file>] [--limit <n>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--base` | required | The reference project (before, the normal period, the reference server) |
+| `--target` | required | The project compared against it. Deltas and ratios read as target relative to base |
+| `--database` | all | Restrict executions on both sides to one `database_name`; plans follow through their link to executions |
+| `--format` | `md` | `json`, `md` or `both`. Any other value exits 1 rather than falling back |
+| `--out` | stdout | With `both`, writes `<stem>.md` and `<stem>.json`. Rejects `..`, and any path that lands inside either project directory, so that the command writes nothing into a project. Symbolic links are resolved before that check, on every file written; a hard link to a file inside a project is not detected. A write failure, or an `--out` that names no file (`--out /`), exits 1 with a message |
+| `--limit` | 10 | Rows per ranked section. Must be a positive integer |
+
+A flag given without a value (`--database` last on the line, or followed by another flag) exits 1; it
+is never read as "all databases". `--base` and `--target` are project directories, like `--project`
+elsewhere, but `compare` never creates one: a directory without `sqlferret.duckdb` is an error. The
+two may be the same directory. Both databases are attached read-only, so neither project is modified:
+no `project.json`, no `README.md`, no `plans/` or `exports/` is created. Durations are formatted with
+the base project's `display.durationUnit`, read from its `sqlferret.config.json`; a missing file means
+the defaults, and a malformed or unreadable one exits 1 with a message.
+
+The coverage block comes first, because every number after it depends on it. For each side it lists
+the runs with their spans, the active span (the sum of the per-run spans, so the idle time between two
+imports does not count), the largest gap inside a run, the executions and distinct statements left
+after the `--database` filter, the databases seen, the normalizer version, the redaction and SQL text
+policies, and the plan profiles. Notes follow when they apply: an active span under ten minutes on
+either side, in which case per-hour figures are not computed; a run whose own largest gap exceeds a
+quarter of its span, which probably holds several disjoint captures; no usable plan profile on one
+side, in which case the plan section is skipped. One note is always present: SQLFerret does not know
+the filters of the sessions that produced the captures, so two captures with different duration
+thresholds give per-hour loads that cannot be compared. Read the block before the sections.
+
+After the coverage block the digest ranks, in this order: statements whose average duration per
+execution rose or fell, statements whose total duration per hour of capture rose or fell, statements
+present on one side only, and plan changes with the finding kinds that appeared or disappeared. Only
+statements with enough executions on each side are ranked, and an execution without a duration is left
+out everywhere and counted in the coverage block.
+
+A comparison that cannot be trusted is refused with exit 1, never printed. The checks run in this
+order:
+
+- A directory without `sqlferret.duckdb`: the message names it.
+- A project held open by another process (the TUI keeps its project open for its whole session, and an
+  import does too): close it, then run the command again.
+- A project from an older schema, missing a table or column the digest reads: the message names the
+  project and the column. Run any other command on it once (`top-slow` is enough) to migrate it.
+- A side with no execution after the `--database` filter: the message names that side.
+- Fingerprints from different normalizer generations on the two sides: the message prints the versions
+  found. The older capture must be re-imported, since its stored hashes cannot be recomputed in place.
+  `reclassify` does not help here, because it rewrites the classification and not the hashes. Versions
+  3 and 4 share one generation.
+
+Statement text follows its own rule, decided per statement. A stored text belongs to the run that first
+met the statement, and a later run never replaces it. The digest prints a text when the run that first
+stored it was imported with the `literals` SQL text policy, taking the target's text first and the
+base's otherwise. When every run on both sides is `raw` (a run older than the policy column counts as
+`raw`), texts are printed as stored. In every other case the text is replaced by
+`(text withheld: first imported under raw)`, even though both projects hold it. The rule is
+conservative: it can withhold a text that was in fact safe, and it never prints one whose first run
+stored literals. Statement text from execution plans is never printed.
+
+---
+
 ## `export-blocking`
 
 Emit the blocking digest.

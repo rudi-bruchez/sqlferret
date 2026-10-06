@@ -24,8 +24,8 @@ docs/                               user + contributor documentation (indexed by
 .agents/skills/                     agent skills, cross-runtime
 ```
 
-CLI commands, nine of them: `import`, `top-slow`, `query`, `reclassify`, `export-blocking`,
-`export-events`, `export-health`, `query-store-import`, `obfuscate-plan`. Flags and exit codes:
+CLI commands, ten of them: `import`, `top-slow`, `query`, `reclassify`, `export-blocking`,
+`export-events`, `export-health`, `query-store-import`, `obfuscate-plan`, `compare`. Flags and exit codes:
 `docs/cli-reference.md`.
 
 Core namespaces, one-directional deps:
@@ -71,7 +71,7 @@ the parameter collection matches `name`. Every `Add` helper does `name.TrimStart
 
 ```bash
 dotnet build                                  # 0 warnings expected (verified)
-dotnet test                                   # 680 tests, up to 11 skip (see below)
+dotnet test                                   # 744 tests, up to 11 skip (see below)
 dotnet test --filter <TestClassName>          # focused
 dotnet format <path>                          # style; .editorconfig is the baseline
 ```
