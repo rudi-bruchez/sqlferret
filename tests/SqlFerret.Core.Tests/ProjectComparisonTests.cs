@@ -198,4 +198,64 @@ public class ProjectComparisonTests
         Assert.Equal(2L, cov.Base.Executions);
         Assert.Equal(1L, cov.Base.ExecutionsWithoutDuration);
     }
+
+    private const string Leaky = "select * from AppSchema.WidgetRecalc where Code = \"GADGET-7781\"";
+
+    [Fact]
+    public void A_raw_first_side_is_not_trusted_and_the_literals_side_text_is_printed()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        a.Import(Burst("h1", 1, 5_000, T0).Select(e => e with { Sql = Leaky }), SqlTextSanitization.Literals);
+        b.Import(Burst("h1", 1, 5_000, T0).Select(e => e with { Sql = Leaky }));                       // raw first
+        b.Import(Burst("h1", 1, 5_000, T0.AddDays(1)).Select(e => e with { Sql = Leaky }), SqlTextSanitization.Literals);
+        var text = new ProjectComparison(a.DbPath, b.DbPath).TextOf(Opt, "h1");
+        Assert.NotNull(text);
+        Assert.DoesNotContain("GADGET-7781", text);
+        Assert.NotEqual(ProjectComparison.TextWithheld, text);
+    }
+
+    [Fact]
+    public void A_hash_known_only_to_a_raw_first_side_is_withheld()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        a.Import(Burst("h1", 1, 5_000, T0), SqlTextSanitization.Literals);
+        b.Import(Burst("h2", 1, 5_000, T0).Select(e => e with { Sql = Leaky }));
+        b.Import(Burst("h1", 1, 5_000, T0.AddDays(1)), SqlTextSanitization.Literals);
+        Assert.Equal(ProjectComparison.TextWithheld, new ProjectComparison(a.DbPath, b.DbPath).TextOf(Opt, "h2"));
+    }
+
+    [Fact]
+    public void Two_all_raw_projects_print_the_stored_text()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        a.Import(Burst("h1", 1, 5_000, T0).Select(e => e with { Sql = Leaky }));
+        b.Import(Burst("h1", 1, 5_000, T0).Select(e => e with { Sql = Leaky }));
+        Assert.Contains("GADGET-7781", new ProjectComparison(a.DbPath, b.DbPath).TextOf(Opt, "h1"));
+    }
+
+    [Fact]
+    public void A_hash_first_met_in_a_raw_blocking_report_is_withheld()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        a.Import(Burst("h1", 1, 5_000, T0), SqlTextSanitization.Literals);
+        b.BlockingOnly("hb", Leaky, SqlTextSanitization.Raw);                                         // wrote the text
+        b.Import(Burst("hb", 1, 5_000, T0.AddHours(1)).Select(e => e with { Sql = Leaky }), SqlTextSanitization.Literals);
+        Assert.Equal(ProjectComparison.TextWithheld, new ProjectComparison(a.DbPath, b.DbPath).TextOf(Opt, "hb"));
+    }
+
+    [Fact]
+    public void Sanitizing_is_required_unless_every_run_on_both_sides_is_raw()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        a.Import(Burst("h1", 1, 5_000, T0));
+        b.Import(Burst("h1", 1, 5_000, T0));
+        Assert.False(ProjectComparison.MustSanitize(new ProjectComparison(a.DbPath, b.DbPath).CoverageOnly(Opt)));
+        b.Import(Burst("h1", 1, 5_000, T0.AddHours(1)), SqlTextSanitization.Literals);
+        Assert.True(ProjectComparison.MustSanitize(new ProjectComparison(a.DbPath, b.DbPath).CoverageOnly(Opt)));
+    }
 }

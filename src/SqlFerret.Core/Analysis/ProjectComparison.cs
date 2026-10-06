@@ -299,4 +299,63 @@ public sealed class ProjectComparison(string baseDbPath, string targetDbPath)
         while (r.Read()) list.Add(r.GetString(0));
         return list;
     }
+
+    internal const string TextWithheld = "(text withheld: first imported under raw)";
+
+    internal static bool MustSanitize(CompareCoverage c) =>
+        c.Base.SqlTextPolicies.Concat(c.Target.SqlTextPolicies).Any(p => p != "raw");
+
+    /// <summary>
+    /// Le texte imprime pour chaque empreinte, en CTE compare_texts(h, txt). Les deux ecrivains de
+    /// normalized_queries (l'upsert des executions, l'insert des blocages) gardent le premier
+    /// texte ; la politique est par run. Le texte d'un cote n'est donc fiable que si le premier
+    /// run de ce cote qui a rencontre l'empreinte etait en literals. Rien n'est re-parse : un
+    /// texte normalise porte des ?, que ScriptDom ne parse pas (spec §7, revision 3).
+    /// </summary>
+    internal static string TextsCte(bool sanitize)
+    {
+        if (!sanitize)
+            return """
+                compare_texts AS (
+                  SELECT a.h AS h, coalesce(tq.normalized_sql, bq.normalized_sql) AS txt
+                  FROM (SELECT normalized_hash AS h FROM base.normalized_queries
+                        UNION SELECT normalized_hash AS h FROM target.normalized_queries) AS a
+                  LEFT JOIN base.normalized_queries AS bq ON bq.normalized_hash = a.h
+                  LEFT JOIN target.normalized_queries AS tq ON tq.normalized_hash = a.h)
+                """;
+
+        static string Trusted(string alias) => $"""
+            SELECT o.h AS h, q.normalized_sql AS txt
+            FROM (SELECT s.h AS h, min(s.run_id) AS r FROM (
+                    SELECT normalized_hash AS h, run_id AS run_id FROM {alias}.executions WHERE normalized_hash IS NOT NULL
+                    UNION ALL
+                    SELECT p.inputbuf_fingerprint AS h, br.run_id AS run_id
+                    FROM {alias}.blocking_processes AS p JOIN {alias}.blocking_reports AS br ON br.report_id = p.report_id
+                    WHERE p.inputbuf_fingerprint IS NOT NULL) AS s
+                  GROUP BY s.h) AS o
+            JOIN {alias}.ingestion_runs AS r ON r.run_id = o.r
+            JOIN {alias}.normalized_queries AS q ON q.normalized_hash = o.h
+            WHERE r.sql_text_policy = 'literals'
+            """;
+
+        return $"""
+            compare_texts AS (
+              SELECT a.h AS h, coalesce(tt.txt, tb.txt, '{TextWithheld}') AS txt
+              FROM (SELECT normalized_hash AS h FROM base.normalized_queries
+                    UNION SELECT normalized_hash AS h FROM target.normalized_queries) AS a
+              LEFT JOIN ({Trusted("base")}) AS tb ON tb.h = a.h
+              LEFT JOIN ({Trusted("target")}) AS tt ON tt.h = a.h)
+            """;
+    }
+
+    public string? TextOf(CompareOptions o, string hash)
+    {
+        using var conn = Open();
+        CheckPreconditions(conn, o);
+        var sanitize = MustSanitize(Coverage(conn, o));
+        using var c = conn.CreateCommand();
+        c.CommandText = $"WITH {TextsCte(sanitize)} SELECT txt FROM compare_texts WHERE h = $h";
+        Add(c, "$h", hash);
+        return c.ExecuteScalar() as string;
+    }
 }
