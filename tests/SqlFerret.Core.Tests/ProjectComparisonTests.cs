@@ -146,7 +146,7 @@ public class ProjectComparisonTests
         using var a = new CompareFixture();
         a.Import(Burst("h1", 3, 5_000, T0));             // 120 s, under 10 minutes
         var cov = new ProjectComparison(a.DbPath, a.DbPath).CoverageOnly(Opt);
-        Assert.Contains(cov.Notes, n => n.Contains("per-hour", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(cov.Notes, n => n.Contains("active span under the threshold", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -157,7 +157,7 @@ public class ProjectComparisonTests
             Burst("h1", 2, 5_000, T0, 300).Concat(Burst("h1", 2, 5_000, T0.AddHours(3), 300)));
         var cov = new ProjectComparison(a.DbPath, a.DbPath).CoverageOnly(Opt);
         Assert.Equal(run, cov.Base.LargestGapRunId);
-        Assert.Contains(cov.Notes, n => n.Contains($"run {run}"));
+        Assert.Contains(cov.Notes, n => n.Contains($"run {run} has a gap"));
     }
 
     [Fact]
