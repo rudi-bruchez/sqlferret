@@ -510,4 +510,89 @@ public sealed class ProjectComparison(string baseDbPath, string targetDbPath)
         return (Read("(ratio > 1 OR ratio IS NULL)", "(ratio IS NULL) DESC, ratio DESC, ta DESC"),
                 Read("ratio < 1", "ratio ASC"));
     }
+
+    public PlanSection PlansOnly(CompareOptions o)
+    {
+        using var conn = Open();
+        CheckPreconditions(conn, o);
+        return PlanChanges(conn, o, Coverage(conn, o));
+    }
+
+    /// <summary>Hash d'execution (decimal UInt64 en general) vers le hex nu, 16 chiffres, des plans.
+    /// hex() perd les zeros de tete ; TRY_CAST parce qu'un cast qui echoue avorte la requete.</summary>
+    private const string ExecHashHex = "printf('%016X', TRY_CAST(e.query_hash AS UBIGINT))";
+    private const string PlanHashHex = "lpad(upper(p.query_hash), 16, '0')";
+
+    internal PlanSection PlanChanges(DuckDBConnection conn, CompareOptions o, CompareCoverage cov)
+    {
+        if (cov.Base.EligiblePlanProfiles == 0 || cov.Target.EligiblePlanProfiles == 0)
+            return new PlanSection(true, "a side has no single-statement plan profile", [], 0, 0);
+
+        string Eligible(string alias) => $"""
+            SELECT {PlanHashHex} AS qh, p.plan_hash AS plan_hash, p.plan_profile_id AS plan_profile_id, p.duration_us AS duration_us
+            FROM {alias}.plan_profiles AS p
+            WHERE p.plan_hash_source = 'queryplanhash' AND p.query_hash IS NOT NULL
+            """;
+        // Avec --database, un plan n'est garde que s'il se rattache a une execution de cette base.
+        string Kept(string alias) => o.Database is null ? Eligible(alias) : $"""
+            SELECT * FROM ({Eligible(alias)}) AS el WHERE el.qh IN
+              (SELECT {ExecHashHex} AS qh FROM {Execs(alias, o)} AS e WHERE e.query_hash IS NOT NULL)
+            """;
+
+        long unlinked;
+        using (var c = conn.CreateCommand())
+        {
+            c.CommandText = $"""
+                SELECT (SELECT count(*) FROM ({Eligible("base")}) AS x1) + (SELECT count(*) FROM ({Eligible("target")}) AS x2)
+                     - (SELECT count(*) FROM ({Kept("base")}) AS x3) - (SELECT count(*) FROM ({Kept("target")}) AS x4) AS unlinked
+                """;
+            AddDb(c, o);
+            unlinked = Convert.ToInt64(c.ExecuteScalar());
+        }
+
+        using var q = conn.CreateCommand();
+        // La mediane est prise sur les profils avant toute jointure aux findings : jointe apres,
+        // un profil a trois findings comptait trois fois (mesure, revision 1 du plan).
+        q.CommandText = $"""
+            WITH bk AS ({Kept("base")}), tk AS ({Kept("target")}),
+                 b AS (SELECT qh, array_to_string(list_sort(list_distinct(list(plan_hash))), ',') AS plan_set,
+                              median(duration_us) AS med FROM bk GROUP BY qh),
+                 t AS (SELECT qh, array_to_string(list_sort(list_distinct(list(plan_hash))), ',') AS plan_set,
+                              median(duration_us) AS med FROM tk GROUP BY qh),
+                 bf AS (SELECT k.qh AS qh, array_to_string(list_sort(list_distinct(list(f.kind))), ',') AS kinds
+                        FROM bk AS k JOIN base.plan_findings AS f ON f.plan_profile_id = k.plan_profile_id GROUP BY k.qh),
+                 tf AS (SELECT k.qh AS qh, array_to_string(list_sort(list_distinct(list(f.kind))), ',') AS kinds
+                        FROM tk AS k JOIN target.plan_findings AS f ON f.plan_profile_id = k.plan_profile_id GROUP BY k.qh),
+                 link AS (SELECT {ExecHashHex} AS qh, any_value(e.normalized_hash) AS nh
+                          FROM {Execs("target", o)} AS e WHERE e.query_hash IS NOT NULL GROUP BY 1)
+            SELECT b.qh AS qh, b.plan_set AS b_plans, t.plan_set AS t_plans, bf.kinds AS b_kinds, tf.kinds AS t_kinds,
+                   b.med AS b_med, t.med AS t_med, link.nh AS nh, count(*) OVER () AS total
+            FROM b JOIN t ON b.qh = t.qh
+            LEFT JOIN bf ON bf.qh = b.qh
+            LEFT JOIN tf ON tf.qh = t.qh
+            LEFT JOIN link ON link.qh = b.qh
+            WHERE b.plan_set <> t.plan_set OR coalesce(bf.kinds, '') <> coalesce(tf.kinds, '')
+            ORDER BY t.med DESC NULLS LAST, b.qh
+            LIMIT $lim
+            """;
+        AddDb(q, o);
+        Add(q, "$lim", o.Limit);
+
+        static IReadOnlyList<string> Split(string? s) => string.IsNullOrEmpty(s) ? [] : s.Split(',');
+        var rows = new List<PlanChangeRow>();
+        long total = 0;
+        using (var r = q.ExecuteReader())
+            while (r.Read())
+            {
+                var bk = Split(r.IsDBNull(3) ? null : r.GetString(3));
+                var tk = Split(r.IsDBNull(4) ? null : r.GetString(4));
+                rows.Add(new PlanChangeRow(r.GetString(0), Split(r.GetString(1)), Split(r.GetString(2)),
+                    r.GetString(1) != r.GetString(2),
+                    tk.Except(bk).ToList(), bk.Except(tk).ToList(),
+                    r.IsDBNull(5) ? null : r.GetDouble(5), r.IsDBNull(6) ? null : r.GetDouble(6),
+                    r.IsDBNull(7) ? null : r.GetString(7)));
+                total = r.GetInt64(8);
+            }
+        return new PlanSection(false, null, rows, total, unlinked);
+    }
 }

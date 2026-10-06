@@ -445,4 +445,132 @@ public class ProjectComparisonTests
         var (limited, _) = pc.CostOnly(new CompareOptions(2, null, new CompareThresholds()));
         Assert.Equal(["z2", "z1"], limited.Select(r => r.NormalizedHash));
     }
+
+    private static CompareFixture.Exec Linked(DateTime at, string db = "AppDb") =>
+        new("h1", Exec1, 5_000, at, db, QueryHash: "728224406569967729");
+
+    [Fact]
+    public void A_changed_plan_and_an_appeared_finding_are_listed_and_linked_through_a_leading_zero_hash()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        var ra = a.Import([Linked(T0)]);
+        var rb = b.Import([Linked(T0)]);
+        a.Plans(ra, CompareFixture.Plan("0A1B2C3D4E5F6071", "P1", 1_000));
+        b.Plans(rb, CompareFixture.Plan("0A1B2C3D4E5F6071", "P2", 9_000, "queryplanhash",
+            new SqlFerret.Core.Plans.PlanFinding("spill_to_tempdb", 3, "{}")));
+        var s = new ProjectComparison(a.DbPath, b.DbPath).PlansOnly(Opt);
+        Assert.False(s.Skipped);
+        var row = Assert.Single(s.Rows);
+        Assert.True(row.PlanChanged);
+        Assert.Equal(["spill_to_tempdb"], row.AppearedKinds);
+        Assert.Equal("h1", row.LinkedNormalizedHash);
+        Assert.Equal("0A1B2C3D4E5F6071", row.QueryHash);
+        Assert.Equal(["P1"], row.BasePlanHashes);
+        Assert.Equal(["P2"], row.TargetPlanHashes);
+        Assert.Empty(row.DisappearedKinds);
+        Assert.Equal(1_000d, row.BaseMedianUs!.Value, 3);
+        Assert.Equal(9_000d, row.TargetMedianUs!.Value, 3);
+        Assert.Null(s.SkipReason);
+        Assert.Equal(1L, s.Total);
+        Assert.Equal(0L, s.UnlinkedExcluded);
+    }
+
+    [Fact]
+    public void Multi_statement_plans_are_excluded_and_a_side_without_eligible_plans_skips()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        var ra = a.Import(Burst("h1", 1, 5_000, T0));
+        var rb = b.Import(Burst("h1", 1, 5_000, T0));
+        a.Plans(ra, CompareFixture.Plan("0A1B2C3D4E5F6071", "M1", 1_000, "multi"));
+        b.Plans(rb, CompareFixture.Plan("0A1B2C3D4E5F6071", "M2", 1_000, "multi"));
+        var s = new ProjectComparison(a.DbPath, b.DbPath).PlansOnly(Opt);
+        Assert.True(s.Skipped);
+        Assert.Empty(s.Rows);
+        Assert.Equal("a side has no single-statement plan profile", s.SkipReason);
+        Assert.Equal(0L, s.Total);
+        Assert.Equal(0L, s.UnlinkedExcluded);
+    }
+
+    [Fact]
+    public void With_a_database_filter_only_linked_plans_are_kept_and_the_rest_counted()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        var ra = a.Import([Linked(T0)]);
+        var rb = b.Import([Linked(T0)]);
+        a.Plans(ra, CompareFixture.Plan("0A1B2C3D4E5F6071", "P1", 1_000), CompareFixture.Plan("00000000000000AA", "Q1", 1_000));
+        b.Plans(rb, CompareFixture.Plan("0A1B2C3D4E5F6071", "P2", 1_000), CompareFixture.Plan("00000000000000AA", "Q2", 1_000));
+        var s = new ProjectComparison(a.DbPath, b.DbPath).PlansOnly(Opt with { Database = "AppDb" });
+        var kept = Assert.Single(s.Rows);
+        Assert.Equal("0A1B2C3D4E5F6071", kept.QueryHash);
+        Assert.True(kept.PlanChanged);
+        Assert.Equal("h1", kept.LinkedNormalizedHash);
+        Assert.Equal(1L, s.Total);
+        Assert.Equal(2L, s.UnlinkedExcluded);
+    }
+
+    [Fact]
+    public void Unlinked_plans_are_counted_even_when_no_plan_changed()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        var ra = a.Import([Linked(T0)]);
+        var rb = b.Import([Linked(T0)]);
+        a.Plans(ra, CompareFixture.Plan("0A1B2C3D4E5F6071", "P1", 1_000), CompareFixture.Plan("00000000000000AA", "Q1", 1_000));
+        b.Plans(rb, CompareFixture.Plan("0A1B2C3D4E5F6071", "P1", 1_000), CompareFixture.Plan("00000000000000AA", "Q1", 1_000));
+        var s = new ProjectComparison(a.DbPath, b.DbPath).PlansOnly(Opt with { Database = "AppDb" });
+        Assert.Empty(s.Rows);
+        Assert.Equal(0L, s.Total);
+        Assert.False(s.Skipped);
+        Assert.Equal(2L, s.UnlinkedExcluded);
+    }
+
+    [Fact]
+    public void The_plan_median_counts_each_profile_once_whatever_its_findings()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        var ra = a.Import([Linked(T0)]);
+        var rb = b.Import([Linked(T0)]);
+        a.Plans(ra, CompareFixture.Plan("0A1B2C3D4E5F6071", "P1", 1_000));
+        var f = new SqlFerret.Core.Plans.PlanFinding("large_scan", 1, "{}");
+        b.Plans(rb,
+            CompareFixture.Plan("0A1B2C3D4E5F6071", "P2", 1_000, "queryplanhash", f, f with { NodeId = 2 }, f with { NodeId = 3 }),
+            CompareFixture.Plan("0A1B2C3D4E5F6071", "P2", 9_000));
+        var row = Assert.Single(new ProjectComparison(a.DbPath, b.DbPath).PlansOnly(Opt).Rows);
+        Assert.Equal(5_000d, row.TargetMedianUs!.Value, 3);
+        Assert.Equal(1_000d, row.BaseMedianUs!.Value, 3);
+        Assert.Equal(["large_scan"], row.AppearedKinds);
+    }
+
+    [Fact]
+    public void Plan_rows_are_ordered_by_target_median_and_limited_while_the_total_counts_all()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        var ra = a.Import(Burst("h1", 1, 5_000, T0));
+        var rb = b.Import(Burst("h1", 1, 5_000, T0));
+        var f = new SqlFerret.Core.Plans.PlanFinding("large_scan", 1, "{}");
+        // Meme plan des deux cotes : seul le finding disparu change la ligne.
+        a.Plans(ra, CompareFixture.Plan("00000000000000AA", "Q1", 2_000, "queryplanhash", f),
+                    CompareFixture.Plan("0A1B2C3D4E5F6071", "P1", 1_000));
+        b.Plans(rb, CompareFixture.Plan("00000000000000AA", "Q1", 3_000),
+                    CompareFixture.Plan("0A1B2C3D4E5F6071", "P2", 9_000));
+        var pc = new ProjectComparison(a.DbPath, b.DbPath);
+        var all = pc.PlansOnly(Opt);
+        Assert.Equal(["0A1B2C3D4E5F6071", "00000000000000AA"], all.Rows.Select(r => r.QueryHash));
+        Assert.Equal(2L, all.Total);
+        var gone = all.Rows[1];
+        Assert.False(gone.PlanChanged);
+        Assert.Equal(["large_scan"], gone.DisappearedKinds);
+        Assert.Empty(gone.AppearedKinds);
+        Assert.Equal(2_000d, gone.BaseMedianUs!.Value, 3);
+        Assert.Equal(3_000d, gone.TargetMedianUs!.Value, 3);
+        Assert.Null(gone.LinkedNormalizedHash);
+        var one = pc.PlansOnly(Opt with { Limit = 1 });
+        Assert.Equal(["0A1B2C3D4E5F6071"], one.Rows.Select(r => r.QueryHash));
+        Assert.Equal(2L, one.Total);
+    }
 }
