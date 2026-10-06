@@ -213,6 +213,11 @@ If you observe a violation in code the task does not touch, **report it and move
   `query` is the deliberate exception: it runs user SQL verbatim, and non-writing is guaranteed by
   opening the connection **read-only**, never by inspecting the statement — parsing it to decide
   whether it writes would be a sieve.
+  The second exception is the path of an `ATTACH` in `ProjectComparison` (`compare`): DuckDB.NET
+  1.5.3 refuses a bound parameter there (`Parser Error: syntax error at or near "$"`, measured
+  2026-10-06). The path is resolved by the host to an existing `sqlferret.duckdb`, interpolated as
+  a string literal with single quotes doubled, and attached `READ_ONLY`; nothing else in that
+  statement comes from the user. No other `ATTACH` and no other path may be interpolated.
 - **Capture actions.** `query_post_execution_plan_profile` self-identifies (`QueryHash` /
   `QueryPlanHash` inside `<StmtSimple>`), but correlating with `executions` requires
   `sqlserver.query_hash` on the completion events. **`<StmtSimple StatementText>` is never a key**
