@@ -349,4 +349,100 @@ public class ProjectComparisonTests
         var (_, all) = new ProjectComparison(a.DbPath, b.DbPath).OneSidedOnly(Opt);
         Assert.Equal(1L, all.Total);
     }
+
+    [Fact]
+    public void Three_times_slower_ranks_first_in_regressions_and_noise_does_not_rank()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        a.Import(Burst("slow", 5, 10_000, T0).Concat(Burst("tiny", 5, 100, T0)).Concat(Burst("rare", 2, 10_000, T0)).Concat(Burst("fast", 5, 30_000, T0)));
+        b.Import(Burst("slow", 5, 30_000, T0).Concat(Burst("tiny", 5, 900, T0)).Concat(Burst("rare", 2, 90_000, T0)).Concat(Burst("fast", 5, 10_000, T0)));
+        var (reg, gains) = new ProjectComparison(a.DbPath, b.DbPath).CostOnly(Opt);
+        var top = Assert.Single(reg);
+        Assert.Equal("slow", top.NormalizedHash);
+        Assert.Equal(3.0, top.Ratio!.Value, 3);
+        var nq = QueryNormalizer.Normalize(Exec1);
+        Assert.Equal(nq.NormalizedSql, top.NormalizedSql);
+        Assert.Equal(nq.StatementKind, top.StatementKind);
+        Assert.Equal(nq.PrimaryTable, top.PrimaryTable);
+        Assert.Equal((5L, 5L), (top.BaseCount, top.TargetCount));
+        Assert.Equal((10_000d, 30_000d), (top.BaseAvgUs, top.TargetAvgUs));
+        Assert.Equal((10_000d, 30_000d), (top.BaseP95Us, top.TargetP95Us));
+        Assert.Null(top.BaseAvgCpuUs);
+        Assert.Null(top.TargetAvgReads);
+        var gain = Assert.Single(gains);
+        Assert.Equal("fast", gain.NormalizedHash);
+        Assert.Equal(1.0 / 3.0, gain.Ratio!.Value, 3);
+        Assert.Equal((30_000d, 10_000d), (gain.BaseAvgUs, gain.TargetAvgUs));
+    }
+
+    [Fact]
+    public void A_zero_base_average_gives_a_null_ratio_ranked_first()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        a.Import(Burst("zero", 5, 0, T0).Concat(Burst("slow", 5, 10_000, T0)));
+        b.Import(Burst("zero", 5, 5_000, T0).Concat(Burst("slow", 5, 30_000, T0)));
+        var (reg, _) = new ProjectComparison(a.DbPath, b.DbPath).CostOnly(Opt);
+        Assert.Equal("zero", reg[0].NormalizedHash);
+        Assert.Null(reg[0].Ratio);
+        Assert.Equal("slow", reg[1].NormalizedHash);
+    }
+
+    [Fact]
+    public void More_frequent_at_the_same_speed_is_not_a_cost_regression()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        a.Import(Burst("h1", 6, 10_000, T0, 600));
+        b.Import(Burst("h1", 60, 10_000, T0, 50));
+        var (reg, gains) = new ProjectComparison(a.DbPath, b.DbPath).CostOnly(Opt);
+        Assert.Empty(reg);
+        Assert.Empty(gains);
+    }
+
+    [Fact]
+    public void Cost_rows_carry_their_figures_in_ranked_order_and_the_floors_apply_per_side()
+    {
+        static IEnumerable<CompareFixture.Exec> Many(string hash, long[] dur, long[]? cpu = null, long[]? reads = null) =>
+            dur.Select((d, i) => new CompareFixture.Exec(hash, Exec1, d, T0.AddSeconds(i * 60),
+                CpuUs: cpu?[i], Reads: reads?[i]));
+        static long[] Rep(long v, int n = 5) => Enumerable.Repeat(v, n).ToArray();
+
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        a.Import(Many("z1", Rep(0)).Concat(Many("z2", Rep(0)))
+            .Concat(Many("mix", [10_000, 10_000, 10_000, 10_000, 20_000], [100, 200, 300, 400, 500], Rep(10)))
+            .Concat(Many("r4", Rep(10_000))).Concat(Many("r3", Rep(10_000))).Concat(Many("r2", Rep(10_000)))
+            .Concat(Many("edge", Rep(400)))
+            .Concat(Many("g2", Rep(20_000))).Concat(Many("g4", Rep(40_000))).Concat(Many("same", Rep(10_000)))
+            .Concat(Many("tgt1", Rep(10_000))).Concat(Many("bas1", Rep(10_000, 4))));
+        b.Import(Many("z1", Rep(5_000)).Concat(Many("z2", Rep(8_000)))
+            .Concat(Many("mix", [50_000, 50_000, 50_000, 50_000, 50_000, 50_000, 120_000], [1_000, 2_000, 3_000, 3_000, 3_000, 4_000, 5_000], Rep(70, 7)))
+            .Concat(Many("r4", Rep(40_000))).Concat(Many("r3", Rep(30_000))).Concat(Many("r2", Rep(20_000)))
+            .Concat(Many("edge", Rep(1_000)))
+            .Concat(Many("g2", Rep(10_000))).Concat(Many("g4", Rep(10_000))).Concat(Many("same", Rep(10_000)))
+            .Concat(Many("tgt1", Rep(30_000, 4))).Concat(Many("bas1", Rep(30_000))));
+        var pc = new ProjectComparison(a.DbPath, b.DbPath);
+        var (reg, gains) = pc.CostOnly(Opt);
+
+        Assert.Equal(["z2", "z1", "mix", "r4", "r3", "edge", "r2"], reg.Select(r => r.NormalizedHash));
+        Assert.Equal(["g4", "g2"], gains.Select(r => r.NormalizedHash));
+        Assert.Equal([0.25, 0.5], gains.Select(r => r.Ratio!.Value));
+
+        var mix = reg[2];
+        Assert.Equal(5.0, mix.Ratio!.Value, 6);
+        Assert.Equal((5L, 7L), (mix.BaseCount, mix.TargetCount));
+        Assert.Equal((12_000d, 60_000d), (mix.BaseAvgUs, mix.TargetAvgUs));
+        Assert.Equal(18_000d, mix.BaseP95Us, 3);
+        Assert.Equal(99_000d, mix.TargetP95Us, 3);
+        Assert.Equal(300d, mix.BaseAvgCpuUs);
+        Assert.Equal(3_000d, mix.TargetAvgCpuUs);
+        Assert.Equal(10d, mix.BaseAvgReads);
+        Assert.Equal(70d, mix.TargetAvgReads);
+        Assert.Equal(2.5, reg[5].Ratio!.Value, 6);
+
+        var (limited, _) = pc.CostOnly(new CompareOptions(2, null, new CompareThresholds()));
+        Assert.Equal(["z2", "z1"], limited.Select(r => r.NormalizedHash));
+    }
 }

@@ -454,4 +454,60 @@ public sealed class ProjectComparison(string baseDbPath, string targetDbPath)
 
         return (List("target", "base", cov.Target.ActiveSpanUs), List("base", "target", cov.Base.ActiveSpanUs));
     }
+
+    public (IReadOnlyList<CostRow> Regressions, IReadOnlyList<CostRow> Gains) CostOnly(CompareOptions o)
+    {
+        using var conn = Open();
+        CheckPreconditions(conn, o);
+        return Cost(conn, o, MustSanitize(Coverage(conn, o)));
+    }
+
+    internal (IReadOnlyList<CostRow> Regressions, IReadOnlyList<CostRow> Gains) Cost(
+        DuckDBConnection conn, CompareOptions o, bool sanitize)
+    {
+        string Agg(string alias) => $"""
+            SELECT normalized_hash AS h, count(*) AS n, avg(duration_us) AS a,
+                   quantile_cont(duration_us, 0.95) AS p, avg(cpu_time_us) AS c, avg(logical_reads) AS r
+            FROM {Execs(alias, o)} AS x GROUP BY 1
+            """;
+
+        List<CostRow> Read(string filter, string order)
+        {
+            using var c = conn.CreateCommand();
+            // filter et order sont des constantes de ce fichier.
+            c.CommandText = $"""
+                WITH {TextsCte(sanitize)},
+                     b AS ({Agg("base")}), t AS ({Agg("target")}),
+                     j AS (SELECT b.h AS h, b.n AS bn, t.n AS tn, b.a AS ba, t.a AS ta, b.p AS bp, t.p AS tp,
+                                  b.c AS bc, t.c AS tc, b.r AS br, t.r AS tr,
+                                  CASE WHEN b.a = 0 THEN NULL ELSE t.a / b.a END AS ratio
+                           FROM b JOIN t ON b.h = t.h
+                           WHERE b.n >= $minExec AND t.n >= $minExec AND greatest(b.a, t.a) >= $minAvg)
+                SELECT j.h AS h, q.statement_kind AS kind, q.primary_table AS tbl, ct.txt AS txt,
+                       bn, tn, ba, ta, bp, tp, bc, tc, br, tr, ratio
+                FROM j JOIN target.normalized_queries AS q ON q.normalized_hash = j.h
+                JOIN compare_texts AS ct ON ct.h = j.h
+                WHERE {filter}
+                ORDER BY {order}, j.h
+                LIMIT $lim
+                """;
+            AddDb(c, o);
+            Add(c, "$minExec", o.Thresholds.MinExecutions);
+            Add(c, "$minAvg", o.Thresholds.MinAvgDurationUs);
+            Add(c, "$lim", o.Limit);
+            using var r = c.ExecuteReader();
+            var list = new List<CostRow>();
+            double? D(int i) => r.IsDBNull(i) ? null : r.GetDouble(i);
+            while (r.Read())
+                list.Add(new CostRow(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2),
+                    r.GetString(3), r.GetInt64(4), r.GetInt64(5),
+                    r.GetDouble(6), r.GetDouble(7), r.GetDouble(8), r.GetDouble(9),
+                    D(10), D(11), D(12), D(13), D(14)));
+            return list;
+        }
+
+        // Une moyenne de base nulle donne un ratio NULL, classe en tete des regressions.
+        return (Read("(ratio > 1 OR ratio IS NULL)", "(ratio IS NULL) DESC, ratio DESC, ta DESC"),
+                Read("ratio < 1", "ratio ASC"));
+    }
 }
