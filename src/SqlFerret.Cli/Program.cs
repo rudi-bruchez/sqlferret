@@ -47,7 +47,7 @@ AuditProject? OpenProject()
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: import <path> --project <dir> [--redaction off|hash|masked|full] [--sanitize-sql-text raw|literals] | top-slow --project <dir> | export-blocking --project <dir> [...] | query-store-import --project <dir> [--conn <s>] [--database <db>] [--no-plans] [--from <dt> --to <dt> | --last <N>{h|d}] | export-events --project <dir> --out <dir> [--kind blocking|deadlock|both] [--from <dt> --to <dt> | --last <N>{h|d}] [--fingerprint <hash>] [--database <id>] [--limit <n>] | obfuscate-plan (--in <file> --out <file> | --in-dir <dir> --out-dir <dir> [--map <file>] | --project <dir> --plan-id <id>) | export-health --project <dir> [--format json|md|both] [--out <file>] [--limit <n>] | query --project <dir> (--sql <texte> | --file <chemin>) [--format table|csv|json|md] [--limit <n> (defaut 1000) | --no-limit] [--raw] | reclassify --project <dir> [--force]");
+    Console.Error.WriteLine("usage: import <path> --project <dir> [--redaction off|hash|masked|full] [--sanitize-sql-text raw|literals] | top-slow --project <dir> | export-blocking --project <dir> [...] | query-store-import --project <dir> [--conn <s>] [--database <db>] [--no-plans] [--from <dt> --to <dt> | --last <N>{h|d}] | export-events --project <dir> --out <dir> [--kind blocking|deadlock|both] [--from <dt> --to <dt> | --last <N>{h|d}] [--fingerprint <hash>] [--database <id>] [--limit <n>] | obfuscate-plan (--in <file> --out <file> | --in-dir <dir> --out-dir <dir> [--map <file>] | --project <dir> --plan-id <id>) | export-health --project <dir> [--format json|md|both] [--out <file>] [--limit <n>] | query --project <dir> (--sql <texte> | --file <chemin>) [--format table|csv|json|md] [--limit <n> (defaut 1000) | --no-limit] [--raw] | reclassify --project <dir> [--force] | compare --base <dir> --target <dir> [--database <name>] [--format json|md|both] [--out <file>] [--limit <n>]");
     return 1;
 }
 
@@ -204,6 +204,108 @@ switch (args[0])
                 File.WriteAllText(outPath, format == "json" ? json : md);
                 Console.WriteLine($"written: {outPath}");
             }
+            return 0;
+        }
+    case "compare":
+        {
+            // Un drapeau sans valeur est une erreur, pas « tout » (spec §3, revision 3).
+            foreach (var flag in (string[])["--base", "--target", "--database", "--format", "--out", "--limit"])
+            {
+                var at = Array.IndexOf(args, flag);
+                if (at >= 0 && (at + 1 >= args.Length || args[at + 1].StartsWith("--", StringComparison.Ordinal)))
+                { Console.Error.WriteLine($"compare: {flag} needs a value"); return 1; }
+            }
+
+            var baseDir = Arg("--base"); var targetDir = Arg("--target");
+            if (string.IsNullOrWhiteSpace(baseDir) || string.IsNullOrWhiteSpace(targetDir))
+            { Console.Error.WriteLine("compare: --base and --target <dir> are required"); return 1; }
+
+            var format = Arg("--format", "md");
+            if (format is not ("json" or "md" or "both"))
+            { Console.Error.WriteLine("compare: --format must be json, md or both"); return 1; }
+
+            var outPath = Arg("--out", "");
+            if (outPath.Length > 0 && SqlFerret.Cli.BlockingDigestMarkdown.HasTraversal(outPath))
+            { Console.Error.WriteLine("compare: invalid --out path"); return 1; }
+
+            if (!int.TryParse(Arg("--limit", "10"), out var limit) || limit <= 0)
+            { Console.Error.WriteLine("compare: --limit must be a positive integer"); return 1; }
+
+            // Chemin reel : chaque composant qui est un lien symbolique est resolu, sinon un lien vers
+            // un projet contournerait le refus de --out. Un composant absent reste tel quel.
+            static string RealPath(string path, int depth = 0)
+            {
+                var full = Path.GetFullPath(path);
+                var root = Path.GetPathRoot(full)!;
+                var parts = full[root.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+                var acc = root;
+                for (var i = 0; i < parts.Length; i++)
+                {
+                    acc = Path.Combine(acc, parts[i]);
+                    if (depth < 40 && new DirectoryInfo(acc).LinkTarget is not null
+                        && new DirectoryInfo(acc).ResolveLinkTarget(true) is { } target)
+                        return RealPath(Path.Combine([target.FullName, .. parts[(i + 1)..]]), depth + 1);
+                }
+                return acc;
+            }
+
+            string baseFull, targetFull;
+            try
+            {
+                baseFull = RealPath(baseDir);
+                targetFull = RealPath(targetDir);
+                if (outPath.Length > 0)
+                {
+                    var outFull = Path.Combine(RealPath(Path.GetDirectoryName(Path.GetFullPath(outPath))!), Path.GetFileName(outPath));
+                    // ponytail: insensible a la casse sur Windows et macOS ; un volume APFS sensible a la casse n'est pas detecte.
+                    var cmp = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+                    bool Inside(string dir) => outFull.StartsWith(dir.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, cmp);
+                    if (Inside(baseFull) || Inside(targetFull))
+                    { Console.Error.WriteLine("compare: --out must not be inside either project directory"); return 1; }
+                }
+            }
+            catch (IOException ex) { Console.Error.WriteLine($"compare: {ex.Message}"); return 1; }   // une boucle de liens
+
+            // Pas d'OpenProject : il ecrit project.json et cree README, plans/ et exports/ (spec §3).
+            string unit;
+            try { unit = SqlFerretConfig.Load(Path.Combine(baseFull, "sqlferret.config.json")).DurationUnit; }
+            catch (System.Text.Json.JsonException ex) { Console.Error.WriteLine($"compare: {ex.Message}"); return 1; }
+
+            CompareDigestEnvelope envelope;
+            try
+            {
+                var db = Arg("--database", "");
+                var digest = new ProjectComparison(
+                        Path.Combine(baseFull, "sqlferret.duckdb"), Path.Combine(targetFull, "sqlferret.duckdb"))
+                    .Run(new CompareOptions(limit, db.Length > 0 ? db : null, new CompareThresholds()));
+                envelope = new CompareDigestEnvelope(ProjectComparison.SchemaVersion, DateTime.UtcNow, digest);
+            }
+            catch (CompareRefusedException ex) { Console.Error.WriteLine(ex.Message); return 1; }
+            catch (DuckDB.NET.Data.DuckDBException ex) { Console.Error.WriteLine($"compare: {ex.Message}"); return 1; }
+
+            var json = System.Text.Json.JsonSerializer.Serialize(envelope,
+                           new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            var md = SqlFerret.Cli.CompareDigestMarkdown.Render(envelope, unit);
+
+            try
+            {
+                if (outPath.Length == 0)
+                    Console.WriteLine(format switch { "json" => json, "md" => md, _ => md + Environment.NewLine + json });
+                else if (format == "both")
+                {
+                    var stem = Path.Combine(Path.GetDirectoryName(outPath) ?? "", Path.GetFileNameWithoutExtension(outPath));
+                    File.WriteAllText(stem + ".md", md);
+                    File.WriteAllText(stem + ".json", json);
+                    Console.WriteLine($"written: {stem}.md, {stem}.json");
+                }
+                else
+                {
+                    File.WriteAllText(outPath, format == "json" ? json : md);
+                    Console.WriteLine($"written: {outPath}");
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            { Console.Error.WriteLine($"compare: cannot write the output: {ex.Message}"); return 1; }
             return 0;
         }
     case "export-blocking":
