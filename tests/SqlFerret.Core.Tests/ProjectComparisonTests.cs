@@ -279,4 +279,55 @@ public class ProjectComparisonTests
         Assert.NotEqual(ProjectComparison.TextWithheld, text);
         Assert.Equal(new ProjectComparison(a.DbPath, a.DbPath).TextOf(Opt, "h1"), text);
     }
+
+    [Fact]
+    public void Ten_times_more_frequent_at_the_same_speed_ranks_as_a_load_increase()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        a.Import(Burst("h1", 6, 10_000, T0, 600));      // 6 over 50 min
+        b.Import(Burst("h1", 60, 10_000, T0, 50));      // 60 over 49 min 10 s
+        var load = new ProjectComparison(a.DbPath, b.DbPath).LoadOnly(Opt);
+        Assert.NotNull(load);
+        var row = Assert.Single(load.Value.Up);
+        Assert.Equal("h1", row.NormalizedHash);
+        // Base : 60 000 us sur 3 000 s de span actif, soit 72 000 us par heure.
+        Assert.Equal(72_000d, row.BaseUsPerHour, 0);
+        Assert.Empty(load.Value.Down);
+    }
+
+    [Fact]
+    public void Load_is_not_computed_below_the_active_span_threshold()
+    {
+        using var a = new CompareFixture();
+        a.Import(Burst("h1", 3, 10_000, T0));
+        Assert.Null(new ProjectComparison(a.DbPath, a.DbPath).LoadOnly(Opt));
+    }
+
+    [Fact]
+    public void Appeared_and_disappeared_are_listed_with_their_full_counts()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        a.Import(Burst("gone1", 2, 10_000, T0, 600).Concat(Burst("gone2", 2, 10_000, T0, 600)).Concat(Burst("both", 2, 10_000, T0, 600)));
+        b.Import(Burst("new1", 2, 10_000, T0, 600).Concat(Burst("both", 2, 10_000, T0, 600)));
+        var (appeared, disappeared) = new ProjectComparison(a.DbPath, b.DbPath).OneSidedOnly(Opt with { Limit = 1 });
+        Assert.Equal(1L, appeared.Total);
+        Assert.Equal("new1", Assert.Single(appeared.Rows).NormalizedHash);
+        Assert.Equal(2L, disappeared.Total);
+        Assert.Single(disappeared.Rows);
+    }
+
+    [Fact]
+    public void The_database_filter_applies_to_one_sided_statements()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        a.Import(Burst("both", 2, 10_000, T0, 600).Concat(Burst("otherdb", 2, 10_000, T0, 600, db: "AppDb2")));
+        b.Import(Burst("both", 2, 10_000, T0, 600));
+        var (_, disappeared) = new ProjectComparison(a.DbPath, b.DbPath).OneSidedOnly(Opt with { Database = "AppDb" });
+        Assert.Equal(0L, disappeared.Total);
+        var (_, all) = new ProjectComparison(a.DbPath, b.DbPath).OneSidedOnly(Opt);
+        Assert.Equal(1L, all.Total);
+    }
 }

@@ -358,4 +358,100 @@ public sealed class ProjectComparison(string baseDbPath, string targetDbPath)
         Add(c, "$h", hash);
         return c.ExecuteScalar() as string;
     }
+
+    private const double UsPerHour = 3_600_000_000d;
+
+    public (IReadOnlyList<LoadRow> Up, IReadOnlyList<LoadRow> Down)? LoadOnly(CompareOptions o)
+    {
+        using var conn = Open();
+        CheckPreconditions(conn, o);
+        var cov = Coverage(conn, o);
+        return Load(conn, o, cov, MustSanitize(cov));
+    }
+
+    public (OneSideList Appeared, OneSideList Disappeared) OneSidedOnly(CompareOptions o)
+    {
+        using var conn = Open();
+        CheckPreconditions(conn, o);
+        var cov = Coverage(conn, o);
+        return OneSided(conn, o, cov, MustSanitize(cov));
+    }
+
+    internal (IReadOnlyList<LoadRow> Up, IReadOnlyList<LoadRow> Down)? Load(
+        DuckDBConnection conn, CompareOptions o, CompareCoverage cov, bool sanitize)
+    {
+        var min = o.Thresholds.MinActiveSpanUs;
+        if (cov.Base.ActiveSpanUs < min || cov.Target.ActiveSpanUs < min) return null;
+
+        List<LoadRow> Read(string filter, string order)
+        {
+            using var c = conn.CreateCommand();
+            // filter et order sont des constantes de ce fichier, jamais une entree.
+            c.CommandText = $"""
+                WITH {TextsCte(sanitize)},
+                     b AS (SELECT normalized_hash AS h, count(*) AS n, sum(duration_us)::DOUBLE AS d FROM {Execs("base", o)} AS x GROUP BY 1),
+                     t AS (SELECT normalized_hash AS h, count(*) AS n, sum(duration_us)::DOUBLE AS d FROM {Execs("target", o)} AS x GROUP BY 1)
+                SELECT b.h AS h, q.statement_kind AS kind, q.primary_table AS tbl, ct.txt AS txt,
+                       b.n * $bf AS bn, t.n * $tf AS tn, b.d * $bf AS bd, t.d * $tf AS td, t.d * $tf - b.d * $bf AS delta
+                FROM b JOIN t ON b.h = t.h
+                JOIN target.normalized_queries AS q ON q.normalized_hash = b.h
+                JOIN compare_texts AS ct ON ct.h = b.h
+                WHERE greatest(b.n, t.n) >= $minExec AND {filter}
+                ORDER BY {order}, b.h
+                LIMIT $lim
+                """;
+            AddDb(c, o);
+            Add(c, "$bf", UsPerHour / cov.Base.ActiveSpanUs);
+            Add(c, "$tf", UsPerHour / cov.Target.ActiveSpanUs);
+            Add(c, "$minExec", o.Thresholds.MinExecutions);
+            Add(c, "$lim", o.Limit);
+            using var r = c.ExecuteReader();
+            var list = new List<LoadRow>();
+            while (r.Read())
+                list.Add(new LoadRow(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.GetString(3),
+                    r.GetDouble(4), r.GetDouble(5), r.GetDouble(6), r.GetDouble(7), r.GetDouble(8)));
+            return list;
+        }
+
+        return (Read("delta > 0", "delta DESC"), Read("delta < 0", "delta ASC"));
+    }
+
+    internal (OneSideList Appeared, OneSideList Disappeared) OneSided(
+        DuckDBConnection conn, CompareOptions o, CompareCoverage cov, bool sanitize)
+    {
+        bool perHour = cov.Base.ActiveSpanUs >= o.Thresholds.MinActiveSpanUs
+                    && cov.Target.ActiveSpanUs >= o.Thresholds.MinActiveSpanUs;
+
+        OneSideList List(string present, string absent, long spanUs)
+        {
+            using var c = conn.CreateCommand();
+            c.CommandText = $"""
+                WITH {TextsCte(sanitize)},
+                     p AS (SELECT normalized_hash AS h, count(*) AS n, sum(duration_us)::BIGINT AS d FROM {Execs(present, o)} AS x GROUP BY 1),
+                     a AS (SELECT DISTINCT normalized_hash AS h FROM {Execs(absent, o)} AS x)
+                SELECT p.h AS h, q.statement_kind AS kind, q.primary_table AS tbl, ct.txt AS txt,
+                       p.n AS n, p.d AS d, count(*) OVER () AS total
+                FROM p JOIN {present}.normalized_queries AS q ON q.normalized_hash = p.h
+                JOIN compare_texts AS ct ON ct.h = p.h
+                WHERE p.h NOT IN (SELECT h FROM a)
+                ORDER BY p.d DESC, p.h
+                LIMIT $lim
+                """;
+            AddDb(c, o);
+            Add(c, "$lim", o.Limit);
+            using var r = c.ExecuteReader();
+            var rows = new List<OneSideRow>();
+            long total = 0;
+            while (r.Read())
+            {
+                long d = r.GetInt64(5);
+                rows.Add(new OneSideRow(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2),
+                    r.GetString(3), r.GetInt64(4), d, perHour ? d * UsPerHour / spanUs : null));
+                total = r.GetInt64(6);
+            }
+            return new OneSideList(rows, total);
+        }
+
+        return (List("target", "base", cov.Target.ActiveSpanUs), List("base", "target", cov.Base.ActiveSpanUs));
+    }
 }
