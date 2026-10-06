@@ -62,8 +62,11 @@ public static class HealthDigestMarkdown
 
         sb.AppendLine("## Non-clean states").AppendLine();
         if (d.NonCleanStates.Count == 0) sb.AppendLine("Every component reported CLEAN.");
-        else foreach (var s in d.NonCleanStates)
+        else
+        {
+            foreach (var s in d.NonCleanStates)
                 sb.AppendLine($"- `{Safe(s.Component)}` = {Safe(s.State)} in {s.Cycles} cycle(s)");
+        }
         sb.AppendLine();
 
         sb.AppendLine("## Waits").AppendLine();
@@ -94,22 +97,31 @@ public static class HealthDigestMarkdown
             sb.AppendLine("No memory pressure counter moved.");
         sb.AppendLine();
         if (d.MemoryMovers.Count == 0) sb.AppendLine("No memory report entries.");
-        else foreach (var m in d.MemoryMovers)
+        else
+        {
+            foreach (var m in d.MemoryMovers)
                 sb.AppendLine($"- `{Safe(m.Description)}` ({Safe(m.ReportName)}): {m.First.ToString("F0", inv)} to "
                             + $"{m.Last.ToString("F0", inv)} ({m.Change.ToString("+#;-#;0", inv)} {Safe(m.Unit)})");
+        }
         sb.AppendLine();
 
         sb.AppendLine("## Worker pressure").AppendLine();
         if (d.WorkerPressure.Count == 0) sb.AppendLine("Not recorded.");
-        else foreach (var s in d.WorkerPressure)
+        else
+        {
+            foreach (var s in d.WorkerPressure)
                 sb.AppendLine($"- `{Safe(s.Name)}`: min {Num(s.Min, s.Name)}, median {Num(s.Median, s.Name)}, "
                             + $"p95 {Num(s.P95, s.Name)}, max {Num(s.Max, s.Name)} ({s.Samples} samples)");
+        }
         sb.AppendLine();
 
         sb.AppendLine("## Stability signals").AppendLine();
         if (d.StabilitySignals.Count == 0) sb.AppendLine("Nothing moved.");
-        else foreach (var (name, delta) in d.StabilitySignals)
+        else
+        {
+            foreach (var (name, delta) in d.StabilitySignals)
                 sb.AppendLine($"- `{Safe(name)}`: +{Num(delta, name)}");
+        }
         sb.AppendLine();
 
         sb.AppendLine("## I/O").AppendLine();
@@ -119,17 +131,23 @@ public static class HealthDigestMarkdown
 
         sb.AppendLine("## Worst pending I/O").AppendLine();
         if (d.WorstPendingIo.Count == 0) sb.AppendLine("None recorded.");
-        else foreach (var i in d.WorstPendingIo)
+        else
+        {
+            foreach (var i in d.WorstPendingIo)
                 sb.AppendLine($"- {DisplayFormat.Duration(i.DurationUs ?? 0, "ms")} on "
                             + $"`{Safe(i.FilePath)}` at {i.CapturedAt:u}");
+        }
         sb.AppendLine();
 
         sb.AppendLine("## Blocking seen in diagnostics cycles").AppendLine();
         if (d.DiagnosticsBlocking.Count == 0) sb.AppendLine("None.");
-        else foreach (var b in d.DiagnosticsBlocking)
+        else
+        {
+            foreach (var b in d.DiagnosticsBlocking)
                 sb.AppendLine($"- spid {b.BlockedSpid} blocked by {b.BlockingSpid} for "
                             + $"{DisplayFormat.Duration(b.WaitTimeUs ?? 0, "ms")} "
                             + $"({Safe(b.WaitResourceType)}) at {b.CapturedAt:u}");
+        }
 
         return sb.ToString();
     }

@@ -10,9 +10,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The SDK is pinned here and not in a committed global.json, so that a clone builds
+      # with any .NET 10 SDK, as the README promises. The pin matters for `dotnet format`:
+      # the runner image ships a newer SDK band (10.0.401) whose formatter disagreed with
+      # 10.0.112 on the indentation after `else foreach` (CI red on 2026-10-04 and 06). Written before
+      # setup-dotnet, which installs the version it names; latestPatch keeps the preinstalled
+      # newer band out. Move the version when the maintainer's SDK moves.
+      - name: Pin the SDK
+        run: |
+          printf '{ "sdk": { "version": "10.0.112", "rollForward": "latestPatch" } }\n' > global.json
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: '10.0.x'
+          global-json-file: global.json
 
       - name: Restore
         run: dotnet restore
