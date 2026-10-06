@@ -355,7 +355,8 @@ The rule is now decided per hash, from where its stored text came from, and pars
    `(text withheld: first imported under raw)`.
 
 The rule is SQL over both attachments, computed once per printed hash. It never prints a text
-whose origin run stored literals, under one assumption: that `normalized_queries` is only ever
+whose origin run was imported `raw` (unless every run on both sides is `raw`), under one
+assumption: that `normalized_queries` is only ever
 written by those two inserts, both first-wins. A future writer that updates `normalized_sql` must
 revisit it. [R3] It is conservative rather than exact: the blocking writer stores the collapsed
 text whenever redaction is not `off`, whatever the text policy, so a hash first met in a `raw`
