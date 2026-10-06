@@ -14,4 +14,8 @@
     <PackageReference Include="Microsoft.SqlServer.XEvent.XELite" Version="2024.2.5.1" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="SqlFerret.Core.Tests" />
+  </ItemGroup>
+
 </Project>
