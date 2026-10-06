@@ -595,4 +595,25 @@ public sealed class ProjectComparison(string baseDbPath, string targetDbPath)
             }
         return new PlanSection(false, null, rows, total, unlinked);
     }
+
+    public CompareDigestResult Run(CompareOptions options)
+    {
+        using var conn = Open();
+        CheckPreconditions(conn, options);
+        var cov = Coverage(conn, options);
+        bool sanitize = MustSanitize(cov);
+        if (sanitize && cov.Base.SqlTextPolicies.Concat(cov.Target.SqlTextPolicies).Contains("raw"))
+            cov = cov with
+            {
+                Notes = [.. cov.Notes,
+                    "a side holds runs imported raw: statement texts first met by such a run are withheld, and shown from the other side when it was imported with literals"],
+            };
+        var (reg, gains) = Cost(conn, options, sanitize);
+        var load = Load(conn, options, cov, sanitize);
+        var (appeared, disappeared) = OneSided(conn, options, cov, sanitize);
+        var plans = PlanChanges(conn, options, cov);
+        return new CompareDigestResult(cov, reg, gains,
+            load is not null, load?.Up ?? [], load?.Down ?? [],
+            appeared, disappeared, plans);
+    }
 }

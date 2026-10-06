@@ -594,4 +594,90 @@ public class ProjectComparisonTests
         Assert.Equal(["0A1B2C3D4E5F6071"], one.Rows.Select(r => r.QueryHash));
         Assert.Equal(2L, one.Total);
     }
+
+    [Fact]
+    public void A_project_compared_with_itself_reports_no_change()
+    {
+        using var a = new CompareFixture();
+        var run = a.Import(Burst("h1", 6, 10_000, T0, 600).Concat(Burst("h2", 6, 20_000, T0, 600)));
+        a.Plans(run, CompareFixture.Plan("0A1B2C3D4E5F6071", "P1", 1_000));
+        var d = new ProjectComparison(a.DbPath, a.DbPath).Run(Opt);
+        Assert.Empty(d.Regressions); Assert.Empty(d.Gains);
+        Assert.True(d.LoadComputed);
+        Assert.Empty(d.LoadIncreases); Assert.Empty(d.LoadDecreases);
+        Assert.Equal(0L, d.Appeared.Total); Assert.Equal(0L, d.Disappeared.Total);
+        Assert.Empty(d.Plans.Rows);
+    }
+
+    [Fact]
+    public void A_raw_then_literals_project_never_prints_the_value_in_any_section()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        var execs = Enumerable.Range(0, 6).Select(i => new CompareFixture.Exec("h1", Leaky, 10_000 * (i + 1), T0.AddMinutes(i * 10))).ToList();
+        var ra = a.Import(execs, SqlTextSanitization.Literals);
+        a.Plans(ra, CompareFixture.Plan("0A1B2C3D4E5F6071", "P0", 1_000));
+        b.Import(execs);                                                    // raw first: this text is kept
+        b.Import(execs.Select(e => e with { At = e.At.AddDays(1), DurationUs = e.DurationUs * 3 }), SqlTextSanitization.Literals);
+        var r9 = b.Import([new CompareFixture.Exec("h9", Leaky, 50_000, T0), new CompareFixture.Exec("h9", Leaky, null, T0.AddMinutes(1))]);
+        b.Plans(r9, CompareFixture.Plan("0A1B2C3D4E5F6071", "P1", 1_000));  // a changed plan, so the plan section has a row
+        var d = new ProjectComparison(a.DbPath, b.DbPath).Run(Opt);
+        var json = System.Text.Json.JsonSerializer.Serialize(new CompareDigestEnvelope(ProjectComparison.SchemaVersion, DateTime.UtcNow, d));
+        Assert.DoesNotContain("GADGET-7781", json);
+        Assert.Single(d.Plans.Rows);
+        Assert.DoesNotContain("WidgetId = 4242", json);                     // plan statement text, never printed
+        Assert.NotEmpty(d.Regressions);
+        Assert.Equal(1L, d.Appeared.Total);
+        Assert.Equal(ProjectComparison.TextWithheld, d.Appeared.Rows[0].NormalizedSql);
+        Assert.Contains(d.Coverage.Notes, n => n.Contains("withheld"));
+    }
+
+    [Fact]
+    public void A_null_ratio_serializes_to_json()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        a.Import(Burst("zero", 5, 0, T0));
+        b.Import(Burst("zero", 5, 5_000, T0));
+        var d = new ProjectComparison(a.DbPath, b.DbPath).Run(Opt);
+        var json = System.Text.Json.JsonSerializer.Serialize(new CompareDigestEnvelope(1, DateTime.UtcNow, d));
+        Assert.Contains("\"Ratio\":null", json);
+    }
+
+    [Fact]
+    public void Run_fills_each_section_from_its_own_method_and_the_right_side()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        // base: slow(10ms) gone(7 execs) fast(30ms) ; target: slow(30ms) fresh(6 execs) fast(10ms)
+        var ra = a.Import(Burst("slow", 6, 10_000, T0, 600).Concat(Burst("gone", 7, 5_000, T0, 600)).Concat(Burst("fast", 6, 30_000, T0, 600)));
+        var rb = b.Import(Burst("slow", 6, 30_000, T0, 600).Concat(Burst("fresh", 6, 5_000, T0, 600)).Concat(Burst("fast", 6, 10_000, T0, 600)));
+        a.Plans(ra, CompareFixture.Plan("0A1B2C3D4E5F6071", "PA", 1_000));
+        b.Plans(rb, CompareFixture.Plan("0A1B2C3D4E5F6071", "PB", 1_000));
+        var pc = new ProjectComparison(a.DbPath, b.DbPath);
+        var d = pc.Run(Opt);
+        Assert.Equal(["slow"], d.Regressions.Select(r => r.NormalizedHash));
+        Assert.Equal(10_000d, d.Regressions[0].BaseAvgUs, 3);
+        Assert.Equal(30_000d, d.Regressions[0].TargetAvgUs, 3);
+        Assert.Equal(["fast"], d.Gains.Select(r => r.NormalizedHash));
+        Assert.Equal(30_000d, d.Gains[0].BaseAvgUs, 3);
+        Assert.True(d.LoadComputed);
+        Assert.Equal(["slow"], d.LoadIncreases.Select(r => r.NormalizedHash));
+        Assert.Equal(["fast"], d.LoadDecreases.Select(r => r.NormalizedHash));
+        Assert.Equal(["fresh"], d.Appeared.Rows.Select(r => r.NormalizedHash));
+        Assert.Equal(["gone"], d.Disappeared.Rows.Select(r => r.NormalizedHash));
+        Assert.Equal(7L, d.Disappeared.Rows[0].Executions);
+        Assert.Equal(6L, d.Appeared.Rows[0].Executions);
+        Assert.Equal(a.Dir, d.Coverage.Base.ProjectDir);
+        Assert.Equal(b.Dir, d.Coverage.Target.ProjectDir);
+        Assert.Equal(19L, d.Coverage.Base.Executions);
+        Assert.Equal(18L, d.Coverage.Target.Executions);
+        var plan = Assert.Single(d.Plans.Rows);
+        Assert.Equal(["PA"], plan.BasePlanHashes);
+        Assert.Equal(["PB"], plan.TargetPlanHashes);
+        Assert.True(plan.PlanChanged);
+        // The envelope keeps its own version and the digest it was given.
+        var json = System.Text.Json.JsonSerializer.Serialize(new CompareDigestEnvelope(ProjectComparison.SchemaVersion, DateTime.UtcNow, d));
+        Assert.Contains("\"SchemaVersion\":1,", json);
+    }
 }
