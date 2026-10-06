@@ -257,5 +257,26 @@ public class ProjectComparisonTests
         Assert.False(ProjectComparison.MustSanitize(new ProjectComparison(a.DbPath, b.DbPath).CoverageOnly(Opt)));
         b.Import(Burst("h1", 1, 5_000, T0.AddHours(1)), SqlTextSanitization.Literals);
         Assert.True(ProjectComparison.MustSanitize(new ProjectComparison(a.DbPath, b.DbPath).CoverageOnly(Opt)));
+
+        // mirrored: a literals run on the base side only, the target all raw
+        using var c = new CompareFixture();
+        using var d = new CompareFixture();
+        c.Import(Burst("h1", 1, 5_000, T0), SqlTextSanitization.Literals);
+        d.Import(Burst("h1", 1, 5_000, T0));
+        Assert.True(ProjectComparison.MustSanitize(new ProjectComparison(c.DbPath, d.DbPath).CoverageOnly(Opt)));
+    }
+
+    [Fact]
+    public void A_literals_base_against_a_raw_target_prints_the_base_text()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        a.Import(Burst("h1", 1, 5_000, T0).Select(e => e with { Sql = Leaky }), SqlTextSanitization.Literals);
+        b.Import(Burst("h1", 1, 5_000, T0).Select(e => e with { Sql = Leaky }));
+        var text = new ProjectComparison(a.DbPath, b.DbPath).TextOf(Opt, "h1");
+        Assert.NotNull(text);
+        Assert.DoesNotContain("GADGET-7781", text);
+        Assert.NotEqual(ProjectComparison.TextWithheld, text);
+        Assert.Equal(new ProjectComparison(a.DbPath, a.DbPath).TextOf(Opt, "h1"), text);
     }
 }
