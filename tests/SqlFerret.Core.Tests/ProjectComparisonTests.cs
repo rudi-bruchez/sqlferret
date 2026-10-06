@@ -415,20 +415,20 @@ public class ProjectComparisonTests
             .Concat(Many("mix", [10_000, 10_000, 10_000, 10_000, 20_000], [100, 200, 300, 400, 500], Rep(10)))
             .Concat(Many("r4", Rep(10_000))).Concat(Many("r3", Rep(10_000))).Concat(Many("r2", Rep(10_000)))
             .Concat(Many("edge", Rep(400)))
-            .Concat(Many("g2", Rep(20_000))).Concat(Many("g4", Rep(40_000))).Concat(Many("same", Rep(10_000)))
+            .Concat(Many("g2", Rep(20_000))).Concat(Many("g4", Rep(40_000))).Concat(Many("same", Rep(10_000))).Concat(Many("drop", Rep(5_000)))
             .Concat(Many("tgt1", Rep(10_000))).Concat(Many("bas1", Rep(10_000, 4))));
         b.Import(Many("z1", Rep(5_000)).Concat(Many("z2", Rep(8_000)))
             .Concat(Many("mix", [50_000, 50_000, 50_000, 50_000, 50_000, 50_000, 120_000], [1_000, 2_000, 3_000, 3_000, 3_000, 4_000, 5_000], Rep(70, 7)))
             .Concat(Many("r4", Rep(40_000))).Concat(Many("r3", Rep(30_000))).Concat(Many("r2", Rep(20_000)))
             .Concat(Many("edge", Rep(1_000)))
-            .Concat(Many("g2", Rep(10_000))).Concat(Many("g4", Rep(10_000))).Concat(Many("same", Rep(10_000)))
+            .Concat(Many("g2", Rep(10_000))).Concat(Many("g4", Rep(10_000))).Concat(Many("same", Rep(10_000))).Concat(Many("drop", Rep(500)))
             .Concat(Many("tgt1", Rep(30_000, 4))).Concat(Many("bas1", Rep(30_000))));
         var pc = new ProjectComparison(a.DbPath, b.DbPath);
         var (reg, gains) = pc.CostOnly(Opt);
 
         Assert.Equal(["z2", "z1", "mix", "r4", "r3", "edge", "r2"], reg.Select(r => r.NormalizedHash));
-        Assert.Equal(["g4", "g2"], gains.Select(r => r.NormalizedHash));
-        Assert.Equal([0.25, 0.5], gains.Select(r => r.Ratio!.Value));
+        Assert.Equal(["drop", "g4", "g2"], gains.Select(r => r.NormalizedHash));
+        Assert.Equal([0.1, 0.25, 0.5], gains.Select(r => r.Ratio!.Value));
 
         var mix = reg[2];
         Assert.Equal(5.0, mix.Ratio!.Value, 6);
