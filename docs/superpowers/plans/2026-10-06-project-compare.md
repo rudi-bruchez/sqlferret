@@ -44,7 +44,7 @@ Inputs the spec implies that a section's happy path does not exercise, most like
 2. A project with two imports a day apart: per-hour figures use the sum of run spans (Task 2, Task 4).
 3. A query hash with a leading zero: the plan link joins (Task 6).
 4. Executions without a duration, as `*_starting` events map: no crash, counted in coverage (Task 2, Task 7).
-5. `--out` pointing inside one of the projects: refused (Task 8).
+5. `--out` pointing inside one of the projects, directly or through a symbolic link: refused; `--out` into a directory that does not exist: exit 1 without a stack trace (Task 8).
 
 ---
 
@@ -286,6 +286,7 @@ The `BlockingOnly` column lists are the subset of `blocking_reports` and `blocki
 // tests/SqlFerret.Core.Tests/ProjectComparisonTests.cs
 using SqlFerret.Core.Analysis;
 using SqlFerret.Core.Normalization;
+using SqlFerret.Core.Storage;
 using Xunit;
 
 public class ProjectComparisonTests
@@ -312,6 +313,16 @@ public class ProjectComparisonTests
         using var f = new CompareFixture("_it's");
         f.Import(Burst("h1", 1, 5_000, T0));
         new ProjectComparison(f.DbPath, f.DbPath).Check(Opt);   // must not throw
+    }
+
+    [Fact]
+    public void A_side_whose_executions_all_lack_a_duration_is_accepted()
+    {
+        using var a = new CompareFixture();
+        a.Import(Burst("h1", 2, 5_000, T0));
+        using var b = new CompareFixture();
+        b.Import([new CompareFixture.Exec("h1", "SELECT 1", null, T0)]);
+        new ProjectComparison(a.DbPath, b.DbPath).Check(Opt);   // must not throw: §5 asks for an execution, not a duration
     }
 
     [Fact]
@@ -363,8 +374,10 @@ public class ProjectComparisonTests
         using var b = new CompareFixture();
         a.Import(Burst("h1", 1, 5_000, T0));
         b.Import(Burst("h1", 1, 5_000, T0));
-        // Ce que laisse un reclassify sur un import ancien : normalized_queries a jour, le run non.
+        // Un import ancien, puis un vrai reclassify : il remet normalized_queries a jour, pas le run.
         b.Sql("UPDATE ingestion_runs SET normalizer_version = 2");
+        b.Sql("UPDATE normalized_queries SET normalizer_version = 2");
+        using (var p = DuckDbProject.Open(b.DbPath)) new Reclassifier(p).Run();
         var ex = Assert.Throws<CompareRefusedException>(() => new ProjectComparison(a.DbPath, b.DbPath).Check(Opt));
         Assert.Contains("re-import", ex.Message);
         Assert.DoesNotContain("reclassify", ex.Message);
@@ -460,8 +473,12 @@ public sealed class ProjectComparison(string baseDbPath, string targetDbPath)
     /// </summary>
     internal static int FingerprintGeneration(int version) => version is 3 or 4 ? 3 : version;
 
+    // "Could not set lock" est mesure sur Linux. Le libelle Windows n'est pas verifie : "used by
+    // another process" est celui du systeme pour un partage refuse. S'il differe, le message
+    // generique reste exact, sans pile, et sort en 1.
     internal static string DescribeAttachFailure(string dbPath, Exception ex) =>
         ex.Message.Contains("Could not set lock", StringComparison.OrdinalIgnoreCase)
+        || ex.Message.Contains("used by another process", StringComparison.OrdinalIgnoreCase)
             ? $"compare: {dbPath} is open in another SQLFerret process (a TUI, an import); close it first"
             : $"compare: cannot attach {dbPath}: {ex.Message}";
 
@@ -524,11 +541,13 @@ public sealed class ProjectComparison(string baseDbPath, string targetDbPath)
         foreach (var (alias, side) in Sides)
         {
             using var c = conn.CreateCommand();
-            c.CommandText = $"SELECT count(*) FROM {Execs(alias, options)} AS x";
+            // Toutes les executions, avec ou sans duree (§5) : une capture faite seulement
+            // d'executions sans duree doit atteindre la couverture, qui les compte (§6).
+            c.CommandText = $"SELECT count(*) FROM {alias}.executions AS e WHERE e.normalized_hash IS NOT NULL{DbWhere(options)}";
             AddDb(c, options);
             if (Convert.ToInt64(c.ExecuteScalar()) == 0)
                 throw new CompareRefusedException(
-                    $"compare: {PathOf(side)} has no execution with a duration{(options.Database is null ? "" : $" in database {options.Database}")}");
+                    $"compare: {PathOf(side)} has no execution{(options.Database is null ? "" : $" in database {options.Database}")}");
         }
 
         // Les runs qui ont stocke des executions : ce sont eux qui ont calcule les empreintes
@@ -572,10 +591,10 @@ public sealed class ProjectComparison(string baseDbPath, string targetDbPath)
 - [ ] Step 7: Run the tests.
 
 Run: `dotnet build -warnaserror 2>&1 | tail -3 && dotnet test --filter "FullyQualifiedName~ProjectComparisonTests" 2>&1 | tail -5`
-Expected: 10 passed, 0 failed.
+Expected: 11 passed, 0 failed.
 
 - [ ] Step 8: Break it on purpose. Change `FingerprintGeneration` to `=> version;` and rerun the same command.
-Expected: exactly 2 failed (`Fingerprint_generations_v3_and_v4_are_comparable_and_v2_is_not`, `A_v3_side_against_a_v4_side_is_accepted`), 8 passed. That is the success of this step. Restore the code and rerun: 10 passed.
+Expected: exactly 2 failed (`Fingerprint_generations_v3_and_v4_are_comparable_and_v2_is_not`, `A_v3_side_against_a_v4_side_is_accepted`), 9 passed. That is the success of this step. Restore the code and rerun: 11 passed.
 
 - [ ] Step 9: Commit.
 
@@ -633,6 +652,19 @@ Interfaces:
     }
 
     [Fact]
+    public void Each_run_is_checked_for_a_split_against_its_own_span()
+    {
+        using var a = new CompareFixture();
+        var steady = a.Import(Burst("h1", 6, 5_000, T0, 7200));    // every 2 h over 10 h: the largest gap, no split
+        var day = T0.AddDays(1);
+        var split = a.Import(Burst("h1", 2, 5_000, day).Concat(Burst("h1", 1, 5_000, day.AddMinutes(31))));   // 0, 1 min, 31 min
+        var cov = new ProjectComparison(a.DbPath, a.DbPath).CoverageOnly(Opt);
+        Assert.Equal(steady, cov.Base.LargestGapRunId);
+        Assert.Contains(cov.Notes, n => n.Contains($"run {split} has a gap"));
+        Assert.DoesNotContain(cov.Notes, n => n.Contains($"run {steady} has a gap"));
+    }
+
+    [Fact]
     public void Coverage_reports_policies_and_plan_eligibility()
     {
         using var a = new CompareFixture();
@@ -678,16 +710,12 @@ Run: `dotnet build -warnaserror 2>&1 | tail -3 && dotnet test --filter "FullyQua
         var b = Side(conn, "base", baseDbPath, options);
         var t = Side(conn, "target", targetDbPath, options);
         var notes = new List<string>();
-        foreach (var s in (CompareSideCoverage[])[b, t])
+        foreach (var (s, alias) in ((CompareSideCoverage, string)[])[(b, "base"), (t, "target")])
         {
             if (s.ActiveSpanUs < options.Thresholds.MinActiveSpanUs)
                 notes.Add($"{s.ProjectDir}: active span under the threshold, per-hour figures are not computed");
-            if (s.LargestGapUs is { } gap && s.LargestGapRunId is { } runId)
-            {
-                var span = s.Runs.First(r => r.RunId == runId).SpanUs;
-                if (span > 0 && gap * 4 > span)
-                    notes.Add($"{s.ProjectDir}: run {runId} has a gap of more than a quarter of its span; it probably holds several disjoint captures, and its per-hour figures understate the load");
-            }
+            foreach (var runId in SplitRuns(conn, alias, options))
+                notes.Add($"{s.ProjectDir}: run {runId} has a gap of more than a quarter of its span; it probably holds several disjoint captures, and its per-hour figures understate the load");
             if (s.ExecutionsWithoutDuration > 0)
                 notes.Add($"{s.ProjectDir}: {s.ExecutionsWithoutDuration} executions without a duration are left out of every section");
             if (s.EligiblePlanProfiles == 0)
@@ -695,6 +723,26 @@ Run: `dotnet build -warnaserror 2>&1 | tail -3 && dotnet test --filter "FullyQua
         }
         notes.Add("SQLFerret does not know the predicates of the capture sessions; two captures with different duration thresholds have per-hour loads that cannot be compared");
         return new CompareCoverage(b, t, notes);
+    }
+
+    /// <summary>Les runs dont le plus grand trou depasse le quart de leur propre etendue. Chaque run
+    /// se mesure contre la sienne : le run au plus grand trou absolu n'est pas forcement celui-la.</summary>
+    private static List<long> SplitRuns(DuckDBConnection conn, string alias, CompareOptions o)
+    {
+        using var c = conn.CreateCommand();
+        c.CommandText = $"""
+            SELECT run_id FROM (
+              SELECT run_id,
+                     epoch_us(captured_at) - lag(epoch_us(captured_at)) OVER (PARTITION BY run_id ORDER BY captured_at) AS gap,
+                     epoch_us(max(captured_at) OVER (PARTITION BY run_id)) - epoch_us(min(captured_at) OVER (PARTITION BY run_id)) AS span
+              FROM {Execs(alias, o)} AS x) AS g
+            GROUP BY run_id HAVING max(span) > 0 AND max(gap) * 4 > max(span) ORDER BY run_id
+            """;
+        AddDb(c, o);
+        using var r = c.ExecuteReader();
+        var ids = new List<long>();
+        while (r.Read()) ids.Add(r.GetInt64(0));
+        return ids;
     }
 
     private static CompareSideCoverage Side(DuckDBConnection conn, string alias, string dbPath, CompareOptions o)
@@ -795,10 +843,10 @@ Run: `dotnet build -warnaserror 2>&1 | tail -3 && dotnet test --filter "FullyQua
 - [ ] Step 4: Run.
 
 Run: `dotnet build -warnaserror 2>&1 | tail -3 && dotnet test --filter "FullyQualifiedName~ProjectComparisonTests" 2>&1 | tail -5`
-Expected: 15 passed, 0 failed.
+Expected: 17 passed, 0 failed.
 
 - [ ] Step 5: Break it. Replace `runs.Sum(r => r.SpanUs)` with `runs.Count == 0 ? 0 : (long)(runs[^1].Last - runs[0].First).TotalMicroseconds` and rerun.
-Expected: exactly 1 failed (`Active_span_is_the_sum_of_run_spans_not_the_gap_between_imports`), 14 passed. Restore; 15 passed.
+Expected: exactly 1 failed (`Active_span_is_the_sum_of_run_spans_not_the_gap_between_imports`), 16 passed. Restore; 17 passed.
 
 - [ ] Step 6: Commit.
 
@@ -953,10 +1001,10 @@ Run: `dotnet build -warnaserror 2>&1 | tail -3 && dotnet test --filter "FullyQua
 
 `TextWithheld` is a constant of this file interpolated into SQL, not user text, and holds no single quote.
 
-- [ ] Step 4: Run. Expected: 20 passed, 0 failed.
+- [ ] Step 4: Run. Expected: 22 passed, 0 failed.
 
 - [ ] Step 5: Break it: in `Trusted`, replace `WHERE r.sql_text_policy = 'literals'` with `WHERE r.sql_text_policy IS NOT NULL`. Rerun.
-Expected: exactly 3 failed (`A_raw_first_side_is_not_trusted...`, `A_hash_known_only_to_a_raw_first_side_is_withheld`, `A_hash_first_met_in_a_raw_blocking_report_is_withheld`), 17 passed. Restore; 20 passed.
+Expected: exactly 3 failed (`A_raw_first_side_is_not_trusted...`, `A_hash_known_only_to_a_raw_first_side_is_withheld`, `A_hash_first_met_in_a_raw_blocking_report_is_withheld`), 19 passed. Restore; 22 passed.
 
 - [ ] Step 6: Commit.
 
@@ -1137,10 +1185,10 @@ Interfaces:
 
 `count(*) OVER ()` is evaluated before `LIMIT` on the embedded engine (measured by four readers of revision 1). `sum(duration_us)` is never NULL here, since `Execs` keeps only rows with a duration.
 
-- [ ] Step 4: Run. Expected: 24 passed, 0 failed.
+- [ ] Step 4: Run. Expected: 26 passed, 0 failed.
 
 - [ ] Step 5: Break it: in `Load`, replace `UsPerHour / cov.Base.ActiveSpanUs` with `UsPerHour / cov.Target.ActiveSpanUs`. Rerun.
-Expected: exactly 1 failed (`Ten_times_more_frequent...`, on `BaseUsPerHour`), 23 passed. Restore; 24 passed.
+Expected: exactly 1 failed (`Ten_times_more_frequent...`, on `BaseUsPerHour`), 25 passed. Restore; 26 passed.
 
 - [ ] Step 6: Commit.
 
@@ -1269,10 +1317,10 @@ In the first test, `tiny` is excluded by `MinAvgDurationUs` (both averages under
     }
 ```
 
-- [ ] Step 4: Run. Expected: 27 passed, 0 failed.
+- [ ] Step 4: Run. Expected: 29 passed, 0 failed.
 
 - [ ] Step 5: Break it: replace `CASE WHEN b.a = 0 THEN NULL ELSE t.a / b.a END` with `t.a / b.a`. Rerun.
-Expected: exactly 1 failed (`A_zero_base_average...`), 26 passed. Restore; 27 passed. The JSON test of Task 7 would fail too under this break, but it does not exist yet.
+Expected: exactly 1 failed (`A_zero_base_average...`), 28 passed. Restore; 29 passed. The JSON test of Task 7 would fail too under this break, but it does not exist yet.
 
 - [ ] Step 6: Commit.
 
@@ -1470,10 +1518,10 @@ Interfaces:
 
 `median` over `BIGINT` and a `$db` bound once but used several times were both accepted by the embedded engine (measured by four readers of revision 1). If `GetDouble(5)` throws, stop and report the actual type.
 
-- [ ] Step 4: Run. Expected: 32 passed, 0 failed.
+- [ ] Step 4: Run. Expected: 34 passed, 0 failed.
 
 - [ ] Step 5: Break it: change `ExecHashHex` to `"upper(hex(TRY_CAST(e.query_hash AS UBIGINT)))"`. Rerun.
-Expected: exactly 3 failed (`A_changed_plan...` on `LinkedNormalizedHash`, `With_a_database_filter...`, `Unlinked_plans_are_counted...`), 29 passed. Restore; 32 passed.
+Expected: exactly 3 failed (`A_changed_plan...` on `LinkedNormalizedHash`, `With_a_database_filter...`, `Unlinked_plans_are_counted...`), 31 passed. Restore; 34 passed.
 
 - [ ] Step 6: Commit.
 
@@ -1577,12 +1625,12 @@ The markdown half of the leak test is in Task 8, where the renderer exists.
     }
 ```
 
-- [ ] Step 4: Run. Expected: 35 passed, 0 failed.
+- [ ] Step 4: Run. Expected: 37 passed, 0 failed.
 
 - [ ] Step 5: Break it: in `Run`, pass `false` instead of `sanitize` to `OneSided`. Rerun.
-Expected: exactly 1 failed (`A_raw_then_literals...`), 34 passed. Restore; 35 passed.
+Expected: exactly 1 failed (`A_raw_then_literals...`), 36 passed. Restore; 37 passed.
 
-- [ ] Step 6: Run the whole suite once: `dotnet test 2>&1 | tail -8`. Expected: 715 tests across both test projects (680 + 35), the same skips as before (up to 11), 0 failed.
+- [ ] Step 6: Run the whole suite once: `dotnet test 2>&1 | tail -8`. Expected: 717 tests across both test projects (680 + 37), the same skips as before (up to 11), 0 failed.
 
 - [ ] Step 7: Commit.
 
@@ -1764,6 +1812,35 @@ public class CliCompareTests
     }
 
     [Fact]
+    public void An_output_in_a_missing_directory_exits_one_without_a_stack_trace()
+    {
+        using var a = Project();
+        var outPath = Path.Combine(Path.GetTempPath(), $"sf_cmp_{Guid.NewGuid():N}", "report.md");
+        var (code, _, err) = Run("compare", "--base", a.Dir, "--target", a.Dir, "--out", outPath);
+        Assert.Equal(1, code);
+        Assert.Contains("cannot write", err);
+        Assert.DoesNotContain("Unhandled", err);
+    }
+
+    [SkippableFact]
+    public void An_output_reaching_a_project_through_a_symlink_is_refused()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "creating a symbolic link needs a privilege on Windows");
+        using var a = Project();
+        var link = Path.Combine(Path.GetTempPath(), $"sf_cmp_link_{Guid.NewGuid():N}");
+        Directory.CreateSymbolicLink(link, a.Dir);
+        try
+        {
+            var before = Snapshot(a.Dir);
+            var (code, _, err) = Run("compare", "--base", a.Dir, "--target", a.Dir, "--out", Path.Combine(link, "report.md"));
+            Assert.Equal(1, code);
+            Assert.Contains("inside", err);
+            Assert.Equal(before, Snapshot(a.Dir));
+        }
+        finally { Directory.Delete(link); }   // supprime le lien, pas sa cible
+    }
+
+    [Fact]
     public void A_refusal_exits_one_with_its_message()
     {
         using var a = Project();
@@ -1776,7 +1853,7 @@ public class CliCompareTests
 }
 ```
 
-That is 3 renderer tests and 1 + 2 + 4 + 1 + 1 + 1 = 10 CLI test cases: 13 in total. JSON property names are PascalCase with the serializer options `export-health` uses, hence `SchemaVersion` in the first CLI test.
+That is 3 renderer tests and 1 + 2 + 4 + 1 + 1 + 1 + 1 + 1 = 12 CLI test cases: 15 in total. JSON property names are PascalCase with the serializer options `export-health` uses, hence `SchemaVersion` in the first CLI test.
 
 - [ ] Step 3: Run, expect a build error (`CompareDigestMarkdown` missing).
 
@@ -1935,16 +2012,40 @@ public static class CompareDigestMarkdown
             if (!int.TryParse(Arg("--limit", "10"), out var limit) || limit <= 0)
             { Console.Error.WriteLine("compare: --limit must be a positive integer"); return 1; }
 
-            var baseFull = Path.GetFullPath(baseDir);
-            var targetFull = Path.GetFullPath(targetDir);
-            if (outPath.Length > 0)
+            // Chemin reel : chaque composant qui est un lien symbolique est resolu, sinon un lien vers
+            // un projet contournerait le refus de --out. Un composant absent reste tel quel.
+            static string RealPath(string path, int depth = 0)
             {
-                var outFull = Path.GetFullPath(outPath);
-                var cmp = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-                bool Inside(string dir) => outFull.StartsWith(dir.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, cmp);
-                if (Inside(baseFull) || Inside(targetFull))
-                { Console.Error.WriteLine("compare: --out must not be inside either project directory"); return 1; }
+                var full = Path.GetFullPath(path);
+                var root = Path.GetPathRoot(full)!;
+                var parts = full[root.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+                var acc = root;
+                for (var i = 0; i < parts.Length; i++)
+                {
+                    acc = Path.Combine(acc, parts[i]);
+                    if (depth < 40 && new DirectoryInfo(acc).LinkTarget is not null
+                        && new DirectoryInfo(acc).ResolveLinkTarget(true) is { } target)
+                        return RealPath(Path.Combine([target.FullName, .. parts[(i + 1)..]]), depth + 1);
+                }
+                return acc;
             }
+
+            string baseFull, targetFull;
+            try
+            {
+                baseFull = RealPath(baseDir);
+                targetFull = RealPath(targetDir);
+                if (outPath.Length > 0)
+                {
+                    var outFull = Path.Combine(RealPath(Path.GetDirectoryName(Path.GetFullPath(outPath))!), Path.GetFileName(outPath));
+                    // ponytail: insensible a la casse sur Windows et macOS ; un volume APFS sensible a la casse n'est pas detecte.
+                    var cmp = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+                    bool Inside(string dir) => outFull.StartsWith(dir.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, cmp);
+                    if (Inside(baseFull) || Inside(targetFull))
+                    { Console.Error.WriteLine("compare: --out must not be inside either project directory"); return 1; }
+                }
+            }
+            catch (IOException ex) { Console.Error.WriteLine($"compare: {ex.Message}"); return 1; }   // une boucle de liens
 
             // Pas d'OpenProject : il ecrit project.json et cree README, plans/ et exports/ (spec §3).
             string unit;
@@ -1967,20 +2068,25 @@ public static class CompareDigestMarkdown
                            new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
             var md = SqlFerret.Cli.CompareDigestMarkdown.Render(envelope, unit);
 
-            if (outPath.Length == 0)
-                Console.WriteLine(format switch { "json" => json, "md" => md, _ => md + Environment.NewLine + json });
-            else if (format == "both")
+            try
             {
-                var stem = Path.Combine(Path.GetDirectoryName(outPath) ?? "", Path.GetFileNameWithoutExtension(outPath));
-                File.WriteAllText(stem + ".md", md);
-                File.WriteAllText(stem + ".json", json);
-                Console.WriteLine($"written: {stem}.md, {stem}.json");
+                if (outPath.Length == 0)
+                    Console.WriteLine(format switch { "json" => json, "md" => md, _ => md + Environment.NewLine + json });
+                else if (format == "both")
+                {
+                    var stem = Path.Combine(Path.GetDirectoryName(outPath) ?? "", Path.GetFileNameWithoutExtension(outPath));
+                    File.WriteAllText(stem + ".md", md);
+                    File.WriteAllText(stem + ".json", json);
+                    Console.WriteLine($"written: {stem}.md, {stem}.json");
+                }
+                else
+                {
+                    File.WriteAllText(outPath, format == "json" ? json : md);
+                    Console.WriteLine($"written: {outPath}");
+                }
             }
-            else
-            {
-                File.WriteAllText(outPath, format == "json" ? json : md);
-                Console.WriteLine($"written: {outPath}");
-            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            { Console.Error.WriteLine($"compare: cannot write the output: {ex.Message}"); return 1; }
             return 0;
         }
 ```
@@ -1990,10 +2096,12 @@ Then append ` | compare --base <dir> --target <dir> [--database <name>] [--forma
 - [ ] Step 6: Run.
 
 Run: `dotnet build -warnaserror 2>&1 | tail -3 && dotnet test --filter "FullyQualifiedName~CompareDigestMarkdownTests|FullyQualifiedName~CliCompareTests" 2>&1 | tail -5`
-Expected: 13 passed, 0 failed.
+Expected: 15 passed, 0 failed.
 
 - [ ] Step 7: Break it: insert `AuditProject.OpenOrCreate(baseDir, Directory.GetCurrentDirectory());` as the first statement after the `--limit` check of the `compare` case. Rerun.
-Expected: exactly 2 failed (`Compare_writes_nothing_into_either_project`, and `An_output_file_inside_a_project_is_refused`, whose snapshot sees the files `OpenOrCreate` writes before the `--out` refusal is reached), 11 passed. Remove the inserted line; 13 passed.
+Expected: exactly 3 failed (`Compare_writes_nothing_into_either_project`, and `An_output_file_inside_a_project_is_refused` and `An_output_reaching_a_project_through_a_symlink_is_refused`, whose snapshots see the files `OpenOrCreate` writes before the `--out` refusal is reached), 12 passed. Remove the inserted line; 15 passed.
+
+Then break the guard: replace `RealPath(Path.GetDirectoryName(Path.GetFullPath(outPath))!)` with `Path.GetDirectoryName(Path.GetFullPath(outPath))!`. Expected: exactly 1 failed (`An_output_reaching_a_project_through_a_symlink_is_refused`), 14 passed. Restore; 15 passed.
 
 - [ ] Step 8: Verify the lock message by hand once, outside the test suite (CI has no DuckDB CLI). In one shell invocation:
 
@@ -2033,7 +2141,7 @@ Files:
 cd <worktree> && dotnet format --verify-no-changes && dotnet build -warnaserror 2>&1 | tail -3 && dotnet test 2>&1 | tail -8
 ```
 
-Expected: format clean, 0 warnings, 728 tests across both test projects (680 + 35 + 13), up to 11 skipped, 0 failed. In `CLAUDE.md`, update "680 tests" to the number actually observed.
+Expected: format clean, 0 warnings, 732 tests across both test projects (680 + 37 + 15), up to 11 skipped, 0 failed. In `CLAUDE.md`, update "680 tests" to the number actually observed.
 
 - [ ] Step 4: `git status --porcelain -uall` shows only the files of this task; nothing under `sample/`, no `.duckdb`, no temporary path.
 

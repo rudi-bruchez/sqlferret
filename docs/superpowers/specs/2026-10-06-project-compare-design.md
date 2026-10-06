@@ -129,7 +129,7 @@ sqlferret compare --base <dir> --target <dir>
 | `--target` | required | The project compared against it. Deltas and ratios read as target relative to base. |
 | `--database` | all | Restrict executions on both sides to one `database_name`; plans through their link to executions (§10). |
 | `--format` | `md` | `json`, `md` or `both`, with the same rules as `export-health`: any other value exits 1. |
-| `--out` | stdout | With `both`, writes `<stem>.md` and `<stem>.json`. Rejects `..`, like `export-health`, and [R3] any path inside either project directory, which would break the promise of §4. |
+| `--out` | stdout | With `both`, writes `<stem>.md` and `<stem>.json`. Rejects `..`, like `export-health`, and [R3] any path inside either project directory, which would break the promise of §4. Paths are compared after resolving symbolic links. A write failure (missing directory, no permission) exits 1 with its message. |
 | `--limit` | 10 | Rows per ranked section. Must be a positive integer. |
 
 [R3] A flag given without a value (`--database` last on the line, or followed by another flag) is
@@ -287,9 +287,10 @@ Printed first, like `export-health`, because every number after it depends on it
 Then the notes, each emitted only when it applies:
 
 - an active span under `MinActiveSpanUs` on either side: per-hour figures are not computed (§8);
-- a largest gap inside a run above a quarter of that run's span: the run probably holds several
-  disjoint captures (a folder import), so its per-hour figures understate the load; the note
-  names the run [R2];
+- a run whose own largest gap exceeds a quarter of its own span: the run probably holds several
+  disjoint captures (a folder import), so its per-hour figures understate the load; one note per
+  such run, naming it [R2]. Each run is measured against itself: the run holding the largest
+  absolute gap is not necessarily the one split [R3];
 - always: SQLFerret does not know the predicates of the sessions that produced the captures. Two
   captures with different duration thresholds have per-hour loads that cannot be compared, and
   nothing in a project says so [R2];
@@ -353,9 +354,14 @@ The rule is now decided per hash, from where its stored text came from, and pars
    The printed text is the target's if trusted, else the base's if trusted, else the literal
    `(text withheld: first imported under raw)`.
 
-The rule is SQL over both attachments, computed once per printed hash. It is exact under one
-assumption: that `normalized_queries` is only ever written by those two inserts, both
-first-wins. A future writer that updates `normalized_sql` must revisit it.
+The rule is SQL over both attachments, computed once per printed hash. It never prints a text
+whose origin run stored literals, under one assumption: that `normalized_queries` is only ever
+written by those two inserts, both first-wins. A future writer that updates `normalized_sql` must
+revisit it. [R3] It is conservative rather than exact: the blocking writer stores the collapsed
+text whenever redaction is not `off`, whatever the text policy, so a hash first met in a `raw`
+run's blocking report under `masked` holds a safe text that the rule still withholds (measured by
+the codex directive reader through `IngestionService`). Reading the redaction policy as well
+would recover it; the gain was judged not worth a second rule.
 
 Two consequences, stated in the coverage block when they apply: a project imported `raw` and then
 `literals` shows the withheld text for the statements its first import saw; and comparing an
@@ -526,3 +532,13 @@ Findings of the revision 1 panel that were not adopted, and why:
   it (§0, §4). The reader that reported it as not a problem had tested one process.
 - "Text from blocking input buffers is QI-collapsed whatever the policy": true, and covered by the
   report-time sanitization of §7 without a rule of its own.
+
+Findings of the second plan panel (on plan revision 2) that were not adopted, and why:
+
+- "The active span is summed in C#, against the rule that aggregation lives in SQL": the sum runs
+  over the per-run rows that SQL already aggregated, a handful of values kept for display; the
+  rule targets reductions over event data.
+- "`epoch_us` is not in the evidence base": every span and gap test exercises it on the embedded
+  engine, and passes.
+- "The display unit comes only from the base project's config": deliberate, the command opens no
+  project through `AuditProject` (§3); the reference page says so.
