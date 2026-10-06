@@ -127,4 +127,75 @@ public class ProjectComparisonTests
         Assert.Contains("/p/sqlferret.duckdb", msg);
         Assert.Contains("another SQLFerret process", msg);
     }
+
+    [Fact]
+    public void Active_span_is_the_sum_of_run_spans_not_the_gap_between_imports()
+    {
+        using var a = new CompareFixture();
+        a.Import(Burst("h1", 2, 5_000, T0));             // 0 and +60 s
+        a.Import(Burst("h1", 2, 5_000, T0.AddDays(1)));  // a day later, 0 and +60 s
+        var cov = new ProjectComparison(a.DbPath, a.DbPath).CoverageOnly(Opt);
+        Assert.Equal(2, cov.Base.Runs.Count);
+        Assert.Equal(120_000_000L, cov.Base.ActiveSpanUs);
+        Assert.Equal(4L, cov.Base.Executions);
+    }
+
+    [Fact]
+    public void A_short_active_span_adds_the_per_hour_note()
+    {
+        using var a = new CompareFixture();
+        a.Import(Burst("h1", 3, 5_000, T0));             // 120 s, under 10 minutes
+        var cov = new ProjectComparison(a.DbPath, a.DbPath).CoverageOnly(Opt);
+        Assert.Contains(cov.Notes, n => n.Contains("per-hour", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void A_large_gap_inside_one_run_is_named()
+    {
+        using var a = new CompareFixture();
+        var run = a.Import(
+            Burst("h1", 2, 5_000, T0, 300).Concat(Burst("h1", 2, 5_000, T0.AddHours(3), 300)));
+        var cov = new ProjectComparison(a.DbPath, a.DbPath).CoverageOnly(Opt);
+        Assert.Equal(run, cov.Base.LargestGapRunId);
+        Assert.Contains(cov.Notes, n => n.Contains($"run {run}"));
+    }
+
+    [Fact]
+    public void Each_run_is_checked_for_a_split_against_its_own_span()
+    {
+        using var a = new CompareFixture();
+        var steady = a.Import(Burst("h1", 6, 5_000, T0, 7200));    // every 2 h over 10 h: the largest gap, no split
+        var day = T0.AddDays(1);
+        var split = a.Import(Burst("h1", 2, 5_000, day).Concat(Burst("h1", 1, 5_000, day.AddMinutes(31))));   // 0, 1 min, 31 min
+        var cov = new ProjectComparison(a.DbPath, a.DbPath).CoverageOnly(Opt);
+        Assert.Equal(steady, cov.Base.LargestGapRunId);
+        Assert.Contains(cov.Notes, n => n.Contains($"run {split} has a gap"));
+        Assert.DoesNotContain(cov.Notes, n => n.Contains($"run {steady} has a gap"));
+    }
+
+    [Fact]
+    public void Coverage_reports_policies_and_plan_eligibility()
+    {
+        using var a = new CompareFixture();
+        var run = a.Import(Burst("h1", 2, 5_000, T0), SqlTextSanitization.Literals, "hash");
+        a.Plans(run,
+            CompareFixture.Plan("0A1B2C3D4E5F6071", "P1", 1_000),
+            CompareFixture.Plan("0A1B2C3D4E5F6071", "M1", 1_000, "multi"));
+        var cov = new ProjectComparison(a.DbPath, a.DbPath).CoverageOnly(Opt);
+        Assert.Equal(["literals"], cov.Base.SqlTextPolicies);
+        Assert.Equal(["hash"], cov.Base.RedactionPolicies);
+        Assert.Equal(1L, cov.Base.EligiblePlanProfiles);
+        Assert.Equal(1L, cov.Base.ExcludedPlanProfiles);
+        Assert.Contains(cov.Notes, n => n.Contains("predicates", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Executions_without_a_duration_are_left_out_and_counted()
+    {
+        using var a = new CompareFixture();
+        a.Import(Burst("h1", 2, 5_000, T0).Append(new CompareFixture.Exec("h1", Exec1, null, T0.AddMinutes(5))));
+        var cov = new ProjectComparison(a.DbPath, a.DbPath).CoverageOnly(Opt);
+        Assert.Equal(2L, cov.Base.Executions);
+        Assert.Equal(1L, cov.Base.ExecutionsWithoutDuration);
+    }
 }

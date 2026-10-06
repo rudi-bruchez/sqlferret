@@ -160,4 +160,143 @@ public sealed class ProjectComparison(string baseDbPath, string targetDbPath)
         p.Value = value ?? DBNull.Value;
         c.Parameters.Add(p);
     }
+
+    public CompareCoverage CoverageOnly(CompareOptions options)
+    {
+        using var conn = Open();
+        CheckPreconditions(conn, options);
+        return Coverage(conn, options);
+    }
+
+    internal CompareCoverage Coverage(DuckDBConnection conn, CompareOptions options)
+    {
+        var b = Side(conn, "base", baseDbPath, options);
+        var t = Side(conn, "target", targetDbPath, options);
+        var notes = new List<string>();
+        foreach (var (s, alias) in ((CompareSideCoverage, string)[])[(b, "base"), (t, "target")])
+        {
+            if (s.ActiveSpanUs < options.Thresholds.MinActiveSpanUs)
+                notes.Add($"{s.ProjectDir}: active span under the threshold, per-hour figures are not computed");
+            foreach (var runId in SplitRuns(conn, alias, options))
+                notes.Add($"{s.ProjectDir}: run {runId} has a gap of more than a quarter of its span; it probably holds several disjoint captures, and its per-hour figures understate the load");
+            if (s.ExecutionsWithoutDuration > 0)
+                notes.Add($"{s.ProjectDir}: {s.ExecutionsWithoutDuration} executions without a duration are left out of every section");
+            if (s.EligiblePlanProfiles == 0)
+                notes.Add($"{s.ProjectDir}: no single-statement plan profile, the plan section is skipped");
+        }
+        notes.Add("SQLFerret does not know the predicates of the capture sessions; two captures with different duration thresholds have per-hour loads that cannot be compared");
+        return new CompareCoverage(b, t, notes);
+    }
+
+    /// <summary>Les runs dont le plus grand trou depasse le quart de leur propre etendue. Chaque run
+    /// se mesure contre la sienne : le run au plus grand trou absolu n'est pas forcement celui-la.</summary>
+    private static List<long> SplitRuns(DuckDBConnection conn, string alias, CompareOptions o)
+    {
+        using var c = conn.CreateCommand();
+        c.CommandText = $"""
+            SELECT run_id FROM (
+              SELECT run_id,
+                     epoch_us(captured_at) - lag(epoch_us(captured_at)) OVER (PARTITION BY run_id ORDER BY captured_at) AS gap,
+                     epoch_us(max(captured_at) OVER (PARTITION BY run_id)) - epoch_us(min(captured_at) OVER (PARTITION BY run_id)) AS span
+              FROM {Execs(alias, o)} AS x) AS g
+            GROUP BY run_id HAVING max(span) > 0 AND max(gap) * 4 > max(span) ORDER BY run_id
+            """;
+        AddDb(c, o);
+        using var r = c.ExecuteReader();
+        var ids = new List<long>();
+        while (r.Read()) ids.Add(r.GetInt64(0));
+        return ids;
+    }
+
+    private static CompareSideCoverage Side(DuckDBConnection conn, string alias, string dbPath, CompareOptions o)
+    {
+        var x = Execs(alias, o);
+        var runs = new List<CompareRunSpan>();
+        using (var c = conn.CreateCommand())
+        {
+            c.CommandText = $"""
+                SELECT run_id, min(captured_at) AS first_at, max(captured_at) AS last_at,
+                       epoch_us(max(captured_at)) - epoch_us(min(captured_at)) AS span_us, count(*) AS n
+                FROM {x} AS x GROUP BY run_id ORDER BY run_id
+                """;
+            AddDb(c, o);
+            using var r = c.ExecuteReader();
+            while (r.Read())
+                runs.Add(new CompareRunSpan(r.GetInt64(0), r.GetDateTime(1), r.GetDateTime(2), r.GetInt64(3), r.GetInt64(4)));
+        }
+
+        long? gapUs = null, gapRun = null;
+        using (var c = conn.CreateCommand())
+        {
+            c.CommandText = $"""
+                SELECT run_id, gap FROM (
+                  SELECT run_id, epoch_us(captured_at) - lag(epoch_us(captured_at))
+                         OVER (PARTITION BY run_id ORDER BY captured_at) AS gap
+                  FROM {x} AS x) AS g
+                WHERE gap IS NOT NULL ORDER BY gap DESC, run_id LIMIT 1
+                """;
+            AddDb(c, o);
+            using var r = c.ExecuteReader();
+            if (r.Read()) { gapRun = r.GetInt64(0); gapUs = r.GetInt64(1); }
+        }
+
+        long execs, distinct; long? minDur; double qhShare;
+        using (var c = conn.CreateCommand())
+        {
+            c.CommandText = $"""
+                SELECT count(*) AS n, count(DISTINCT normalized_hash) AS d, min(duration_us) AS m,
+                       avg(CASE WHEN query_hash IS NULL THEN 0.0 ELSE 1.0 END) AS s
+                FROM {x} AS x
+                """;
+            AddDb(c, o);
+            using var r = c.ExecuteReader();
+            r.Read();
+            execs = r.GetInt64(0); distinct = r.GetInt64(1);
+            minDur = r.IsDBNull(2) ? null : r.GetInt64(2);
+            qhShare = r.IsDBNull(3) ? 0 : r.GetDouble(3);
+        }
+
+        long noDuration;
+        using (var c = conn.CreateCommand())
+        {
+            c.CommandText = $"SELECT count(*) FROM {alias}.executions AS e WHERE e.normalized_hash IS NOT NULL AND e.duration_us IS NULL{DbWhere(o)}";
+            AddDb(c, o);
+            noDuration = Convert.ToInt64(c.ExecuteScalar());
+        }
+
+        var dbs = Strings(conn, $"SELECT DISTINCT database_name FROM {x} AS x WHERE database_name IS NOT NULL ORDER BY 1", o);
+        var versions = Strings(conn, $"SELECT DISTINCT CAST(normalizer_version AS VARCHAR) AS v FROM {alias}.ingestion_runs WHERE run_id IN (SELECT run_id FROM {x} AS x) ORDER BY 1", o)
+            .Select(int.Parse).ToList();
+        var redaction = Strings(conn, $"SELECT DISTINCT coalesce(redaction_policy, 'unknown') AS p FROM {alias}.ingestion_runs WHERE run_id IN (SELECT run_id FROM {x} AS x) ORDER BY 1", o);
+        var textPolicies = Strings(conn, $"SELECT DISTINCT coalesce(sql_text_policy, 'raw') AS p FROM {alias}.ingestion_runs ORDER BY 1", o);
+
+        long eligible, excluded;
+        using (var c = conn.CreateCommand())
+        {
+            c.CommandText = $"""
+                SELECT count(*) FILTER (WHERE plan_hash_source = 'queryplanhash' AND query_hash IS NOT NULL) AS el,
+                       count(*) FILTER (WHERE NOT (plan_hash_source = 'queryplanhash' AND query_hash IS NOT NULL)) AS ex
+                FROM {alias}.plan_profiles
+                """;
+            using var r = c.ExecuteReader();
+            r.Read();
+            eligible = r.GetInt64(0); excluded = r.GetInt64(1);
+        }
+
+        return new CompareSideCoverage(
+            Path.GetDirectoryName(dbPath) ?? dbPath, runs, runs.Sum(r => r.SpanUs), gapUs, gapRun,
+            execs, noDuration, distinct, dbs.Take(o.Limit).ToList(), Math.Max(0, dbs.Count - o.Limit),
+            versions, redaction, textPolicies, minDur, qhShare, eligible, excluded);
+    }
+
+    private static List<string> Strings(DuckDBConnection conn, string sql, CompareOptions o)
+    {
+        using var c = conn.CreateCommand();
+        c.CommandText = sql;
+        if (sql.Contains("$db")) AddDb(c, o);
+        using var r = c.ExecuteReader();
+        var list = new List<string>();
+        while (r.Read()) list.Add(r.GetString(0));
+        return list;
+    }
 }
