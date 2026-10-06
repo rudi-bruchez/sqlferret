@@ -132,4 +132,52 @@ public class CliCompareTests
         Assert.Contains("no project database", err);
         Assert.False(Directory.Exists(missing));
     }
+
+    [SkippableTheory]
+    [InlineData("md", "README.md")]
+    [InlineData("both", "project.json")]
+    public void An_output_that_is_a_symlink_to_a_project_file_is_refused(string format, string victim)
+    {
+        Skip.If(OperatingSystem.IsWindows(), "creating a symbolic link needs a privilege on Windows");
+        using var a = Project();
+        File.WriteAllText(Path.Combine(a.Dir, victim), "keep me");
+        var outDir = Path.Combine(Path.GetTempPath(), $"sf_cmp_out_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outDir);
+        try
+        {
+            // en format both, le fichier ecrit est rep.json : le lien est sur le frere .json
+            var linkName = format == "both" ? "rep.json" : "rep.md";
+            File.CreateSymbolicLink(Path.Combine(outDir, linkName), Path.Combine(a.Dir, victim));
+            var before = Snapshot(a.Dir);
+            var (code, _, err) = Run("compare", "--base", a.Dir, "--target", a.Dir, "--format", format, "--out", Path.Combine(outDir, "rep.md"));
+            Assert.Equal(1, code);
+            Assert.Contains("inside", err);
+            Assert.Equal(before, Snapshot(a.Dir));
+            Assert.Equal("keep me", File.ReadAllText(Path.Combine(a.Dir, victim)));
+        }
+        finally { Directory.Delete(outDir, true); }
+    }
+
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("{\"display\":{\"durationUnit\":5}}")]
+    public void A_config_of_the_wrong_shape_exits_one_without_a_stack_trace(string config)
+    {
+        using var a = Project();
+        File.WriteAllText(Path.Combine(a.Dir, "sqlferret.config.json"), config);
+        var (code, _, err) = Run("compare", "--base", a.Dir, "--target", a.Dir);
+        Assert.Equal(1, code);
+        Assert.StartsWith("compare:", err);
+        Assert.DoesNotContain("Unhandled", err);
+    }
+
+    [Fact]
+    public void An_output_without_a_directory_or_file_name_exits_one_without_a_stack_trace()
+    {
+        using var a = Project();
+        var (code, _, err) = Run("compare", "--base", a.Dir, "--target", a.Dir, "--out", "/");
+        Assert.Equal(1, code);
+        Assert.Contains("--out", err);
+        Assert.DoesNotContain("Unhandled", err);
+    }
 }

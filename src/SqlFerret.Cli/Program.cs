@@ -256,12 +256,25 @@ switch (args[0])
                 targetFull = RealPath(targetDir);
                 if (outPath.Length > 0)
                 {
-                    var outFull = Path.Combine(RealPath(Path.GetDirectoryName(Path.GetFullPath(outPath))!), Path.GetFileName(outPath));
+                    var outFullPath = Path.GetFullPath(outPath);
+                    var outDirName = Path.GetDirectoryName(outFullPath);
+                    var outFileName = Path.GetFileName(outFullPath);
+                    if (string.IsNullOrEmpty(outDirName) || string.IsNullOrEmpty(outFileName))
+                    { Console.Error.WriteLine("compare: --out must name a file"); return 1; }
+
+                    // Tous les fichiers que la commande va ecrire, chacun resolu jusqu'a son dernier composant :
+                    // un lien symbolique vers un fichier du projet serait suivi par WriteAllText.
+                    var stem = Path.Combine(outDirName, Path.GetFileNameWithoutExtension(outFileName));
+                    string[] targets = Arg("--format", "md") == "both" ? [stem + ".md", stem + ".json"] : [outFullPath];
                     // ponytail: insensible a la casse sur Windows et macOS ; un volume APFS sensible a la casse n'est pas detecte.
                     var cmp = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-                    bool Inside(string dir) => outFull.StartsWith(dir.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, cmp);
-                    if (Inside(baseFull) || Inside(targetFull))
-                    { Console.Error.WriteLine("compare: --out must not be inside either project directory"); return 1; }
+                    foreach (var t in targets)
+                    {
+                        var outFull = RealPath(t);
+                        bool Inside(string dir) => outFull.StartsWith(dir.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, cmp);
+                        if (Inside(baseFull) || Inside(targetFull))
+                        { Console.Error.WriteLine("compare: --out must not be inside either project directory"); return 1; }
+                    }
                 }
             }
             catch (IOException ex) { Console.Error.WriteLine($"compare: {ex.Message}"); return 1; }   // une boucle de liens
@@ -269,7 +282,8 @@ switch (args[0])
             // Pas d'OpenProject : il ecrit project.json et cree README, plans/ et exports/ (spec §3).
             string unit;
             try { unit = SqlFerretConfig.Load(Path.Combine(baseFull, "sqlferret.config.json")).DurationUnit; }
-            catch (System.Text.Json.JsonException ex) { Console.Error.WriteLine($"compare: {ex.Message}"); return 1; }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException or IOException or UnauthorizedAccessException)
+            { Console.Error.WriteLine($"compare: {ex.Message}"); return 1; }
 
             CompareDigestEnvelope envelope;
             try
