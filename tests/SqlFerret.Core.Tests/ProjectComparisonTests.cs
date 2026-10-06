@@ -512,6 +512,27 @@ public class ProjectComparisonTests
     }
 
     [Fact]
+    public void A_plan_whose_only_execution_is_in_another_database_is_unlinked_under_the_filter()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        // 0xAA = 170 : l'execution de 00000000000000AA est dans OtherDb seulement.
+        CompareFixture.Exec[] execs = [Linked(T0), new("h2", Exec1, 5_000, T0, "OtherDb", QueryHash: "170")];
+        var ra = a.Import(execs);
+        var rb = b.Import(execs);
+        a.Plans(ra, CompareFixture.Plan("0A1B2C3D4E5F6071", "P1", 1_000), CompareFixture.Plan("00000000000000AA", "Q1", 1_000));
+        b.Plans(rb, CompareFixture.Plan("0A1B2C3D4E5F6071", "P2", 1_000), CompareFixture.Plan("00000000000000AA", "Q2", 1_000));
+        var pc = new ProjectComparison(a.DbPath, b.DbPath);
+        var filtered = pc.PlansOnly(Opt with { Database = "AppDb" });
+        Assert.Equal("0A1B2C3D4E5F6071", Assert.Single(filtered.Rows).QueryHash);
+        Assert.Equal(2L, filtered.UnlinkedExcluded);
+        var all = pc.PlansOnly(Opt);
+        Assert.Equal(["00000000000000AA", "0A1B2C3D4E5F6071"], all.Rows.Select(r => r.QueryHash).Order().ToList());
+        Assert.Equal("h2", all.Rows.Single(r => r.QueryHash == "00000000000000AA").LinkedNormalizedHash);
+        Assert.Equal(0L, all.UnlinkedExcluded);
+    }
+
+    [Fact]
     public void Unlinked_plans_are_counted_even_when_no_plan_changed()
     {
         using var a = new CompareFixture();
