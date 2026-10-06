@@ -83,6 +83,13 @@ public sealed class ProjectComparison(string baseDbPath, string targetDbPath)
 
         var conn = new DuckDBConnection("Data Source=:memory:");
         conn.Open();
+        // DuckDB spill par defaut vers ./.tmp, donc dans le projet si on y lance compare. SET accepte un parametre lie (mesure 2026-10-06).
+        using (var set = conn.CreateCommand())
+        {
+            set.CommandText = "SET temp_directory = $d";
+            Add(set, "$d", Path.Combine(Path.GetTempPath(), "sqlferret-compare-spill"));
+            set.ExecuteNonQuery();
+        }
         foreach (var (alias, side) in Sides)
         {
             try { Exec(conn, AttachSql(PathOf(side), alias)); }
@@ -563,7 +570,7 @@ public sealed class ProjectComparison(string baseDbPath, string targetDbPath)
                         FROM bk AS k JOIN base.plan_findings AS f ON f.plan_profile_id = k.plan_profile_id GROUP BY k.qh),
                  tf AS (SELECT k.qh AS qh, array_to_string(list_sort(list_distinct(list(f.kind))), ',') AS kinds
                         FROM tk AS k JOIN target.plan_findings AS f ON f.plan_profile_id = k.plan_profile_id GROUP BY k.qh),
-                 link AS (SELECT {ExecHashHex} AS qh, any_value(e.normalized_hash) AS nh
+                 link AS (SELECT {ExecHashHex} AS qh, min(e.normalized_hash) AS nh
                           FROM {Execs("target", o)} AS e WHERE e.query_hash IS NOT NULL GROUP BY 1)
             SELECT b.qh AS qh, b.plan_set AS b_plans, t.plan_set AS t_plans, bf.kinds AS b_kinds, tf.kinds AS t_kinds,
                    b.med AS b_med, t.med AS t_med, link.nh AS nh, count(*) OVER () AS total

@@ -75,4 +75,31 @@ public class CompareDigestMarkdownTests
         Assert.Contains("| h1 |", md);
         Assert.DoesNotContain("WidgetId = 4242", md);
     }
+
+    private static IEnumerable<CompareFixture.Exec> Burst(string hash, int n, long us) =>
+        Enumerable.Range(0, n).Select(i => new CompareFixture.Exec(hash, Exec1, us, T0.AddSeconds(i * 200)));
+
+    private static string Section(string md, string title)
+    {
+        var from = md.IndexOf($"### {title}", StringComparison.Ordinal);
+        Assert.True(from >= 0, title);
+        var to = md.IndexOf("\n##", from + 4, StringComparison.Ordinal);
+        return to < 0 ? md[from..] : md[from..to];
+    }
+
+    [Fact]
+    public void Every_statement_table_carries_the_hash_kind_and_table_of_each_row()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        a.Import(Burst("slowhash", 6, 10_000).Concat(Burst("gonehash", 7, 5_000)));
+        b.Import(Burst("slowhash", 6, 30_000).Concat(Burst("freshhash", 6, 5_000)));
+        var d = new ProjectComparison(a.DbPath, b.DbPath).Run(Opt);
+        var md = CompareDigestMarkdown.Render(new CompareDigestEnvelope(1, T0, d), "ms");
+        Assert.Contains("| slowhash |", Section(md, "Regressions"));
+        Assert.Contains("| slowhash |", Section(md, "Increases"));
+        Assert.Contains("| freshhash |", Section(md, "Appeared (target only)"));
+        Assert.Contains("| gonehash |", Section(md, "Disappeared (base only)"));
+        Assert.Contains($"| {d.Regressions[0].StatementKind} | AppSchema.WidgetRecalc |", Section(md, "Regressions"));
+    }
 }

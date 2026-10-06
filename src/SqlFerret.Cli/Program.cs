@@ -296,6 +296,7 @@ switch (args[0])
             }
             catch (CompareRefusedException ex) { Console.Error.WriteLine(ex.Message); return 1; }
             catch (DuckDB.NET.Data.DuckDBException ex) { Console.Error.WriteLine($"compare: {ex.Message}"); return 1; }
+            catch (Exception ex) { Console.Error.WriteLine($"compare: {ex.Message}"); return 1; }   // repli voulu : une base malformee ne doit jamais sortir en trace de pile
 
             var json = System.Text.Json.JsonSerializer.Serialize(envelope,
                            new System.Text.Json.JsonSerializerOptions { WriteIndented = true });

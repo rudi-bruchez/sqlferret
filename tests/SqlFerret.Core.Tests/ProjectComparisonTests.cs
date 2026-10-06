@@ -680,4 +680,16 @@ public class ProjectComparisonTests
         var json = System.Text.Json.JsonSerializer.Serialize(new CompareDigestEnvelope(ProjectComparison.SchemaVersion, DateTime.UtcNow, d));
         Assert.Contains("\"SchemaVersion\":1,", json);
     }
+
+    [Fact]
+    public void The_in_memory_connection_spills_outside_the_working_directory()
+    {
+        using var a = new CompareFixture();
+        a.Import([new CompareFixture.Exec("h1", "exec AppSchema.WidgetRecalc @WidgetId = 42", 5_000, T0)]);
+        using var conn = new ProjectComparison(a.DbPath, a.DbPath).Open();
+        using var c = conn.CreateCommand();
+        c.CommandText = "SELECT current_setting('temp_directory')";
+        var dir = (string)c.ExecuteScalar()!;
+        Assert.True(Path.IsPathRooted(dir), dir);
+    }
 }

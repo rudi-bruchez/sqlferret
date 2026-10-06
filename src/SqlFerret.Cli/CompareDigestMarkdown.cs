@@ -33,7 +33,7 @@ public static class CompareDigestMarkdown
         sb.AppendLine($"| Databases | {Safe(string.Join(", ", b.Databases))}{(b.OtherDatabases > 0 ? $" (+{b.OtherDatabases})" : "")} | {Safe(string.Join(", ", t.Databases))}{(t.OtherDatabases > 0 ? $" (+{t.OtherDatabases})" : "")} |");
         sb.AppendLine($"| Normalizer versions | {string.Join(", ", b.NormalizerVersions)} | {string.Join(", ", t.NormalizerVersions)} |");
         sb.AppendLine($"| Redaction | {Safe(string.Join(", ", b.RedactionPolicies))} | {Safe(string.Join(", ", t.RedactionPolicies))} |");
-        sb.AppendLine($"| SQL text | {Safe(string.Join(", ", b.SqlTextPolicies))} | {Safe(string.Join(", ", t.SqlTextPolicies))} |");
+        sb.AppendLine($"| SQL text policies (all runs) | {Safe(string.Join(", ", b.SqlTextPolicies))} | {Safe(string.Join(", ", t.SqlTextPolicies))} |");
         sb.AppendLine($"| Smallest duration | {DurN(b.MinDurationUs)} | {DurN(t.MinDurationUs)} |");
         sb.AppendLine($"| Executions with query_hash | {N(b.QueryHashShare * 100)} % | {N(t.QueryHashShare * 100)} % |");
         sb.AppendLine($"| Plan profiles used / left out (before --database) | {b.EligiblePlanProfiles} / {b.ExcludedPlanProfiles} | {t.EligiblePlanProfiles} / {t.ExcludedPlanProfiles} |");
@@ -87,10 +87,10 @@ public static class CompareDigestMarkdown
     {
         sb.AppendLine($"### {title}").AppendLine();
         if (rows.Count == 0) { sb.AppendLine(empty).AppendLine(); return; }
-        sb.AppendLine("| Ratio | Avg base | Avg target | p95 base | p95 target | CPU base | CPU target | Reads base | Reads target | Count base/target | Statement |");
-        sb.AppendLine("|---|---|---|---|---|---|---|---|---|---|---|");
+        sb.AppendLine("| Ratio | Avg base | Avg target | p95 base | p95 target | CPU base | CPU target | Reads base | Reads target | Count base/target | Hash | Kind | Table | Statement |");
+        sb.AppendLine("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
         foreach (var r in rows)
-            sb.AppendLine($"| {(r.Ratio is { } x ? N(x) : "new cost")} | {dur(r.BaseAvgUs)} | {dur(r.TargetAvgUs)} | {dur(r.BaseP95Us)} | {dur(r.TargetP95Us)} | {durN(r.BaseAvgCpuUs)} | {durN(r.TargetAvgCpuUs)} | {N(r.BaseAvgReads)} | {N(r.TargetAvgReads)} | {r.BaseCount}/{r.TargetCount} | `{Safe(r.NormalizedSql)}` |");
+            sb.AppendLine($"| {(r.Ratio is { } x ? N(x) : "new cost")} | {dur(r.BaseAvgUs)} | {dur(r.TargetAvgUs)} | {dur(r.BaseP95Us)} | {dur(r.TargetP95Us)} | {durN(r.BaseAvgCpuUs)} | {durN(r.TargetAvgCpuUs)} | {N(r.BaseAvgReads)} | {N(r.TargetAvgReads)} | {r.BaseCount}/{r.TargetCount} | {Safe(r.NormalizedHash)} | {Safe(r.StatementKind)} | {Safe(r.PrimaryTable ?? "-")} | `{Safe(r.NormalizedSql)}` |");
         sb.AppendLine();
     }
 
@@ -98,10 +98,10 @@ public static class CompareDigestMarkdown
     {
         sb.AppendLine($"### {title}").AppendLine();
         if (rows.Count == 0) { sb.AppendLine(empty).AppendLine(); return; }
-        sb.AppendLine("| Delta per hour | Base per hour | Target per hour | Executions/h base | Executions/h target | Statement |");
-        sb.AppendLine("|---|---|---|---|---|---|");
+        sb.AppendLine("| Delta per hour | Base per hour | Target per hour | Executions/h base | Executions/h target | Hash | Kind | Table | Statement |");
+        sb.AppendLine("|---|---|---|---|---|---|---|---|---|");
         foreach (var r in rows)
-            sb.AppendLine($"| {dur(r.DeltaUsPerHour)} | {dur(r.BaseUsPerHour)} | {dur(r.TargetUsPerHour)} | {N(r.BaseExecPerHour)} | {N(r.TargetExecPerHour)} | `{Safe(r.NormalizedSql)}` |");
+            sb.AppendLine($"| {dur(r.DeltaUsPerHour)} | {dur(r.BaseUsPerHour)} | {dur(r.TargetUsPerHour)} | {N(r.BaseExecPerHour)} | {N(r.TargetExecPerHour)} | {Safe(r.NormalizedHash)} | {Safe(r.StatementKind)} | {Safe(r.PrimaryTable ?? "-")} | `{Safe(r.NormalizedSql)}` |");
         sb.AppendLine();
     }
 
@@ -110,9 +110,9 @@ public static class CompareDigestMarkdown
         sb.AppendLine($"### {title}").AppendLine();
         if (list.Total == 0) { sb.AppendLine("None.").AppendLine(); return; }
         sb.AppendLine($"{list.Rows.Count} of {list.Total} shown.").AppendLine();
-        sb.AppendLine("| Executions | Total duration | Per hour | Statement |").AppendLine("|---|---|---|---|");
+        sb.AppendLine("| Executions | Total duration | Per hour | Hash | Kind | Table | Statement |").AppendLine("|---|---|---|---|---|---|---|");
         foreach (var r in list.Rows)
-            sb.AppendLine($"| {r.Executions} | {dur(r.TotalDurationUs)} | {(r.UsPerHour is { } h ? dur(h) : "-")} | `{Safe(r.NormalizedSql)}` |");
+            sb.AppendLine($"| {r.Executions} | {dur(r.TotalDurationUs)} | {(r.UsPerHour is { } h ? dur(h) : "-")} | {Safe(r.NormalizedHash)} | {Safe(r.StatementKind)} | {Safe(r.PrimaryTable ?? "-")} | `{Safe(r.NormalizedSql)}` |");
         sb.AppendLine();
     }
 }

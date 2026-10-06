@@ -302,8 +302,9 @@ the defaults, and a malformed or unreadable one exits 1 with a message.
 The coverage block comes first, because every number after it depends on it. For each side it lists
 the runs with their spans, the active span (the sum of the per-run spans, so the idle time between two
 imports does not count), the largest gap inside a run, the executions and distinct statements left
-after the `--database` filter, the databases seen, the normalizer version, the redaction and SQL text
-policies, and the plan profiles. Notes follow when they apply: an active span under ten minutes on
+after the `--database` filter, the databases seen, the normalizer version, the redaction policies, the SQL text
+policies (read over every run of the project, unlike the other rows, which read the runs holding
+filtered executions), and the plan profiles. Notes follow when they apply: an active span under ten minutes on
 either side, in which case per-hour figures are not computed; a run whose own largest gap exceeds a
 quarter of its span, which probably holds several disjoint captures; no usable plan profile on one
 side, in which case the plan section is skipped. One note is always present: SQLFerret does not know
