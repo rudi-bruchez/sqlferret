@@ -1,10 +1,20 @@
 # Design: comparing two projects (`sqlferret compare`)
 
-Status: proposed, revision 2
+Status: proposed, revision 3
 Date: 2026-10-06
 Scope: `SqlFerret.Core` (Analysis) and the CLI host. No schema change, no ingestion change.
 
-Revision 2 follows a review panel of five readers (agy and codex, each with a directive and a
+Revision 3 follows the review of the implementation plan, whose five readers executed the code
+and found that the report-time sanitization of revision 2 destroys almost every text:
+`QueryNormalizer.Normalize` parses with ScriptDom and flags a failure on any parse error, and a
+stored normalized text carries `?` for every literal, which does not parse. Every such text came
+out as the placeholder (measured by all five readers). §7 now decides per hash which stored text
+may be printed, from the policy of the run that wrote it, without parsing anything. Smaller
+changes are marked [R3]: executions without a duration (§6), `--out` inside a project (§3), a
+bare `--database` (§3), the generation check reads the runs that stored executions (§5), the
+plan median and the unlinked count (§10), and the markdown carries every coverage field (§11).
+
+Revision 2 followed a review panel of five readers (agy and codex, each with a directive and a
 neutral prompt, and a Claude subagent). Revision 1 is in the git history. What changed, marked
 [R2] where it lands:
 
@@ -119,8 +129,11 @@ sqlferret compare --base <dir> --target <dir>
 | `--target` | required | The project compared against it. Deltas and ratios read as target relative to base. |
 | `--database` | all | Restrict executions on both sides to one `database_name`; plans through their link to executions (§10). |
 | `--format` | `md` | `json`, `md` or `both`, with the same rules as `export-health`: any other value exits 1. |
-| `--out` | stdout | With `both`, writes `<stem>.md` and `<stem>.json`. Rejects `..`, like `export-health`. |
+| `--out` | stdout | With `both`, writes `<stem>.md` and `<stem>.json`. Rejects `..`, like `export-health`, and [R3] any path inside either project directory, which would break the promise of §4. |
 | `--limit` | 10 | Rows per ranked section. Must be a positive integer. |
+
+[R3] A flag given without a value (`--database` last on the line, or followed by another flag) is
+an error, not "all databases".
 
 `--base` and `--target` are project directories, like `--project` everywhere else, but
 `compare` never creates one: a directory without `sqlferret.duckdb` is an error (exit 1). The two
@@ -234,8 +247,10 @@ can produce identical fingerprints. The comment on `QueryNormalizer.Version` sta
 `NormalizedSql`, and so the fingerprint, unchanged from v3. The check therefore compares
 fingerprint generations rather than raw versions: a constant in `ProjectComparison` maps each
 version to its generation, with v3 and v4 in the same one and the comment cited next to it. A
-future version that changes the token rewriting starts a new generation. Every run on both sides
-must belong to one generation. Versions below 3 are their own generations, since nothing in the
+future version that changes the token rewriting starts a new generation. Every run that stored
+executions, on both sides, must belong to one generation. [R3] A run without executions (a
+`system_health` import, a capture of blocking reports only) stored no execution hash, so its
+version does not bear on what §7 to §10 compare, and it is not checked. Versions below 3 are their own generations, since nothing in the
 repository says otherwise.
 
 Classification can still differ between two comparable sides. `statement_kind` and
@@ -286,6 +301,12 @@ filter, and undefined at zero. Dropped.
 
 All spans and gaps are computed after the `--database` filter.
 
+[R3] Every section reads executions with a non-null `normalized_hash` and a non-null
+`duration_us`. An execution without a duration (the Claude reader found that `*_starting` events
+map with a NULL duration, which made a `GetInt64` throw) cannot be ranked by cost or load, so it
+is left out everywhere, and the coverage block counts those left out on each side. Whether real
+captures contain such rows is unverified.
+
 ## 7. Cost per execution
 
 For each `normalized_hash` present on both sides with at least `MinExecutions` executions on each:
@@ -306,28 +327,40 @@ a separate ordering on the target average.
 The p95 is `quantile_cont(duration_us, 0.95)`, as in `WorkloadQueries.QueryStats`. Each row
 carries `normalized_hash`, and `statement_kind` and `primary_table` from the target side (§5).
 
-### The printed text [R2]
+### The printed text [R3]
 
-Revision 1 chose a side's text by its policy. Three readers showed it leaks: a project whose
-first run was `raw` keeps the raw-run text of every hash it saw then, so a later `literals` run
-does not make its texts safe, and the rule could print an inlined value while the other side
-held the sanitized text (measured by the Claude reader with a double-quoted value; codex measured
-the same with a tokenize failure). A policy is per run; the text is per hash, written once.
+Revision 1 chose a side's text by the policy of its project. Three readers showed it leaks: a
+project whose first run was `raw` keeps the raw-run text of every hash it saw then, because both
+writers of `normalized_queries` (the execution upsert and the blocking-process insert,
+`DuckDbProject.cs`) keep the first text and only move `last_seen_at`. A policy is per run; the
+text is per hash, written once.
 
-The rule is now: if every run on both sides is `raw`, the text is printed as stored, from the
-target, or from the base for a hash the target lacks. Otherwise every printed text, in every
-section and in both formats, is re-normalized in Core before it enters the result:
-`QueryNormalizer.Normalize(text)`, then its `QiCollapsedSql`, or the sanitizer's placeholder when
-`TokenizeFailed` is set. That is what `SqlTextSanitizer.Apply` stores in `normalized_sql` at the
-`literals` level (`SqlTextSanitizer.cs`, lines 63 and 68). `Apply` itself is not called: its
-first return value is the text destined for `sql_text_raw`, which for an `sp_executesql` batch is
-the unwrapped inner statement (line 75), not a normalized text. The sanitization then holds
-whichever side and whichever run the text came from. It is a transformation of at most a few
-hundred rows, not an aggregation, and stays in C#. The placeholder is `SqlTextSanitizer.Placeholder`,
-already public, reused rather than duplicated.
+Revision 2 re-normalized every printed text. Five readers showed that this destroys it: a stored
+text carries `?` for its literals, ScriptDom does not parse `?`, and `TokenNormalizer` reports any
+parse error as a tokenize failure, so the result was the placeholder (measured, see the header).
 
-Whether re-normalizing an already normalized text is idempotent, that is whether it changes a
-text that was sanitized at import, is unverified; a test checks it on the fixtures (§13).
+The rule is now decided per hash, from where its stored text came from, and parses nothing:
+
+1. If every run on both sides is `raw` (a NULL `sql_text_policy`, from a run older than the
+   column, counts as `raw`), every text is printed as stored, from the target, or from the base
+   for a hash the target lacks.
+2. Otherwise, for each side, the origin run of a hash is the smallest `run_id` among the runs of
+   that side that hold the hash, in `executions.normalized_hash` or in
+   `blocking_processes.inputbuf_fingerprint` (joined to `blocking_reports.run_id`). Runs are
+   numbered in import order (`DuckDbProject.BeginRun`), and the first import that met a hash is the
+   one whose text the upsert kept.
+3. A side's text for that hash is trusted when its origin run's `sql_text_policy` is `literals`.
+   The printed text is the target's if trusted, else the base's if trusted, else the literal
+   `(text withheld: first imported under raw)`.
+
+The rule is SQL over both attachments, computed once per printed hash. It is exact under one
+assumption: that `normalized_queries` is only ever written by those two inserts, both
+first-wins. A future writer that updates `normalized_sql` must revisit it.
+
+Two consequences, stated in the coverage block when they apply: a project imported `raw` and then
+`literals` shows the withheld text for the statements its first import saw; and comparing an
+all-`raw` project with a `literals` one shows the `literals` side's text where it exists and
+withholds the rest.
 
 ## 8. Load per hour of capture
 
@@ -369,7 +402,9 @@ For each `query_hash` present in the plan profiles of both sides:
 - the set of distinct `plan_hash` per side, and whether the sets differ;
 - the set of distinct finding `kind` per side, from `plan_findings` joined on `plan_profile_id`,
   and the kinds that appeared (target only) and disappeared (base only);
-- the median `duration_us` of the profiles per side, for context.
+- the median `duration_us` of the profiles per side, for context. [R3] Computed over the profiles
+  before the join to `plan_findings`; joined after it, a profile with three findings counted three
+  times (measured by the codex and Claude readers).
 
 Listed: the `query_hash` values whose plan set changed or whose finding kinds changed, ordered by
 the target median duration descending, `--limit` rows, plus the full count.
@@ -395,6 +430,8 @@ with `literals` would have leaked literals through it.
 
 [R2] With `--database`, only plans linked through `query_hash` to an execution of that database
 are kept; unlinked plans are left out and counted, since `plan_profiles` has no database column.
+[R3] The count is its own query: computed inside the changed-row query, it read zero whenever no
+row changed, which is the case it exists to explain.
 Without the action on the completion events, `--database` therefore empties §10, and the note
 says why.
 
@@ -404,7 +441,9 @@ says why.
 `HealthDigestMarkdown.cs`, with `MarkdownText` for escaping. `json` serializes
 `CompareDigestEnvelope`. `both` behaves as in `export-health`.
 
-The markdown order is §6 to §10. An empty ranking prints a sentence that says it is empty (no
+The markdown order is §6 to §10. [R3] It carries every field §6 lists, the per-run lines and the
+largest gap included, and every measure of a §7 row, CPU and logical reads included; revision 2's
+renderer dropped them. An empty ranking prints a sentence that says it is empty (no
 regression above the thresholds, for instance), so a quiet result does not look like a failure,
 as in `export-health`.
 
@@ -412,7 +451,8 @@ as in `export-health`.
 
 The digest prints `normalized_sql`, which `top-slow` already prints, and never `sql_text_raw` or
 parameter values, and never `plan_profiles.statement_text`. Unless every run on both sides is
-`raw`, the printed text is sanitized at report time (§7). Comparing two customers' projects puts
+`raw`, a text is printed only when the run that wrote it was `literals`, and withheld otherwise
+(§7). Comparing two customers' projects puts
 both in one report; the coverage block names both directories so the reader knows what the file
 contains before sharing it.
 
@@ -440,10 +480,12 @@ with fixture names from the anonymous vocabulary in `CLAUDE.md` (`AppDb`, `AppSc
 7. §9: appeared and disappeared lists and their counts.
 8. §6 and §8: an active span under `MinActiveSpanUs` suppresses §8 with a note; two runs a day
    apart use the sum of their spans; a run with a large internal gap gets its note.
-9. Printed text: a project whose first run is `raw` and second `literals`, with a double-quoted
-   value and with a tokenize failure, compared with a `literals` project: no section, in md or
-   json, contains the value. Two all-`raw` projects print the stored text. A text already
-   sanitized at import comes out unchanged.
+9. Printed text, with fixtures stored through `SqlTextSanitizer.Apply` as ingestion does: a
+   project whose first run is `raw` and second `literals`, with a double-quoted value, compared
+   with a `literals` project: no section, in md or json, contains the value, and the `literals`
+   side's text is printed; the same hash present only in the raw-first project is withheld; two
+   all-`raw` projects print the stored text; a hash first met in a blocking report of a `raw` run
+   is withheld.
 10. §10: no eligible plan profiles on one side skips the section; a multi-statement plan is
    excluded and counted; a changed `plan_hash` and an appeared `spill_to_tempdb` kind are listed;
    the decimal to hex link with a hash that has a leading zero; no statement text printed.
