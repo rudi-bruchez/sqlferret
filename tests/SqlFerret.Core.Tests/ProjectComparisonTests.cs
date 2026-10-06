@@ -293,6 +293,9 @@ public class ProjectComparisonTests
         Assert.Equal("h1", row.NormalizedHash);
         // Base : 60 000 us sur 3 000 s de span actif, soit 72 000 us par heure.
         Assert.Equal(72_000d, row.BaseUsPerHour, 0);
+        // Cible : 600 000 us sur 2 950 s de span actif (59 intervalles de 50 s), soit 732 203,39 us par heure.
+        Assert.Equal(732_203d, row.TargetUsPerHour, 0);
+        Assert.Equal(660_203d, row.DeltaUsPerHour, 0);
         Assert.Empty(load.Value.Down);
     }
 
@@ -305,17 +308,33 @@ public class ProjectComparisonTests
     }
 
     [Fact]
+    public void Load_is_not_computed_when_only_one_side_is_below_the_threshold()
+    {
+        using var a = new CompareFixture();
+        using var b = new CompareFixture();
+        a.Import(Burst("h1", 6, 10_000, T0, 600));
+        b.Import(Burst("h1", 3, 10_000, T0));
+        Assert.Null(new ProjectComparison(a.DbPath, b.DbPath).LoadOnly(Opt));
+        Assert.Null(new ProjectComparison(b.DbPath, a.DbPath).LoadOnly(Opt));
+    }
+
+    [Fact]
     public void Appeared_and_disappeared_are_listed_with_their_full_counts()
     {
         using var a = new CompareFixture();
         using var b = new CompareFixture();
-        a.Import(Burst("gone1", 2, 10_000, T0, 600).Concat(Burst("gone2", 2, 10_000, T0, 600)).Concat(Burst("both", 2, 10_000, T0, 600)));
+        // Spans differents (base 1 200 s, cible 600 s) pour qu'une inversion des deux se voie.
+        a.Import(Burst("gone1", 2, 10_000, T0, 1200).Concat(Burst("gone2", 2, 10_000, T0, 1200)).Concat(Burst("both", 2, 10_000, T0, 1200)));
         b.Import(Burst("new1", 2, 10_000, T0, 600).Concat(Burst("both", 2, 10_000, T0, 600)));
         var (appeared, disappeared) = new ProjectComparison(a.DbPath, b.DbPath).OneSidedOnly(Opt with { Limit = 1 });
         Assert.Equal(1L, appeared.Total);
-        Assert.Equal("new1", Assert.Single(appeared.Rows).NormalizedHash);
+        var up = Assert.Single(appeared.Rows);
+        Assert.Equal("new1", up.NormalizedHash);
+        // 20 000 us sur le span actif de la cible (600 s) : 120 000 us par heure.
+        Assert.Equal(120_000d, up.UsPerHour!.Value, 0);
         Assert.Equal(2L, disappeared.Total);
-        Assert.Single(disappeared.Rows);
+        // 20 000 us sur le span actif de la base (1 200 s) : 60 000 us par heure.
+        Assert.Equal(60_000d, Assert.Single(disappeared.Rows).UsPerHour!.Value, 0);
     }
 
     [Fact]
