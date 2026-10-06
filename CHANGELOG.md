@@ -19,8 +19,39 @@ an audit can always name the build that produced it.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-06
+
+Comparing two projects. `compare` reads two existing project directories read-only and reports
+what changed between them: before and after a migration, a normal period against a bad one, two
+servers running the same application. The coverage of both captures comes first, because every
+figure after it depends on it. Four plan findings, read from attributes no rule looked at before,
+ship in the same release.
+
 ### Added
 
+- `compare --base <dir> --target <dir>`, with `--database`, `--format json|md|both`, `--out`
+  and `--limit`. Both databases are attached read-only and nothing is written into either
+  project directory; `--out` refuses a path inside either project, after resolving symbolic
+  links on every file written. The digest holds, in this order:
+  - coverage per side: the runs and their spans, the active span (the sum of per-run spans,
+    so the idle time between two imports does not count), the largest gap inside a run, the
+    executions left out for lack of a duration, the policies the runs were imported with, and
+    notes when a figure cannot be trusted;
+  - cost per execution: regressions and gains ranked by the ratio of average durations, with
+    p95, CPU and logical reads, for statements with at least 5 executions on each side and an
+    average of at least 1 ms on one of them;
+  - load per hour of capture, computed only when both active spans reach ten minutes;
+  - statements present on one side only;
+  - plan changes per query hash, with the finding kinds that appeared or disappeared and the
+    median duration of each side's plans.
+- Refusals, exit 1, for a comparison that cannot be trusted: fingerprints from different
+  normalizer generations (versions 3 and 4 share one), a project from an older schema, a
+  project held open by another process, a side with no execution after the filter.
+- A statement text is printed only when the run that first stored it was imported with the
+  `literals` SQL text policy, unless every run on both sides is `raw`; otherwise it is
+  replaced by `(text withheld: first imported under raw)`. Statement text from execution
+  plans is never printed. Each row also carries its normalized hash, so a withheld statement
+  can still be followed with `query`.
 - Four plan findings, read from attributes no rule looked at before. Measured on the 101
   real plans published with PlanInspector: 1, 2, 1 and 16 occurrences respectively.
   - `optimizer_early_abort`: `StatementOptmEarlyAbortReason` is `TimeOut` or
@@ -223,5 +254,7 @@ no .NET runtime, no agent on the SQL Server.
 - **`project.json` recorded `ToolVersion: 1.0.0.0`** — an SDK default nobody chose — for
   every project ever created, so the provenance field said nothing.
 
+[0.5.0]: https://github.com/rudi-bruchez/sqlferret/releases/tag/v0.5.0
+[0.4.0]: https://github.com/rudi-bruchez/sqlferret/releases/tag/v0.4.0
 [0.3.0]: https://github.com/rudi-bruchez/sqlferret/releases/tag/v0.3.0
 [0.2.0]: https://github.com/rudi-bruchez/sqlferret/releases/tag/v0.2.0
