@@ -105,8 +105,10 @@ Set `core.autocrlf=false` and re-checkout if you need the check to pass here; ne
 committing CRLF.
 
 The second workflow, `.github/workflows/release.yml`, fires on a `v*` tag: it checks the tag
-against `Directory.Build.props`, runs the suite, cross-publishes the five RIDs from a single
-Linux runner and smoke-tests the linux-x64 archive before publishing.
+against `Directory.Build.props`, builds the release note from the version's `CHANGELOG.md`
+section (`scripts/release-notes.sh`, which fails on a missing or empty section), runs the suite,
+cross-publishes the five RIDs from a single Linux runner and smoke-tests the linux-x64 archive
+before publishing.
 
 ## Running the tool on a real trace
 
